@@ -84,6 +84,121 @@ fn explicit_write_in_the_delay_slot_beats_the_load() {
     assert_eq!(psx.cpu.reg(1), 0x0CCC);
 }
 
+/// A second plain load to the same register discards the first, which is
+/// therefore never architecturally visible.
+///
+/// ```asm
+/// lw   $1, (a)
+/// lw   $1, (b)
+/// move $2, $1     ; the value $1 held before BOTH loads
+/// ```
+///
+/// A silent divergence: nothing crashes, values are just subtly wrong, which is
+/// why it is worth a test rather than waiting to notice.
+#[test]
+fn a_second_load_cancels_the_first() {
+    let mut psx = machine(&[
+        addiu(4, 0, 0),      // $4 = 0
+        addiu(7, 0, 16),     // $7 = 16
+        lui(5, 0x0AAA),
+        sw(5, 0, 4),         // [0]  = 0x0AAA0000
+        lui(8, 0x0BBB),
+        sw(8, 0, 7),         // [16] = 0x0BBB0000
+        addiu(1, 0, 0x0123), // $1 = 0x123, the value that must survive
+        lw(1, 0, 4),         // in flight: 0x0AAA0000
+        lw(1, 0, 7),         // cancels it; in flight: 0x0BBB0000
+        addiu(2, 1, 0),      // $2 = $1
+        nop(),
+    ]);
+    psx.run(10);
+
+    assert_eq!(
+        psx.cpu.reg(2),
+        0x0123,
+        "the first load's value became visible; it should have been discarded"
+    );
+
+    psx.run(1);
+    assert_eq!(
+        psx.cpu.reg(1),
+        0x0BBB_0000,
+        "the second load should still land normally"
+    );
+}
+
+/// The counterpart to the rule above: `lwl` **merges** with a pending load, so
+/// the in-flight value reaches the merge rather than being thrown away.
+///
+/// Note what this does *not* prove. `op_lwl` samples `out_regs` before any
+/// cancellation would apply, so routing `lwl` through `Cpu::set_load` as well
+/// leaves this test green: the two only differ for a read in `lwl`'s own delay
+/// slot. That case is untested and unsettled; see
+/// `lwl_delay_slot_sees_the_cancelled_load` below.
+#[test]
+fn lwl_merges_with_a_pending_load() {
+    let mut psx = machine(&[
+        addiu(4, 0, 0),
+        lui(5, 0x1122),
+        ori(5, 5, 0x3344),
+        sw(5, 0, 4), // [0] = 0x11223344
+        addiu(6, 0, 8),
+        lui(7, 0xAABB),
+        ori(7, 7, 0xCCDD),
+        sw(7, 0, 6), // [8] = 0xAABBCCDD
+        lui(1, 0x9999),
+        ori(1, 1, 0x9999), // $1 = 0x99999999
+        lw(1, 0, 4),       // in flight: 0x11223344
+        lwl(1, 8, 4),      // merges the top byte of [8] into it
+        nop(),
+        nop(),
+    ]);
+    psx.run(14);
+
+    // Top byte from [8], the rest from the load that was still in flight. If
+    // the in-flight value had not reached the merge at all, the low bytes would
+    // read 0x999999.
+    assert_eq!(psx.cpu.reg(1), 0xDD22_3344);
+}
+
+/// **Unsettled.** Does an `lwl` that merges with a pending load *also* cancel
+/// it, the way a second plain load does?
+///
+/// The two behaviours differ only in what a read inside `lwl`'s own delay slot
+/// sees: the pending load's value (no cancel, what this core does) or the value
+/// from before it (cancel). The reference set documents that chained pairs see
+/// each other's results and that plain loads cancel, but not this crossing of
+/// the two, so the current behaviour is the conservative guess rather than a
+/// known fact.
+///
+/// Written down as an ignored test per the convention in `docs/ref/README.md`:
+/// do not assert an uncertain behaviour. Un-ignore it once hardware settles it,
+/// with whichever expectation turns out to be right.
+#[test]
+#[ignore = "unsettled: see docs/notes/CPU.md open questions"]
+fn lwl_delay_slot_sees_the_cancelled_load() {
+    let mut psx = machine(&[
+        addiu(4, 0, 0),
+        lui(5, 0x1122),
+        ori(5, 5, 0x3344),
+        sw(5, 0, 4), // [0] = 0x11223344
+        addiu(6, 0, 8),
+        lui(7, 0xAABB),
+        ori(7, 7, 0xCCDD),
+        sw(7, 0, 6), // [8] = 0xAABBCCDD
+        lui(1, 0x9999),
+        ori(1, 1, 0x9999), // $1 = 0x99999999
+        lw(1, 0, 4),       // in flight: 0x11223344
+        lwl(1, 8, 4),      // merges, and maybe cancels
+        addiu(2, 1, 0),    // reads $1 in lwl's delay slot: which value?
+        nop(),
+    ]);
+    psx.run(14);
+
+    // This core currently produces 0x11223344 here. The alternative reading is
+    // 0x99999999, the value from before the cancelled load.
+    assert_eq!(psx.cpu.reg(2), 0x9999_9999);
+}
+
 /// `lwl`/`lwr` assemble an unaligned word, and the second of the pair must see
 /// the first's partial result, so they deliberately bypass the load delay.
 #[test]

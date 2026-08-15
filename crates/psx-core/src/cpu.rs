@@ -15,12 +15,21 @@
 //!   with a shadow register file: reads come from `regs`, writes go to
 //!   `out_regs`, and the pending load is applied to `out_regs` *before* the
 //!   instruction executes, so an explicit write by that instruction wins over
-//!   the arriving load. (That precedence is the one part of this taken on
-//!   reasoning rather than a documented statement. `docs/notes/CPU.md` lists
-//!   it as an open question for the conformance suite to settle.)
+//!   the arriving load.
 //!
-//! There is no timing model yet: every instruction is one cycle, and multiply /
-//! divide do not stall. `docs/notes/CPU.md` records what that will cost.
+//!   Three consequences that pull in different directions, so each is pinned by
+//!   its own test: an explicit write in the delay slot **beats** the arriving
+//!   load; a second plain load to the same register **cancels** the first,
+//!   which is therefore never architecturally visible; and `LWL`/`LWR`
+//!   **merge** with a pending load, so the in-flight value has to reach them.
+//!
+//!   `LWL`/`LWR` bypass [`Cpu::set_load`] and assign `load` directly. Whether
+//!   they should *also* cancel is genuinely unsettled: it changes only what a
+//!   read in their own delay slot sees. Not cancelling is the conservative
+//!   choice; see the open questions in `docs/notes/CPU.md`.
+//!
+//! Instructions cost a flat cycle each; see `docs/notes/TIMING.md` for what
+//! that still owes and why it is blocked on the instruction cache.
 
 use crate::bus::Bus;
 use crate::cop0::{Cop0, Exception};
@@ -99,6 +108,14 @@ pub struct Cpu {
     /// The load waiting on the delay slot: `(register, value)`. Register 0 is
     /// the idle marker, which is safe because writes to `$zero` are discarded.
     pub(crate) load: (u8, u32),
+    /// The register the in-flight load was committed into at the start of this
+    /// instruction, and the value it displaced.
+    ///
+    /// Deliberately **not** serialized: both are set at the top of every
+    /// `step` before anything reads them, and save states are only ever taken
+    /// between instructions, so they carry no state across one.
+    cancel_reg: u8,
+    cancel_val: u32,
     /// The instruction just executed took a branch.
     pub(crate) branch: bool,
     /// The instruction currently executing sits in a branch delay slot.
@@ -144,6 +161,8 @@ impl Cpu {
             next_pc: RESET_VECTOR.wrapping_add(4),
             current_pc: 0,
             load: (0, 0),
+            cancel_reg: 0,
+            cancel_val: 0,
             branch: false,
             delay_slot: false,
             cop0: Cop0::new(),
@@ -212,8 +231,36 @@ impl Cpu {
     #[inline]
     fn commit_pending_load(&mut self) {
         let (reg, val) = self.load;
+        self.cancel_reg = reg;
+        self.cancel_val = self.out_regs[reg as usize];
         self.set_reg(reg as u32, val);
         self.load = (0, 0);
+    }
+
+    /// Issue a load into the delay slot.
+    ///
+    /// If a load to the **same register** was already in flight, its value is
+    /// discarded: hardware never makes the first one architecturally visible.
+    ///
+    /// ```asm
+    /// lw   $1, (a)
+    /// lw   $1, (b)
+    /// move $2, $1     ; $2 is the value $1 held before BOTH loads
+    /// ```
+    ///
+    /// The in-flight value has already been written into `out_regs` by
+    /// [`Self::commit_pending_load`] at the top of this instruction, so
+    /// cancelling means putting back what it displaced.
+    ///
+    /// `LWL`/`LWR` must **not** go through here. They are the deliberate
+    /// exception: a chained pair has to see the pending load's value in order
+    /// to merge with it, so they read `out_regs` and assign `load` directly.
+    #[inline]
+    fn set_load(&mut self, reg: u32, val: u32) {
+        if reg != 0 && reg as u8 == self.cancel_reg {
+            self.out_regs[reg as usize] = self.cancel_val;
+        }
+        self.load = (reg as u8, val);
     }
 
     /// Execute one instruction.
@@ -669,7 +716,7 @@ impl Cpu {
             // MFC0. Goes through the load delay slot like a memory load does.
             0x00 => {
                 let v = self.cop0.read(instr.d());
-                self.load = (instr.t() as u8, v);
+                self.set_load(instr.t(), v);
             }
             // MTC0
             0x04 => {
@@ -698,12 +745,12 @@ impl Cpu {
             0x00 => {
                 // MFC2: load-delayed, same as MFC0.
                 let v = self.gte.read_data(instr.d());
-                self.load = (instr.t() as u8, v);
+                self.set_load(instr.t(), v);
             }
             0x02 => {
                 // CFC2
                 let v = self.gte.read_control(instr.d());
-                self.load = (instr.t() as u8, v);
+                self.set_load(instr.t(), v);
             }
             0x04 => {
                 let v = self.reg(instr.t());
@@ -752,13 +799,13 @@ impl Cpu {
     fn op_lb(&mut self, instr: Instruction, bus: &mut Bus) {
         let addr = self.reg(instr.s()).wrapping_add(instr.imm_se());
         let v = bus.load8(addr) as i8 as u32;
-        self.load = (instr.t() as u8, v);
+        self.set_load(instr.t(), v);
     }
 
     fn op_lbu(&mut self, instr: Instruction, bus: &mut Bus) {
         let addr = self.reg(instr.s()).wrapping_add(instr.imm_se());
         let v = bus.load8(addr) as u32;
-        self.load = (instr.t() as u8, v);
+        self.set_load(instr.t(), v);
     }
 
     fn op_lh(&mut self, instr: Instruction, bus: &mut Bus) {
@@ -768,7 +815,7 @@ impl Cpu {
             return;
         }
         let v = bus.load16(addr) as i16 as u32;
-        self.load = (instr.t() as u8, v);
+        self.set_load(instr.t(), v);
     }
 
     fn op_lhu(&mut self, instr: Instruction, bus: &mut Bus) {
@@ -778,7 +825,7 @@ impl Cpu {
             return;
         }
         let v = bus.load16(addr) as u32;
-        self.load = (instr.t() as u8, v);
+        self.set_load(instr.t(), v);
     }
 
     fn op_lw(&mut self, instr: Instruction, bus: &mut Bus) {
@@ -788,7 +835,7 @@ impl Cpu {
             return;
         }
         let v = bus.load32(addr);
-        self.load = (instr.t() as u8, v);
+        self.set_load(instr.t(), v);
     }
 
     /// `LWL`/`LWR` are the unaligned-load pair, and they are the one place the

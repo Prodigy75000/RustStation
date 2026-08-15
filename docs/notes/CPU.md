@@ -101,8 +101,14 @@ states it from the other direction, so it is now documented behaviour.
 `explicit_write_in_the_delay_slot_beats_the_load` in `tests/cpu_semantics.rs` is
 the regression guard.
 
-The **related** rule that is *not* implemented is a second load to the same
-register cancelling the first. See the divergence list below.
+**A second plain load to the same register cancels the first: implemented.**
+The first value is never architecturally visible.
+`a_second_load_cancels_the_first` in `tests/cpu_semantics.rs` pins it, and was
+proven to fail without the cancellation.
+
+`LWL`/`LWR` are the deliberate exception: they merge with a pending load, so
+the in-flight value has to reach them, and they bypass `Cpu::set_load`. Whether
+they should *also* cancel is an open question below.
 
 ## Known divergences from the reference set
 
@@ -112,7 +118,6 @@ are not rediscovered, roughly in order of how much they matter.
 | | What | Consequence |
 |---|---|---|
 | A1 | An interrupt is taken *instead of* a pending GTE command rather than after it, so the command is dropped | Broken geometry in Crash Bandicoot 1-3, Spyro. **Latent** while GTE commands are no-ops; the dispatch bug is in `cpu.rs` and should be fixed alongside the GTE, or it will be misdiagnosed as a GTE bug |
-| A2 | A second load to the same register does not cancel the first | Silently wrong register values. Cheap to fix and worth a unit test before it becomes hard to attribute |
 | B1 | `MFC0` of a nonexistent COP0 register (r0, r1, r2, r4, r10) returns 0 instead of raising Reserved Instruction | None known |
 | B2 | `Cause.CE` is never written, so a handler cannot tell which coprocessor was refused | The BIOS `atof`/`strtod` failure path |
 | B3 | `Cause.BT` and `TAR` (cop0r6) are not set on a delay-slot exception | None known. Cheap, and `next_pc` already holds the target |
@@ -128,21 +133,36 @@ until interrupts could actually fire. See `../notes/TIMING.md` and
 
 These are unsettled. Each names what would settle it.
 
-1. **The I-cache.** Not modelled at all, only isolated-store dropping. Software
+1. **Does `LWL`/`LWR` cancel a pending load as well as merging with it?** A
+   second *plain* load to the same register cancels the first (implemented). An
+   `LWL` merging with a pending load clearly consumes its value, but whether it
+   additionally discards it is not documented either way. The two differ only in
+   what a read inside the `LWL`'s own delay slot sees. This core does not
+   cancel, which is the conservative reading.
+
+   `lwl_delay_slot_sees_the_cancelled_load` in `tests/cpu_semantics.rs` records
+   the alternative as an `#[ignore]`d test, per the convention in
+   `../ref/README.md`. Un-ignore it if hardware says the other thing.
+
+   Worth knowing: `lwl_merges_with_a_pending_load` does **not** distinguish the
+   two, because `op_lwl` samples `out_regs` before any cancellation would
+   apply. That was checked by patching `LWL` to cancel and watching the test
+   stay green, rather than assumed.
+2. **The I-cache.** Not modelled at all, only isolated-store dropping. Software
    that writes code and jumps into it without a cache flush behaves differently
    on hardware. UltraRust found exactly this to be a shared boot-blocker on N64,
    so it is worth pricing early rather than discovering late.
-2. **Scratchpad through KSEG1.** On hardware the scratchpad is the data cache
+3. **Scratchpad through KSEG1.** On hardware the scratchpad is the data cache
    and so is not reachable uncached. The bus currently serves it through every
    segment. Serving an access that hardware would fault makes a real bug look
    like working code.
-3. **Instruction cycle costs.** Every instruction is one cycle, and
+4. **Instruction cycle costs.** Every instruction is one cycle, and
    multiply/divide do not stall `MFHI`/`MFLO`. The scheduler itself now exists
    and runs off a real master clock, so this is the remaining axis rather than
    the whole gap. See [`TIMING.md`](TIMING.md), which also explains why
    `cpu/access-time` cannot pass until there is an I-cache.
-4. **COP0 register reads on unassigned indices** return zero here for r16 to
+5. **COP0 register reads on unassigned indices** return zero here for r16 to
    r31. Deterministic, which save states require; the documented model is "the
    last value read from a valid COP0 register". The r0/r1/r2/r4/r10 case should
    raise Reserved Instruction instead, which is divergence B1 above.
-5. **`PRID`** is set to `0x00000002`. Confirmed by the reference set.
+6. **`PRID`** is set to `0x00000002`. Confirmed by the reference set.
