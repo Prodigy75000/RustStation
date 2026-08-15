@@ -277,8 +277,10 @@ fn an_exception_commits_the_pending_load_before_the_handler_runs() {
 /// GTE command then loses a geometry operation.
 #[test]
 fn an_interrupt_does_not_swallow_a_gte_command() {
-    // COP2 command form: opcode 0x12, bit 25 set.
-    const GTE_COMMAND: u32 = 0x4A00_0001;
+    // COP2 command form: opcode 0x12, bit 25 set. Opcode 0 is not a real GTE
+    // command, which makes `unknown_commands` a clean probe for "did the
+    // instruction dispatch at all", independent of what any command computes.
+    const GTE_COMMAND: u32 = 0x4A00_0000;
 
     let mut psx = machine(&[
         lui(1, 0x1F80),
@@ -297,14 +299,14 @@ fn an_interrupt_does_not_swallow_a_gte_command() {
     for _ in 0..8 {
         psx.step();
     }
-    assert_eq!(psx.cpu.gte.unimplemented_commands, 0, "ran too early");
+    assert_eq!(psx.cpu.gte.unknown_commands, 0, "ran too early");
 
     // Interrupt exactly on the GTE command.
     psx.bus.raise_irq(irq::VBLANK);
     psx.step();
 
     assert_eq!(
-        psx.cpu.gte.unimplemented_commands, 1,
+        psx.cpu.gte.unknown_commands, 1,
         "the GTE command was skipped by the interrupt"
     );
     assert_ne!(psx.cpu.pc, BEV_HANDLER, "the interrupt should have deferred");

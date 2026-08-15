@@ -43,7 +43,9 @@ pub const MAGIC: &[u8; 8] = b"RSTAPSX1";
 ///   video timing, root counters).
 /// * 3: adds the GPU (including 1 MB of VRAM, which doubles the state) and the
 ///   DMA controller.
-pub const FORMAT_VERSION: u16 = 3;
+/// * 4: the GTE gains real state, serialized as its logical fields rather than
+///   as the register slots software sees.
+pub const FORMAT_VERSION: u16 = 4;
 
 const HEADER_BYTES: usize = 8 + 2;
 const CPU_BYTES: usize = 32 * 4     // regs
@@ -53,7 +55,23 @@ const CPU_BYTES: usize = 32 * 4     // regs
     + 1 + 1                         // branch, delay_slot
     + 8; // cycles
 const COP0_BYTES: usize = 11 * 4;
-const GTE_BYTES: usize = 64 * 4;
+/// The GTE's logical state, not its 64 register slots. See `write_cpu`.
+const GTE_BYTES: usize = 9 * 2      // V0..V2
+    + 4                             // RGBC
+    + 2                             // OTZ
+    + 4 * 2                         // IR0..IR3
+    + 3 * 4                         // screen XY FIFO
+    + 4 * 2                         // screen Z FIFO
+    + 3 * 4                         // colour FIFO
+    + 4                             // RES1
+    + 4 * 4                         // MAC0..MAC3
+    + 4 + 4                         // LZCS, LZCR
+    + 3 * 9 * 2                     // RT, LLM, LCM
+    + 3 * 3 * 4                     // TR, BK, FC
+    + 2 * 4                         // screen offset
+    + 2 + 2 + 4                     // H, DQA, DQB
+    + 2 + 2                         // ZSF3, ZSF4
+    + 4; // FLAG
 const BUS_BYTES: usize = 4 + bus::RAM_SIZE   // length-prefixed RAM
     + 4 + bus::SCRATCHPAD_SIZE               // length-prefixed scratchpad
     + 9 * 4                                  // mem_ctrl
@@ -218,10 +236,60 @@ fn write_cpu(w: &mut Writer, cpu: &Cpu) {
     w.u32(cpu.cop0.epc);
     w.u32(cpu.cop0.prid);
 
-    // COP2 (GTE) register file. Serialized even though the commands are not
-    // implemented, so landing them later does not move the layout.
-    w.u32s(&cpu.gte.data);
-    w.u32s(&cpu.gte.control);
+    // COP2 (GTE). Serialized as its logical fields rather than as the 64
+    // register slots software sees, because several of those slots are derived
+    // views: IRGB is IR1..IR3 squeezed to five bits each, so round-tripping
+    // through the register interface would quietly lose precision.
+    let (v, rgbc, otz, ir, sxy, sz, rgb, res1, mac, lzcs, lzcr) = cpu.gte.data_parts();
+    for vec in &v {
+        for c in vec {
+            w.u16(*c as u16);
+        }
+    }
+    w.bytes(&rgbc);
+    w.u16(otz);
+    for i in &ir {
+        w.u16(*i as u16);
+    }
+    for (x, y) in &sxy {
+        w.u16(*x as u16);
+        w.u16(*y as u16);
+    }
+    for z in &sz {
+        w.u16(*z);
+    }
+    for c in &rgb {
+        w.bytes(c);
+    }
+    w.u32(res1);
+    for m in &mac {
+        w.u32(*m as u32);
+    }
+    w.u32(lzcs);
+    w.u32(lzcr);
+
+    let (rt, tr, llm, bk, lcm, fc, of, h, dqa, dqb, zsf3, zsf4, flag) =
+        cpu.gte.control_parts();
+    for m in [&rt, &llm, &lcm] {
+        for row in m {
+            for c in row {
+                w.u16(*c as u16);
+            }
+        }
+    }
+    for t in [&tr, &bk, &fc] {
+        for c in t {
+            w.u32(*c as u32);
+        }
+    }
+    w.u32(of[0] as u32);
+    w.u32(of[1] as u32);
+    w.u16(h);
+    w.u16(dqa as u16);
+    w.u32(dqb as u32);
+    w.u16(zsf3 as u16);
+    w.u16(zsf4 as u16);
+    w.u32(flag);
 }
 
 fn write_bus(w: &mut Writer, b: &Bus) {
@@ -341,8 +409,70 @@ fn read_cpu(r: &mut Reader, cpu: &mut Cpu) -> Option<()> {
     cpu.cop0.epc = r.u32()?;
     cpu.cop0.prid = r.u32()?;
 
-    r.u32s(&mut cpu.gte.data)?;
-    r.u32s(&mut cpu.gte.control)?;
+    let mut v = [[0i16; 3]; 3];
+    for vec in v.iter_mut() {
+        for c in vec.iter_mut() {
+            *c = r.u16()? as i16;
+        }
+    }
+    let mut rgbc = [0u8; 4];
+    for b in rgbc.iter_mut() {
+        *b = r.u8()?;
+    }
+    let otz = r.u16()?;
+    let mut ir = [0i16; 4];
+    for i in ir.iter_mut() {
+        *i = r.u16()? as i16;
+    }
+    let mut sxy = [(0i16, 0i16); 3];
+    for s in sxy.iter_mut() {
+        *s = (r.u16()? as i16, r.u16()? as i16);
+    }
+    let mut sz = [0u16; 4];
+    for z in sz.iter_mut() {
+        *z = r.u16()?;
+    }
+    let mut rgb = [[0u8; 4]; 3];
+    for c in rgb.iter_mut() {
+        for b in c.iter_mut() {
+            *b = r.u8()?;
+        }
+    }
+    let res1 = r.u32()?;
+    let mut mac = [0i32; 4];
+    for m in mac.iter_mut() {
+        *m = r.u32()? as i32;
+    }
+    let lzcs = r.u32()?;
+    let lzcr = r.u32()?;
+    cpu.gte
+        .restore_data(v, rgbc, otz, ir, sxy, sz, rgb, res1, mac, lzcs, lzcr);
+
+    let mut mats = [[[0i16; 3]; 3]; 3];
+    for m in mats.iter_mut() {
+        for row in m.iter_mut() {
+            for c in row.iter_mut() {
+                *c = r.u16()? as i16;
+            }
+        }
+    }
+    let mut vecs = [[0i32; 3]; 3];
+    for t in vecs.iter_mut() {
+        for c in t.iter_mut() {
+            *c = r.u32()? as i32;
+        }
+    }
+    let of = [r.u32()? as i32, r.u32()? as i32];
+    let h = r.u16()?;
+    let dqa = r.u16()? as i16;
+    let dqb = r.u32()? as i32;
+    let zsf3 = r.u16()? as i16;
+    let zsf4 = r.u16()? as i16;
+    let flag = r.u32()?;
+    cpu.gte.restore_control(
+        mats[0], vecs[0], mats[1], vecs[1], mats[2], vecs[2], of, h, dqa, dqb, zsf3, zsf4, flag,
+    );
+
     Some(())
 }
 
@@ -571,10 +701,13 @@ mod tests {
         psx.cpu.cop0.bdam = 0x5555_5555;
         psx.cpu.cop0.bpcm = 0x6666_6666;
 
-        for i in 0..32 {
-            psx.cpu.gte.data[i] = 0x0BAD_0000 | i as u32;
-            psx.cpu.gte.control[i] = 0x0C0C_0000 | i as u32;
+        // Drive the GTE through its register interface, then run a command, so
+        // the snapshot holds real derived state rather than a pattern.
+        for i in 0..32u32 {
+            psx.cpu.gte.write_data(i, 0x0BAD_0000 | i);
+            psx.cpu.gte.write_control(i, 0x0C0C_0000 | i);
         }
+        psx.cpu.gte.command(0x0018_0001); // RTPS
 
         for i in 0..4096usize {
             psx.bus.ram[i * 373 % bus::RAM_SIZE] = (i * 11 + 5) as u8;
@@ -646,15 +779,15 @@ mod tests {
 
         // Header, byte for byte.
         assert_eq!(&snap[0..8], MAGIC);
-        assert_eq!(&snap[8..10], &[0x03, 0x00]);
+        assert_eq!(&snap[8..10], &[0x04, 0x00]);
 
         // Total length, pinned to a literal, deliberately NOT compared against
         // `Psx::state_size()`, which would only compare the layout to itself.
-        assert_eq!(snap.len(), 3_147_769);
+        assert_eq!(snap.len(), 3_147_719);
 
         // Whole-buffer checksum: any added, removed, reordered or re-widened
         // field moves it.
-        assert_eq!(fnv1a64(&snap), 0xF7BE_096A_DE82_FA61);
+        assert_eq!(fnv1a64(&snap), 0x2E82_799E_DFA3_59D5);
     }
 
     #[test]
@@ -686,8 +819,18 @@ mod tests {
         assert_eq!(src.cpu.next_pc, dst.cpu.next_pc);
         assert_eq!(src.cpu.pending_load(), dst.cpu.pending_load());
         assert_eq!(src.cpu.cop0.sr, dst.cpu.cop0.sr);
-        assert_eq!(src.cpu.gte.data, dst.cpu.gte.data);
-        assert_eq!(src.cpu.gte.control, dst.cpu.gte.control);
+        for i in 0..32 {
+            assert_eq!(
+                src.cpu.gte.read_data(i),
+                dst.cpu.gte.read_data(i),
+                "GTE data register {i}"
+            );
+            assert_eq!(
+                src.cpu.gte.read_control(i),
+                dst.cpu.gte.read_control(i),
+                "GTE control register {i}"
+            );
+        }
     }
 
     /// Two independently constructed machines, driven identically, must

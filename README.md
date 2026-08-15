@@ -62,6 +62,9 @@ Working, and confirmed against real hardware behaviour rather than asserted:
   seven of eleven are within 1.3%. See [`docs/TESTS.md`](docs/TESTS.md).
 - **DMA**: channel 2 (block and linked-list) and channel 6 (ordering table),
   which is what makes the GPU reachable at all.
+- **GTE**: all 15 commands, the register file and the hardware divider.
+  Implemented but **not yet conformant**: `gte/test-all` passes its register
+  tests and 19 opcode cases before stopping on a specific known failure.
 - **BIOS TTY capture** through the A/B call gates, so a test binary's own verdict
   is readable without a screen.
 - **PSX-EXE sideload** at the BIOS shell hand-over point.
@@ -73,8 +76,6 @@ Working, and confirmed against real hardware behaviour rather than asserted:
 Not started:
 
 - SPU, CD-ROM, controllers, memory cards.
-- The GTE's 15 commands. The register file exists and is serialized; the
-  commands are counted and dropped.
 - Per-instruction cycle costs. Every instruction is one cycle and
   multiply/divide do not stall.
 

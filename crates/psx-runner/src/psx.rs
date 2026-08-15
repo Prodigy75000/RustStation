@@ -120,7 +120,10 @@ fn main() -> ExitCode {
         "bus: {} stub reads, {} stub writes, {} unmapped reads, {} unmapped writes",
         psx.bus.stub_reads, psx.bus.stub_writes, psx.bus.unmapped_reads, psx.bus.unmapped_writes
     );
-    println!("gte: {} commands dropped", psx.cpu.gte.unimplemented_commands);
+    println!(
+        "gte: {} unknown commands, flag={:#010X}",
+        psx.cpu.gte.unknown_commands, psx.cpu.gte.flag
+    );
 
     ExitCode::SUCCESS
 }
