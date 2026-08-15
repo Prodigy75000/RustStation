@@ -1,0 +1,12 @@
+[package]
+name = "psx-core"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "A clean-room Sony PlayStation (PS1) emulator core, written from scratch in Rust. Codename RustStation. Byte-identical-save-state by construction for cross-engine netplay."
+
+[lib]
+name = "psx_core"
+path = "src/lib.rs"
+
+[dependencies]

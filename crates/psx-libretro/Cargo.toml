@@ -1,0 +1,15 @@
+[package]
+name = "psx-libretro"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "libretro C ABI front-end for the RustStation clean-room PlayStation core."
+
+[lib]
+# cdylib -> libpsxcore_libretro.so; renamed to the libretro convention on
+# deploy (ruststation_psx). Deploys to Trophy Hub as its own .so.
+name = "psxcore_libretro"
+crate-type = ["cdylib"]
+
+[dependencies]
+psx-core = { path = "../psx-core" }

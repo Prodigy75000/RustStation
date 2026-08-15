@@ -1,0 +1,12 @@
+# Normalise to LF in the repo and on checkout, on every platform.
+#
+# This is not cosmetic: scripts/deploy-android-debug.sh runs under bash on the
+# NDK path, and a CRLF checkout breaks its shebang in a way that reads as a
+# missing interpreter. Windows autocrlf would otherwise do exactly that.
+* text=auto eol=lf
+
+*.bin binary
+*.exe binary
+*.png binary
+*.pdf binary
+*.zip binary

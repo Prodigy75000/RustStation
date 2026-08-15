@@ -1,0 +1,301 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Prodigy75000
+
+//! Hand-assembled tests for the R3000A behaviours that are easy to get wrong
+//! and hard to notice: the two delay slots, the unaligned load/store pairs,
+//! divide-by-zero's fixed junk, overflow trapping, and cache isolation.
+//!
+//! These are *not* a substitute for a conformance suite. They are the floor
+//! that keeps a refactor honest between suite runs. Programs are written into
+//! a synthetic BIOS image so no copyrighted dump is needed.
+
+use psx_core::{bus, Psx};
+
+// ---- a very small assembler ------------------------------------------------
+
+fn i_type(op: u32, rs: u32, rt: u32, imm: u32) -> u32 {
+    (op << 26) | (rs << 21) | (rt << 16) | (imm & 0xFFFF)
+}
+
+fn r_type(rs: u32, rt: u32, rd: u32, shamt: u32, funct: u32) -> u32 {
+    (rs << 21) | (rt << 16) | (rd << 11) | (shamt << 6) | funct
+}
+
+fn nop() -> u32 {
+    0
+}
+fn addiu(rt: u32, rs: u32, imm: i32) -> u32 {
+    i_type(0x09, rs, rt, imm as u32)
+}
+fn addi(rt: u32, rs: u32, imm: i32) -> u32 {
+    i_type(0x08, rs, rt, imm as u32)
+}
+fn ori(rt: u32, rs: u32, imm: u32) -> u32 {
+    i_type(0x0D, rs, rt, imm)
+}
+fn lui(rt: u32, imm: u32) -> u32 {
+    i_type(0x0F, 0, rt, imm)
+}
+fn lw(rt: u32, off: i32, rs: u32) -> u32 {
+    i_type(0x23, rs, rt, off as u32)
+}
+fn lwl(rt: u32, off: i32, rs: u32) -> u32 {
+    i_type(0x22, rs, rt, off as u32)
+}
+fn lwr(rt: u32, off: i32, rs: u32) -> u32 {
+    i_type(0x26, rs, rt, off as u32)
+}
+fn sw(rt: u32, off: i32, rs: u32) -> u32 {
+    i_type(0x2B, rs, rt, off as u32)
+}
+fn beq(rs: u32, rt: u32, off: i32) -> u32 {
+    i_type(0x04, rs, rt, off as u32)
+}
+fn jal(target: u32) -> u32 {
+    (0x03 << 26) | ((target & 0x0FFF_FFFF) >> 2)
+}
+fn mtc0(rt: u32, rd: u32) -> u32 {
+    (0x10 << 26) | (0x04 << 21) | (rt << 16) | (rd << 11)
+}
+fn div(rs: u32, rt: u32) -> u32 {
+    r_type(rs, rt, 0, 0, 0x1A)
+}
+fn mfhi(rd: u32) -> u32 {
+    r_type(0, 0, rd, 0, 0x10)
+}
+fn mflo(rd: u32) -> u32 {
+    r_type(0, 0, rd, 0, 0x12)
+}
+
+const RESET: u32 = 0xBFC0_0000;
+
+/// A machine whose BIOS is the given program, starting at the reset vector.
+fn machine(program: &[u32]) -> Psx {
+    let mut bios = vec![0u8; bus::BIOS_SIZE];
+    for (i, word) in program.iter().enumerate() {
+        bios[i * 4..i * 4 + 4].copy_from_slice(&word.to_le_bytes());
+    }
+    Psx::new(bios).expect("synthetic BIOS is the right size")
+}
+
+// ---- tests -----------------------------------------------------------------
+
+/// The instruction after a taken branch runs anyway, and the branch target is
+/// relative to the *delay slot*, not to the branch.
+#[test]
+fn branch_delay_slot_executes() {
+    // beq $0, $0, +2   (skips the instruction after the delay slot)
+    // addiu $1, $0, 7  <- delay slot, must run
+    // addiu $2, $0, 9  <- must be skipped
+    // addiu $3, $0, 11 <- branch lands here
+    let mut psx = machine(&[
+        beq(0, 0, 2),
+        addiu(1, 0, 7),
+        addiu(2, 0, 9),
+        addiu(3, 0, 11),
+    ]);
+    psx.run(3);
+
+    assert_eq!(psx.cpu.reg(1), 7, "delay slot did not execute");
+    assert_eq!(psx.cpu.reg(2), 0, "instruction after the delay slot was not skipped");
+    assert_eq!(psx.cpu.reg(3), 11, "branch landed in the wrong place");
+}
+
+/// `jal` links to the instruction *after* the delay slot.
+#[test]
+fn jal_links_past_the_delay_slot() {
+    let target = RESET + 0x40;
+    let mut psx = machine(&[jal(target), addiu(1, 0, 7)]);
+    psx.run(2);
+
+    assert_eq!(psx.cpu.reg(31), RESET + 8);
+    assert_eq!(psx.cpu.reg(1), 7);
+    assert_eq!(psx.cpu.pc, target);
+}
+
+/// A load's result is invisible to the very next instruction.
+#[test]
+fn load_delay_slot_hides_the_result() {
+    let mut psx = machine(&[
+        addiu(1, 0, 0x0AAA), // r1 = 0xAAA
+        addiu(4, 0, 0),      // r4 = 0 (RAM address 0)
+        sw(1, 0, 4),         // [0] = 0xAAA
+        addiu(1, 0, 0x0BBB), // r1 = 0xBBB
+        lw(1, 0, 4),         // r1 <- 0xAAA, but not yet
+        addiu(2, 1, 0),      // delay slot: sees the OLD r1
+        addiu(3, 1, 0),      // sees the loaded value
+    ]);
+    psx.run(7);
+
+    assert_eq!(psx.cpu.reg(2), 0x0BBB, "delay slot saw the loaded value too early");
+    assert_eq!(psx.cpu.reg(3), 0x0AAA, "loaded value never landed");
+}
+
+/// An explicit write in the load delay slot beats the arriving load. This is
+/// the one piece of delay-slot behaviour taken on reasoning rather than a
+/// documented statement. If a conformance suite disagrees, this test is where
+/// the disagreement gets recorded.
+#[test]
+fn explicit_write_in_the_delay_slot_beats_the_load() {
+    let mut psx = machine(&[
+        addiu(1, 0, 0x0AAA),
+        addiu(4, 0, 0),
+        sw(1, 0, 4),
+        lw(1, 0, 4),         // r1 <- 0xAAA, pending
+        addiu(1, 0, 0x0CCC), // ... but this writes r1 in the same slot
+        nop(),
+    ]);
+    psx.run(6);
+
+    assert_eq!(psx.cpu.reg(1), 0x0CCC);
+}
+
+/// `lwl`/`lwr` assemble an unaligned word, and the second of the pair must see
+/// the first's partial result, so they deliberately bypass the load delay.
+#[test]
+fn unaligned_load_pair_merges() {
+    // Put 0x11223344 at [0] and 0x55667788 at [4], then read the word at
+    // address 1: little-endian, that is bytes [1],[2],[3],[4] = 0x88112233.
+    let mut psx = machine(&[
+        lui(1, 0x1122),
+        ori(1, 1, 0x3344),
+        addiu(4, 0, 0),
+        sw(1, 0, 4),
+        lui(2, 0x5566),
+        ori(2, 2, 0x7788),
+        sw(2, 4, 4),
+        lwr(3, 1, 4),
+        lwl(3, 4, 4),
+        nop(),
+    ]);
+    psx.run(10);
+
+    assert_eq!(psx.cpu.reg(3), 0x8811_2233);
+}
+
+/// Divide by zero does not trap on this part; it produces fixed values that
+/// unchecked code depends on.
+#[test]
+fn divide_by_zero_returns_hardware_junk() {
+    let mut psx = machine(&[
+        addiu(1, 0, 5),
+        addiu(2, 0, 0),
+        div(1, 2),
+        mflo(3),
+        mfhi(4),
+        nop(),
+    ]);
+    psx.run(6);
+
+    assert_eq!(psx.cpu.reg(3), 0xFFFF_FFFF, "lo should be -1 for a non-negative dividend");
+    assert_eq!(psx.cpu.reg(4), 5, "hi should be the dividend");
+}
+
+/// `addi` traps on signed overflow (and leaves its target alone); `addiu` does
+/// not, despite the name: the `u` means "no trap", not "unsigned".
+#[test]
+fn addi_traps_on_overflow_and_addiu_does_not() {
+    let mut psx = machine(&[
+        lui(1, 0x7FFF),
+        ori(1, 1, 0xFFFF), // r1 = 0x7FFFFFFF
+        addi(2, 1, 1),     // overflow -> exception
+        nop(),
+    ]);
+    psx.run(3);
+
+    assert_eq!(psx.cpu.reg(2), 0, "the trapping add must not write its target");
+    assert_eq!(psx.cpu.pc, 0xBFC0_0180, "did not vector to the BEV handler");
+    assert_eq!((psx.cpu.cop0.cause >> 2) & 0x1F, 0xC, "wrong exception code");
+    assert_eq!(psx.cpu.cop0.epc, RESET + 8, "EPC does not name the faulting add");
+
+    let mut psx = machine(&[lui(1, 0x7FFF), ori(1, 1, 0xFFFF), addiu(2, 1, 1), nop()]);
+    psx.run(4);
+    assert_eq!(psx.cpu.reg(2), 0x8000_0000);
+    assert_eq!(psx.cpu.pc, RESET + 0x10);
+}
+
+/// An exception taken from a delay slot points EPC at the *branch*, and sets
+/// Cause bit 31 so the handler knows to expect it.
+#[test]
+fn exception_in_a_delay_slot_backs_up_to_the_branch() {
+    let mut psx = machine(&[
+        lui(1, 0x7FFF),
+        ori(1, 1, 0xFFFF),
+        beq(0, 0, 4),  // taken branch at RESET + 8
+        addi(2, 1, 1), // delay slot: overflows
+        nop(),
+    ]);
+    psx.run(4);
+
+    assert_eq!(psx.cpu.cop0.epc, RESET + 8, "EPC should name the branch");
+    assert_ne!(psx.cpu.cop0.cause & (1 << 31), 0, "Cause BD not set");
+}
+
+/// With Status Isc set, stores go to the I-cache rather than memory. The cache
+/// is not modelled, so the write must be *dropped*. Writing RAM anyway is how
+/// a core corrupts memory during the BIOS's boot-time cache scrub.
+#[test]
+fn isolated_cache_swallows_stores() {
+    let mut psx = machine(&[
+        addiu(4, 0, 0),
+        addiu(1, 0, 0x0777),
+        lui(5, 0x0001),  // r5 = 0x00010000, Status Isc
+        mtc0(5, 12),     // SR = Isc (BEV cleared too, which is fine here)
+        sw(1, 0, 4),     // dropped
+        mtc0(0, 12),     // SR = 0
+        lw(2, 0, 4),     // reads RAM
+        nop(),
+        nop(),
+    ]);
+    psx.run(9);
+
+    assert_eq!(psx.cpu.reg(2), 0, "an isolated-cache store reached RAM");
+    assert_eq!(psx.bus.ram[0], 0);
+}
+
+/// Coprocessor usability is decided by the Status CU bit alone, not by whether
+/// the coprocessor is fitted. COP1 does not exist on this machine, so with CU1
+/// set a COP1 instruction is simply accepted and does nothing.
+///
+/// Settled by `cpu/cop` in the ps1-tests suite, which is also what caught the
+/// original "no FPU, therefore always trap" reading.
+#[test]
+fn coprocessor_usability_follows_the_status_bit() {
+    const COP1_OP: u32 = 0x11 << 26;
+
+    // CU1 clear at reset: traps, and BEV is set so it vectors into ROM.
+    let mut psx = machine(&[COP1_OP, nop()]);
+    psx.run(1);
+    assert_eq!(psx.cpu.pc, 0xBFC0_0180);
+    assert_eq!((psx.cpu.cop0.cause >> 2) & 0x1F, 0xB, "expected CoprocessorError");
+
+    // CU1 set (Status bit 29): accepted, and execution simply continues.
+    let mut psx = machine(&[
+        lui(5, 0x2000),
+        mtc0(5, 12),
+        COP1_OP,
+        nop(),
+    ]);
+    psx.run(4);
+    assert_eq!(psx.cpu.pc, RESET + 0x10, "a usable coprocessor must not trap");
+    assert_eq!((psx.cpu.cop0.cause >> 2) & 0x1F, 0, "no exception should have been taken");
+}
+
+/// An unrecognised COP0 sub-opcode is ignored, not a reserved-instruction trap.
+#[test]
+fn unknown_cop0_subopcode_does_not_trap() {
+    let mut psx = machine(&[(0x10 << 26) | (0x08 << 21), nop()]);
+    psx.run(1);
+    assert_eq!(psx.cpu.pc, RESET + 4);
+}
+
+/// Retail RAM is 2 MB, mirrored across the 8 MB KUSEG window.
+#[test]
+fn ram_mirrors_across_the_kuseg_window() {
+    let mut psx = machine(&[]);
+    psx.bus.store32(0x0000_0010, 0xCAFE_F00D);
+
+    assert_eq!(psx.bus.load32(0x0020_0010), 0xCAFE_F00D, "2 MB mirror");
+    assert_eq!(psx.bus.load32(0x8000_0010), 0xCAFE_F00D, "KSEG0 view");
+    assert_eq!(psx.bus.load32(0xA000_0010), 0xCAFE_F00D, "KSEG1 view");
+}

@@ -1,0 +1,36 @@
+/target
+
+# Console BIOS images. SCPH-xxxx BIOS dumps are copyrighted Sony code and can
+# never be committed, in any region or revision. Bring your own dump; the
+# tracked bios/README.md says which ones the core expects and how it checks them.
+/bios/*
+!/bios/README.md
+
+# Commercial disc images, PSX-EXE test binaries, save states, memory cards,
+# classifier output: ALL of it stays out of git. Blanket-ignore the whole
+# dumps/ tree so no copyrighted image can be committed regardless of subfolder.
+/dumps/*
+!/dumps/README.md
+
+# Hardware documentation. Third-party reference material (the MIPS R3000
+# manuals, Sony service manuals, psx-spx mirrors) is not ours to redistribute,
+# even when it is freely available, so only our own markdown is tracked under
+# docs/. Raw drops can land anywhere in here and stay untracked either way.
+/docs/**
+!/docs/**/
+!/docs/**/*.md
+# ... except in ref/, which is raw drops by definition.
+/docs/ref/**
+!/docs/ref/README.md
+
+# Vendored third-party test suites (ps1-tests and friends): binaries plus their
+# reference logs. Not ours to redistribute, and large. Bring your own, the same
+# way FamiRust treats the TomHarte vectors. `testrom --dir` walks whatever path
+# it is given, so nothing here is load-bearing for the build.
+/tests/
+
+# Headless render / audio / TTY dumps from the dev harnesses.
+/out/
+
+# Local convenience junction -> TrophyHubAndroid app jniLibs (deploy target)
+android-jnilibs/
