@@ -29,7 +29,10 @@ pub mod cop0;
 pub mod cpu;
 pub mod exe;
 pub mod gte;
+pub mod irq;
 pub mod save;
+pub mod timers;
+pub mod video;
 
 use bus::{Bus, BiosError};
 use cpu::Cpu;

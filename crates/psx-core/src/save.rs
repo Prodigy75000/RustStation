@@ -28,6 +28,7 @@
 
 use crate::bus::{self, Bus};
 use crate::cpu::Cpu;
+use crate::video::Standard;
 use crate::Psx;
 
 /// Core magic. The trailing digit is a generation marker: it only changes if
@@ -35,7 +36,12 @@ use crate::Psx;
 pub const MAGIC: &[u8; 8] = b"RSTAPSX1";
 
 /// Bump on **any** layout change.
-pub const FORMAT_VERSION: u16 = 1;
+///
+/// History:
+/// * 1: CPU, COP0, GTE register file, RAM, scratchpad, memory control.
+/// * 2: adds the master clock and the timed devices (interrupt controller,
+///   video timing, root counters).
+pub const FORMAT_VERSION: u16 = 2;
 
 const HEADER_BYTES: usize = 8 + 2;
 const CPU_BYTES: usize = 32 * 4     // regs
@@ -49,7 +55,15 @@ const GTE_BYTES: usize = 64 * 4;
 const BUS_BYTES: usize = 4 + bus::RAM_SIZE   // length-prefixed RAM
     + 4 + bus::SCRATCHPAD_SIZE               // length-prefixed scratchpad
     + 9 * 4                                  // mem_ctrl
-    + 4 * 4; // ram_size, cache_ctrl, i_stat, i_mask
+    + 4 * 2                                  // ram_size, cache_ctrl
+    + 8 * 3                                  // cycle, next_event, synced_to
+    + TIMED_BYTES;
+
+/// The timed devices, added in format version 2.
+const TIMED_BYTES: usize = 2 + 2                  // irq: stat, mask
+    + 1 + 8 + 4 + 8 + 8 + 8 + 1 + 8               // video
+    + 3 * (2 + 2 + 2 + 4 + 1 + 1)                 // three root counters
+    + 8; // timers.sync_uses
 
 /// Exact serialized length for [`FORMAT_VERSION`]. Derived from the field
 /// widths above rather than from `save_state().len()`, so a test that pins it
@@ -197,8 +211,41 @@ fn write_bus(w: &mut Writer, b: &Bus) {
     w.u32s(&b.mem_ctrl);
     w.u32(b.ram_size);
     w.u32(b.cache_ctrl);
-    w.u32(b.i_stat);
-    w.u32(b.i_mask);
+
+    // The master clock and the scheduler's bookkeeping. `synced_to` has to be
+    // in the stream: without it a restored machine would replay, or skip, the
+    // cycles between the last device sync and the moment the state was taken.
+    w.u64(b.cycle);
+    w.u64(b.next_event_raw());
+    w.u64(b.synced_to_raw());
+
+    w.u16(b.irq.stat());
+    w.u16(b.irq.mask());
+
+    w.u8(match b.video.standard() {
+        Standard::Ntsc => 0,
+        Standard::Pal => 1,
+    });
+    let (dot_in_line, line, clock_frac, dot_frac, dot_divider, in_vblank, frames) =
+        b.video.parts();
+    w.u64(dot_in_line);
+    w.u32(line);
+    w.u64(clock_frac);
+    w.u64(dot_frac);
+    w.u64(dot_divider);
+    w.bool(in_vblank);
+    w.u64(frames);
+
+    for index in 0..3 {
+        let (counter, mode, target, div8, irq_fired, sync_released) = b.timers.parts(index);
+        w.u16(counter);
+        w.u16(mode);
+        w.u16(target);
+        w.u32(div8);
+        w.bool(irq_fired);
+        w.bool(sync_released);
+    }
+    w.u64(b.timers.sync_uses);
 }
 
 fn read_cpu(r: &mut Reader, cpu: &mut Cpu) -> Option<()> {
@@ -246,8 +293,51 @@ fn read_bus(r: &mut Reader, b: &mut Bus) -> Option<()> {
     r.u32s(&mut b.mem_ctrl)?;
     b.ram_size = r.u32()?;
     b.cache_ctrl = r.u32()?;
-    b.i_stat = r.u32()?;
-    b.i_mask = r.u32()?;
+
+    let cycle = r.u64()?;
+    let next_event = r.u64()?;
+    let synced_to = r.u64()?;
+    b.restore_clock(cycle, next_event, synced_to);
+
+    let stat = r.u16()?;
+    let mask = r.u16()?;
+    b.irq.restore(stat, mask);
+
+    let standard = if r.u8()? == 0 {
+        Standard::Ntsc
+    } else {
+        Standard::Pal
+    };
+    let dot_in_line = r.u64()?;
+    let line = r.u32()?;
+    let clock_frac = r.u64()?;
+    let dot_frac = r.u64()?;
+    let dot_divider = r.u64()?;
+    let in_vblank = r.bool()?;
+    let frames = r.u64()?;
+    b.video.restore(
+        standard,
+        dot_in_line,
+        line,
+        clock_frac,
+        dot_frac,
+        dot_divider,
+        in_vblank,
+        frames,
+    );
+
+    for index in 0..3 {
+        let counter = r.u16()?;
+        let mode = r.u16()?;
+        let target = r.u16()?;
+        let div8 = r.u32()?;
+        let irq_fired = r.bool()?;
+        let sync_released = r.bool()?;
+        b.timers
+            .restore(index, counter, mode, target, div8, irq_fired, sync_released);
+    }
+    b.timers.sync_uses = r.u64()?;
+
     Some(())
 }
 
@@ -386,8 +476,16 @@ mod tests {
         psx.bus.store32(0x1F80_1000, 0x1F00_0000);
         psx.bus.store32(0x1F80_1060, 0x0000_0B88);
         psx.bus.store32(0xFFFE_0130, 0x0001_E988);
-        psx.bus.i_mask = 0x0000_0FFF;
-        psx.bus.i_stat = 0x0000_0001;
+
+        // The timed devices, put somewhere non-trivial: a part-way scanline, a
+        // non-zero clock remainder, and three root counters in different modes.
+        psx.bus.store32(0x1F80_1074, 0x0000_0FFF); // I_MASK
+        psx.bus.store32(0x1F80_1108, 977); // timer 0 target
+        psx.bus.store32(0x1F80_1104, 0x0058); // timer 0 mode: target IRQ, repeat
+        psx.bus.store32(0x1F80_1114, 1 << 8); // timer 1 from HBlank
+        psx.bus.store32(0x1F80_1124, 2 << 8); // timer 2 from sysclock/8
+        psx.bus.tick(123_457);
+        psx.bus.raise_irq(crate::irq::VBLANK);
 
         psx
     }
@@ -406,15 +504,15 @@ mod tests {
 
         // Header, byte for byte.
         assert_eq!(&snap[0..8], MAGIC);
-        assert_eq!(&snap[8..10], &[0x01, 0x00]);
+        assert_eq!(&snap[8..10], &[0x02, 0x00]);
 
         // Total length, pinned to a literal, deliberately NOT compared against
         // `Psx::state_size()`, which would only compare the layout to itself.
-        assert_eq!(snap.len(), 2_098_837);
+        assert_eq!(snap.len(), 2_098_947);
 
         // Whole-buffer checksum: any added, removed, reordered or re-widened
         // field moves it.
-        assert_eq!(fnv1a64(&snap), 0x0F17_C950_BF32_9135);
+        assert_eq!(fnv1a64(&snap), 0xCD17_E780_A751_77E6);
     }
 
     #[test]

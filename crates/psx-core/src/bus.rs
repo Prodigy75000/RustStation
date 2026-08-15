@@ -11,6 +11,10 @@
 //! `mask_region` below is the whole of "virtual memory" here. See
 //! `docs/MEMORY_MAP.md`.
 
+use crate::irq::{self, Irq};
+use crate::timers::Timers;
+use crate::video::{Standard, Video};
+
 /// 2 MB of main RAM. (Development units had 8 MB; retail is 2 MB and KUSEG
 /// mirrors it four times over the first 8 MB, which some games rely on.)
 pub const RAM_SIZE: usize = 2 * 1024 * 1024;
@@ -108,8 +112,20 @@ pub struct Bus {
     pub(crate) mem_ctrl: [u32; 9],
     pub(crate) ram_size: u32,
     pub(crate) cache_ctrl: u32,
-    pub(crate) i_stat: u32,
-    pub(crate) i_mask: u32,
+
+    /// The master clock: CPU cycles since reset. The CPU advances it, and every
+    /// timed device is a pure function of it plus its own registers.
+    pub cycle: u64,
+    /// Cycle at which some device next needs attention. The CPU checks this
+    /// after each instruction, which is what stops a frame from collapsing into
+    /// a single "run everything, then catch up" phase.
+    next_event: u64,
+    /// Cycle the timed devices have been advanced to. Never ahead of `cycle`.
+    synced_to: u64,
+
+    pub irq: Irq,
+    pub video: Video,
+    pub timers: Timers,
 
     /// Counters for ports we decode but do not emulate yet. These exist so the
     /// harnesses can answer "what did the BIOS touch that we ignore?" without a
@@ -134,8 +150,12 @@ impl Bus {
             mem_ctrl: [0; 9],
             ram_size: 0,
             cache_ctrl: 0,
-            i_stat: 0,
-            i_mask: 0,
+            cycle: 0,
+            next_event: 0,
+            synced_to: 0,
+            irq: Irq::new(),
+            video: Video::new(Standard::Ntsc),
+            timers: Timers::new(),
             stub_reads: 0,
             stub_writes: 0,
             unmapped_reads: 0,
@@ -160,6 +180,70 @@ impl Bus {
         for i in 0..width as usize {
             buf[o + i] = (val >> (8 * i)) as u8;
         }
+    }
+
+    /// Advance the master clock and service anything that has come due.
+    ///
+    /// Called once per instruction. The `next_event` check is the whole point
+    /// of the design: devices are only touched when they have something to do,
+    /// but they are never allowed to fall behind past the cycle at which they
+    /// would raise an interrupt.
+    #[inline]
+    pub fn tick(&mut self, cycles: u64) {
+        self.cycle += cycles;
+        if self.cycle >= self.next_event {
+            self.sync();
+        }
+    }
+
+    /// Catch every timed device up to the master clock, then work out when the
+    /// next one needs attention.
+    ///
+    /// Idempotent, and safe to call at any granularity: the devices carry
+    /// integer remainders, so syncing every cycle and syncing once per frame
+    /// reach the same state. `granularity_does_not_change_the_outcome` in
+    /// `timers.rs` and `stepping_granularity_does_not_change_the_result` in
+    /// `video.rs` are what hold that down.
+    pub fn sync(&mut self) {
+        let elapsed = self.cycle - self.synced_to;
+        if elapsed > 0 {
+            let ticks = self.video.run(elapsed);
+            if ticks.vblank_edges > 0 {
+                self.irq.raise(irq::VBLANK);
+            }
+            let blank = (self.video.in_hblank(), self.video.in_vblank());
+            self.timers.run(elapsed, &ticks, blank, &mut self.irq);
+            self.synced_to = self.cycle;
+        }
+
+        let mut next = self.video.cycles_to_vblank();
+        if let Some(t) = self.timers.cycles_to_irq(&self.video) {
+            next = next.min(t);
+        }
+        self.next_event = self.cycle + next.max(1);
+    }
+
+    /// Cycle at which some device next needs attention.
+    pub fn next_event(&self) -> u64 {
+        self.next_event
+    }
+
+    pub(crate) fn next_event_raw(&self) -> u64 {
+        self.next_event
+    }
+    pub(crate) fn synced_to_raw(&self) -> u64 {
+        self.synced_to
+    }
+
+    /// Restore the scheduler's bookkeeping from a save state.
+    ///
+    /// `synced_to` is clamped to `cycle`: a device that believes it has already
+    /// been advanced past the master clock would compute a negative elapsed
+    /// time, and on unsigned arithmetic that is not a small error.
+    pub(crate) fn restore_clock(&mut self, cycle: u64, next_event: u64, synced_to: u64) {
+        self.cycle = cycle;
+        self.synced_to = synced_to.min(cycle);
+        self.next_event = next_event;
     }
 
     /// One decode path for all three access widths. Width is 1, 2 or 4; the CPU
@@ -187,7 +271,22 @@ impl Bus {
             return self.cache_ctrl;
         }
         if let Some(off) = IRQ_CTRL.contains(abs) {
-            return if off == 0 { self.i_stat } else { self.i_mask };
+            // Reading a status register has to see the present, not the last
+            // time the scheduler happened to stop.
+            self.sync();
+            return if off < 4 {
+                self.irq.stat() as u32
+            } else {
+                self.irq.mask() as u32
+            };
+        }
+        if let Some(off) = TIMERS.contains(abs) {
+            self.sync();
+            let v = self.timers.read(off);
+            // A MODE read has side effects (it clears the reached flags), so
+            // the next wake-up may have moved.
+            self.sync();
+            return v;
         }
         if let Some(off) = GPU.contains(abs) {
             self.stub_reads += 1;
@@ -200,7 +299,6 @@ impl Bus {
             || CDROM.contains(abs).is_some()
             || MDEC.contains(abs).is_some()
             || DMA.contains(abs).is_some()
-            || TIMERS.contains(abs).is_some()
             || PERIPHERAL.contains(abs).is_some()
             || EXPANSION_1.contains(abs).is_some()
             || EXPANSION_2.contains(abs).is_some()
@@ -247,12 +345,20 @@ impl Bus {
             return;
         }
         if let Some(off) = IRQ_CTRL.contains(abs) {
-            if off == 0 {
-                // I_STAT is write-acknowledge: a zero bit clears, a one keeps.
-                self.i_stat &= val;
+            self.sync();
+            if off < 4 {
+                self.irq.ack(val as u16);
             } else {
-                self.i_mask = val;
+                self.irq.set_mask(val as u16);
             }
+            return;
+        }
+        if let Some(off) = TIMERS.contains(abs) {
+            // Catch up on the old settings before applying the new ones, or the
+            // cycles since the last sync get counted under the wrong mode.
+            self.sync();
+            self.timers.write(off, val);
+            self.sync();
             return;
         }
         if GPU.contains(abs).is_some()
@@ -260,7 +366,6 @@ impl Bus {
             || CDROM.contains(abs).is_some()
             || MDEC.contains(abs).is_some()
             || DMA.contains(abs).is_some()
-            || TIMERS.contains(abs).is_some()
             || PERIPHERAL.contains(abs).is_some()
             || EXPANSION_1.contains(abs).is_some()
             || EXPANSION_2.contains(abs).is_some()
@@ -304,13 +409,12 @@ impl Bus {
     /// Interrupt line state, for the CPU's COP0 Cause bit 10.
     #[inline(always)]
     pub fn irq_pending(&self) -> bool {
-        self.i_stat & self.i_mask != 0
+        self.irq.pending()
     }
 
-    /// Raise an interrupt source. Nothing calls this yet (no peripheral is
-    /// emulated), but the plumbing is here so the first one to land is a
-    /// one-liner rather than a bus refactor.
+    /// Raise an interrupt source directly. For devices that do not yet exist as
+    /// modules, and for tests.
     pub fn raise_irq(&mut self, bit: u32) {
-        self.i_stat |= 1 << bit;
+        self.irq.raise(bit);
     }
 }

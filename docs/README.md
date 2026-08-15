@@ -2,10 +2,15 @@
 
 | File | What it is |
 |---|---|
+| [`TESTS.md`](TESTS.md) | The conformance baseline against the hardware suite |
 | [`MEMORY_MAP.md`](MEMORY_MAP.md) | The address space, and what is decoded vs stubbed |
 | [`SAVESTATE.md`](SAVESTATE.md) | The state layout and the rules it is bound by |
-| [`notes/`](notes/) | Distilled hardware notes. **The clean-room source of truth** |
-| [`ref/`](ref/) | Raw third-party reference drops (gitignored) |
+| [`notes/`](notes/) | Per-subsystem implementation notes, decisions and open questions |
+| [`ref/`](ref/) | Derived hardware reference: what the machine does, with citations |
+
+`ref/` describes the **hardware**; `notes/` describes **this codebase's** take on
+it, including where the two currently disagree. Only markdown is tracked under
+`docs/`: raw third-party drops (PDFs, HTML, archives) stay out of git.
 
 ## The clean-room rule
 

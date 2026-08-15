@@ -116,6 +116,15 @@ pub struct Cpu {
 /// Where the R3000A starts: the uncached (KSEG1) view of the BIOS ROM.
 pub const RESET_VECTOR: u32 = 0xBFC0_0000;
 
+/// Master-clock cycles charged per instruction.
+///
+/// One, for now, which is honest rather than right: real instructions cost
+/// between roughly 1 and 40 cycles depending on where they fetch from and what
+/// they touch. Everything downstream is written against the master clock rather
+/// than against this constant, so making it real later is a change to one
+/// function and not to the shape of the system.
+pub const CYCLES_PER_INSTRUCTION: u64 = 1;
+
 impl Default for Cpu {
     fn default() -> Self {
         Cpu::new()
@@ -191,6 +200,22 @@ impl Cpu {
         self.load = (0, 0);
     }
 
+    /// Land the load waiting in the delay slot.
+    ///
+    /// Also called on the way into an exception. The handler has to start with
+    /// an empty load-delay slot, or a load issued just before the interrupt
+    /// arrives lands on the handler's *first* instruction instead. The register
+    /// ends up with the right value either way, so this only shifts by one
+    /// instruction the point at which it becomes visible, which is exactly the
+    /// kind of thing that is invisible until the BIOS exception handler (which
+    /// has load-delay-slot code of its own) reads the wrong register.
+    #[inline]
+    fn commit_pending_load(&mut self) {
+        let (reg, val) = self.load;
+        self.set_reg(reg as u32, val);
+        self.load = (0, 0);
+    }
+
     /// Execute one instruction.
     pub fn step(&mut self, bus: &mut Bus) {
         // The interrupt controller drives the single external line into Cause
@@ -201,9 +226,10 @@ impl Cpu {
             // current_pc has to name the instruction that will be re-run.
             self.current_pc = self.pc;
             self.delay_slot = self.branch;
+            self.commit_pending_load();
             self.exception(Exception::Interrupt);
             self.regs = self.out_regs;
-            self.cycles += 1;
+            self.retire(bus);
             return;
         }
 
@@ -211,10 +237,11 @@ impl Cpu {
 
         if !self.current_pc.is_multiple_of(4) {
             self.delay_slot = self.branch;
+            self.commit_pending_load();
             self.cop0.bad_vaddr = self.current_pc;
             self.exception(Exception::AddressErrorLoad);
             self.regs = self.out_regs;
-            self.cycles += 1;
+            self.retire(bus);
             return;
         }
 
@@ -231,14 +258,25 @@ impl Cpu {
         // The load from the previous instruction lands now, before this
         // instruction runs, so this instruction still reads the old value out
         // of `regs`, and an explicit write here overwrites the arriving load.
-        let (reg, val) = self.load;
-        self.set_reg(reg as u32, val);
-        self.load = (0, 0);
+        self.commit_pending_load();
 
         self.execute(instruction, bus);
 
         self.regs = self.out_regs;
+        self.retire(bus);
+    }
+
+    /// End of an instruction: commit the shadow register file's counter and
+    /// advance the master clock, which is what lets the timed devices run.
+    ///
+    /// The cost is a flat [`CYCLES_PER_INSTRUCTION`] for now. That is the axis
+    /// this does *not* model yet, and `docs/notes/TIMING.md` says what it will
+    /// take: memory access penalties are meaningless until there is an I-cache,
+    /// because instruction fetch would dominate them.
+    #[inline]
+    fn retire(&mut self, bus: &mut Bus) {
         self.cycles = self.cycles.wrapping_add(1);
+        bus.tick(CYCLES_PER_INSTRUCTION);
     }
 
     fn execute(&mut self, instr: Instruction, bus: &mut Bus) {
@@ -640,11 +678,7 @@ impl Cpu {
             }
             // RFE. The rest of the CO field is a don't-care on this part, but
             // funct must be 0x10, and anything else here is not an RFE.
-            0x10 => {
-                if instr.funct() == 0x10 {
-                    self.cop0.return_from_exception();
-                }
-            }
+            0x10 if instr.funct() == 0x10 => self.cop0.return_from_exception(),
             // An unrecognised COP0 sub-opcode does *not* trap. `cpu/cop`'s
             // testCop0InvalidOpcode checks exactly this, and a reserved-
             // instruction exception here is wrong.
@@ -874,5 +908,9 @@ impl Cpu {
         // The handler's first instruction is not in a delay slot, whatever the
         // faulting instruction was.
         self.branch = false;
+        // Belt and braces: every load path returns before setting `load` when
+        // it faults, so this should already be empty. Enforcing the invariant
+        // is cheaper than relying on that staying true.
+        self.load = (0, 0);
     }
 }

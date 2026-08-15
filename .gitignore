@@ -12,16 +12,18 @@
 /dumps/*
 !/dumps/README.md
 
-# Hardware documentation. Third-party reference material (the MIPS R3000
-# manuals, Sony service manuals, psx-spx mirrors) is not ours to redistribute,
-# even when it is freely available, so only our own markdown is tracked under
-# docs/. Raw drops can land anywhere in here and stay untracked either way.
+# Hardware documentation. Third-party reference material (MIPS R3000 manuals,
+# Sony service manuals, psx-spx mirrors) is not ours to redistribute, even when
+# it is freely available. So under docs/ only **markdown** is tracked: our own
+# notes, and the derived reference write-ups in docs/ref/ that cite their
+# sources rather than reproducing them. Raw drops of any other kind (PDF, HTML,
+# archives) can land anywhere in here and stay untracked.
+#
+# If a verbatim third-party document ever arrives *as* markdown, it does not
+# belong in git either. Distil it and cite it, the same way docs/ref/ does.
 /docs/**
 !/docs/**/
 !/docs/**/*.md
-# ... except in ref/, which is raw drops by definition.
-/docs/ref/**
-!/docs/ref/README.md
 
 # Vendored third-party test suites (ps1-tests and friends): binaries plus their
 # reference logs. Not ours to redistribute, and large. Bring your own, the same

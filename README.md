@@ -49,6 +49,11 @@ Working, and confirmed against real hardware behaviour rather than asserted:
   hardware's fixed divide-by-zero results, and Status `Isc` cache isolation.
 - **Memory map**: 2 MB RAM with its KUSEG mirrors, 1 KB scratchpad, 512 KB BIOS,
   and a decoded I/O window whose ports are stubbed and *counted*.
+- **Timing**: a master clock with a run-until-next-event scheduler, the
+  interrupt controller, video timing (scanlines, HBlank, VBlank) and the three
+  root counters. Short-delay timer measurements match the captured hardware log
+  exactly; per-frame ones are within 0.2%. Instruction cycle costs are the
+  remaining gap, and are blocked on the I-cache.
 - **BIOS TTY capture** through the A/B call gates, so a test binary's own verdict
   is readable without a screen.
 - **PSX-EXE sideload** at the BIOS shell hand-over point.
@@ -59,10 +64,10 @@ Working, and confirmed against real hardware behaviour rather than asserted:
 
 Not started:
 
-- GPU, SPU, CD-ROM, DMA, timers, controllers, memory cards.
+- GPU drawing, SPU, CD-ROM, DMA, controllers, memory cards.
 - The GTE's 15 commands. The register file exists and is serialized; the
   commands are counted and dropped.
-- Any instruction timing model. Every instruction is one cycle and
+- Per-instruction cycle costs. Every instruction is one cycle and
   multiply/divide do not stall.
 
 **A disc will not boot.** The near-term bar is the R3000A passing a CPU

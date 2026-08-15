@@ -91,32 +91,58 @@ Recorded here as facts, with what settled them. See [`../TESTS.md`](../TESTS.md)
 - **An unrecognised COP0 sub-opcode does not trap.** Settled by `cpu/cop`'s
   `testCop0InvalidOpcode`.
 
+## Closed by the reference set
+
+**Load-delay write conflict: settled, and the implementation was right.** If
+instruction N is a load into `$r` and N+1 also writes `$r` explicitly, the
+explicit write wins and the loaded value is never architecturally visible. This
+was previously carried as an open question resolved by reasoning; `docs/ref/`
+states it from the other direction, so it is now documented behaviour.
+`explicit_write_in_the_delay_slot_beats_the_load` in `tests/cpu_semantics.rs` is
+the regression guard.
+
+The **related** rule that is *not* implemented is a second load to the same
+register cancelling the first. See the divergence list below.
+
+## Known divergences from the reference set
+
+From the read in `../ref/06-conformance-notes.md`. Not yet fixed, listed so they
+are not rediscovered, roughly in order of how much they matter.
+
+| | What | Consequence |
+|---|---|---|
+| A1 | An interrupt is taken *instead of* a pending GTE command rather than after it, so the command is dropped | Broken geometry in Crash Bandicoot 1-3, Spyro. **Latent** while GTE commands are no-ops; the dispatch bug is in `cpu.rs` and should be fixed alongside the GTE, or it will be misdiagnosed as a GTE bug |
+| A2 | A second load to the same register does not cancel the first | Silently wrong register values. Cheap to fix and worth a unit test before it becomes hard to attribute |
+| B1 | `MFC0` of a nonexistent COP0 register (r0, r1, r2, r4, r10) returns 0 instead of raising Reserved Instruction | None known |
+| B2 | `Cause.CE` is never written, so a handler cannot tell which coprocessor was refused | The BIOS `atof`/`strtod` failure path |
+| B3 | `Cause.BT` and `TAR` (cop0r6) are not set on a delay-slot exception | None known. Cheap, and `next_pc` already holds the target |
+| B5 | `SWC2` bypasses the cache-isolation check, so it writes RAM while `Isc` is set | Invariant leak rather than a real bug |
+| B6, B7 | COP0 command decoding is stricter than hardware; `LWC0`/`SWC0` are always Coprocessor Unusable | Both marked uncertain in the reference. **Do not chase without a hardware test** |
+
+**B4 is fixed**: an exception now commits the pending load before the handler
+runs, so the handler starts with an empty load-delay slot. It was unreachable
+until interrupts could actually fire. See `../notes/TIMING.md` and
+`an_exception_commits_the_pending_load_before_the_handler_runs`.
+
 ## Open questions
 
 These are unsettled. Each names what would settle it.
 
-1. **Load-delay write conflict.** If instruction N is a load into `$r` and N+1
-   also writes `$r` explicitly, which wins? This core makes the explicit write
-   win (the pending load is applied first, then N+1 overwrites it). That is
-   reasoning, not a documented statement. `explicit_write_in_the_delay_slot_beats_the_load`
-   in `tests/cpu_semantics.rs` pins the current choice so a conformance suite
-   disagreeing with it produces one clear failure rather than a mystery.
-2. **The I-cache.** Not modelled at all, only isolated-store dropping. Software
+1. **The I-cache.** Not modelled at all, only isolated-store dropping. Software
    that writes code and jumps into it without a cache flush behaves differently
    on hardware. UltraRust found exactly this to be a shared boot-blocker on N64,
    so it is worth pricing early rather than discovering late.
-3. **Scratchpad through KSEG1.** On hardware the scratchpad is the data cache
+2. **Scratchpad through KSEG1.** On hardware the scratchpad is the data cache
    and so is not reachable uncached. The bus currently serves it through every
    segment. Serving an access that hardware would fault makes a real bug look
    like working code.
-4. **Timing.** There is no model: every instruction is one cycle, and
-   multiply/divide do not stall. This is fine while the target is a CPU
-   conformance suite and wrong the moment anything is driven off a cycle count
-   (timers, GPU, SPU, and the frame pacing the libretro shim already assumes).
-   The sibling cores' experience is that retrofitting a frame/timing phase after
-   the fact forces a save-state format bump, so decide the shape before the GPU
-   lands rather than after.
-5. **COP0 register reads on unassigned indices** return zero here.
-   Deterministic, which save states require, but not necessarily what hardware
-   returns.
-6. **`PRID`** is set to `0x00000002`. Needs confirming against a real part.
+3. **Instruction cycle costs.** Every instruction is one cycle, and
+   multiply/divide do not stall `MFHI`/`MFLO`. The scheduler itself now exists
+   and runs off a real master clock, so this is the remaining axis rather than
+   the whole gap. See [`TIMING.md`](TIMING.md), which also explains why
+   `cpu/access-time` cannot pass until there is an I-cache.
+4. **COP0 register reads on unassigned indices** return zero here for r16 to
+   r31. Deterministic, which save states require; the documented model is "the
+   last value read from a valid COP0 register". The r0/r1/r2/r4/r10 case should
+   raise Reserved Instruction instead, which is divergence B1 above.
+5. **`PRID`** is set to `0x00000002`. Confirmed by the reference set.
