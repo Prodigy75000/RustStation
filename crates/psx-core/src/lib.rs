@@ -34,6 +34,7 @@ pub mod bus;
 pub mod cdrom;
 pub mod cop0;
 pub mod cpu;
+pub mod disc;
 pub mod dma;
 pub mod exe;
 pub mod gpu;
