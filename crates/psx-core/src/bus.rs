@@ -14,6 +14,7 @@
 use crate::dma::Dma;
 use crate::gpu::Gpu;
 use crate::irq::{self, Irq};
+use crate::cdrom::Cdrom;
 use crate::sio::Sio;
 use crate::timers::Timers;
 use crate::video::{Standard, Video};
@@ -133,6 +134,7 @@ pub struct Bus {
     pub gpu: Gpu,
     pub dma: Dma,
     pub sio: Sio,
+    pub cdrom: Cdrom,
 
     /// Counters for ports we decode but do not emulate yet. These exist so the
     /// harnesses can answer "what did the BIOS touch that we ignore?" without a
@@ -166,6 +168,7 @@ impl Bus {
             gpu: Gpu::new(),
             dma: Dma::new(),
             sio: Sio::new(),
+            cdrom: Cdrom::new(),
             stub_reads: 0,
             stub_writes: 0,
             unmapped_reads: 0,
@@ -224,6 +227,7 @@ impl Bus {
             let blank = (self.video.in_hblank(), self.video.in_vblank());
             self.timers.run(elapsed, &ticks, blank, &mut self.irq);
             self.sio.run(elapsed, &mut self.irq);
+            self.cdrom.run(elapsed, &mut self.irq);
             self.synced_to = self.cycle;
         }
 
@@ -232,6 +236,9 @@ impl Bus {
             next = next.min(t);
         }
         if let Some(t) = self.sio.cycles_to_event() {
+            next = next.min(t);
+        }
+        if let Some(t) = self.cdrom.cycles_to_event() {
             next = next.min(t);
         }
         self.next_event = self.cycle + next.max(1);
@@ -331,8 +338,11 @@ impl Bus {
             self.sync();
             return self.sio.read(off, width);
         }
+        if let Some(off) = CDROM.contains(abs) {
+            self.sync();
+            return self.cdrom.read(off);
+        }
         if SPU.contains(abs).is_some()
-            || CDROM.contains(abs).is_some()
             || MDEC.contains(abs).is_some()
             || SIO1.contains(abs).is_some()
             || EXPANSION_1.contains(abs).is_some()
@@ -420,6 +430,14 @@ impl Bus {
             }
             return;
         }
+        if let Some(off) = CDROM.contains(abs) {
+            self.sync();
+            self.cdrom.write(off, val as u8);
+            // A write can queue a response or acknowledge one, either of which
+            // moves when the controller next needs attention.
+            self.sync();
+            return;
+        }
         if let Some(off) = SIO0.contains(abs) {
             self.sync();
             self.sio.write(off, width, val);
@@ -429,7 +447,6 @@ impl Bus {
             return;
         }
         if SPU.contains(abs).is_some()
-            || CDROM.contains(abs).is_some()
             || MDEC.contains(abs).is_some()
             || DMA.contains(abs).is_some()
             || SIO1.contains(abs).is_some()

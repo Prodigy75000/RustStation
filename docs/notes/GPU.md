@@ -88,7 +88,17 @@ Three things that each cost a debugging round:
 
 ## Open questions
 
-1. **The residual texture error is in the fetch, not the blend.** `texture-flip`
+1. **The BIOS main menu draws colour noise where its icons should be.** Now that
+   the CD-ROM controller lets the BIOS reach its own shell, the menu renders:
+   the background gradient, the spheres and the text are all right, but a block
+   of saturated noise sits behind "MEMORY CARD" and "CD PLAYER" where the icons
+   belong. Noise rather than a wrong picture points at a texture being sampled
+   from the wrong place in VRAM, or a CLUT read before the transfer that fills
+   it has finished, rather than at the rasterizer. It is the first thing this
+   core has drawn that a suite test does not cover, so it is also the first
+   evidence about textures that comes from real software rather than a test
+   pattern. Reproduce with `shot <bios.bin> --steps 300000000` and no `--exe`.
+2. **The residual texture error is in the fetch, not the blend.** `texture-flip`
    still differs on 24.8% of pixels by exactly one 5-bit step. Three separate
    experiments (transposing the dither matrix, not dithering textured polygons,
    rounding the modulation) all produced *byte-identical* output, which is
@@ -97,23 +107,23 @@ Three things that each cost a debugging round:
    what an off-by-one in U or V looks like. Anchoring a flipped rectangle's UV
    at the far edge instead of decrementing was tried and is wrong (25.6% to
    37.9%).
-2. **The `transparency` background fill.** The blended swatches match the
+3. **The `transparency` background fill.** The blended swatches match the
    reference, but hardware ends up with the whole of VRAM filled light grey and
    this core only fills 320x240 of it. The fill command masks its width to
    10 bits and rounds up to a multiple of 16, which makes a 1024-wide fill
    compute as zero. Either the test does something else, or that masking is
    wrong. Worth settling before trusting `fill_rectangle`.
-3. **The dither phase.** Dithering is in and clearly helps, but `triangle` still
+4. **The dither phase.** Dithering is in and clearly helps, but `triangle` still
    differs from the reference on about 5% of pixels, all by exactly one 5-bit
    step. That signature says the matrix orientation, sign, or the point at which
    it is applied is slightly off, rather than anything structural.
-4. **Fill-rule at polygon edges.** Around 0.19% of `triangle` and 0.3% of `quad`
+5. **Fill-rule at polygon edges.** Around 0.19% of `triangle` and 0.3% of `quad`
    differ by more than a rounding step, which is the edge pixels. The hardware
    has a specific rule about which edge a shared boundary belongs to; this core
    uses a plain `>= 0` test on all three edges.
-5. **GPUSTAT's busy bits are always ready.** Commands execute the instant their
+6. **GPUSTAT's busy bits are always ready.** Commands execute the instant their
    last word arrives, so the core is never busy. That is a lie in the forgiving
    direction, but code that polls for *busy* before proceeding would spin.
-6. **Not started**: 24-bit display output, interlace, the texture cache, the
+7. **Not started**: 24-bit display output, interlace, the texture cache, the
    display range registers (stored but unused), and any notion of how long
    drawing takes.

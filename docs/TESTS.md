@@ -330,3 +330,38 @@ subsystems still to come:
 * Changing what the pad *replied* changed nothing: the transfer still stopped
   after three bytes whatever the content. That ruled out every protocol
   hypothesis at once and pointed at the port rather than the device.
+
+## CD-ROM, as of 2026-08-16
+
+**Nothing in `cdrom/` can be graded yet, and that is the honest position.** All
+four tests need something this core does not have:
+
+| Test | What it needs |
+|---|---|
+| `getloc` | A disc: it seeks, reads, and checks track and index |
+| `timing` | A disc, and cycle-accurate command latencies measured against it |
+| `disc-swap` | A disc, plus the lid opened and closed by hand part way through |
+| `terminal` | A disc |
+
+So the controller was built to a different, checkable milestone: **the BIOS
+getting past its boot logo to its own main menu**, which is what a real console
+does with an empty drive. It does.
+
+```
+cargo run --release --bin shot -- <bios.bin> --steps 300000000
+```
+
+Before: the Sony Computer Entertainment logo, then nothing, because the BIOS was
+waiting on a drive that never answered. After: the main menu, with the memory
+card and CD player entries and the animated background.
+
+That is a weaker check than a reference log and it is worth being clear about
+what it does and does not prove. It proves the register block, the response
+queue, the interrupt gating and the empty-tray answers are right enough for the
+BIOS's own driver, which is real software with real expectations. It proves
+nothing about timing, and the timing constants here are guesses; `cdrom/timing`
+is the thing that would settle them, and it needs a disc.
+
+It also produced the first evidence about the GPU that did not come from a test
+pattern: the menu draws colour noise where its two icons should be. Recorded in
+`docs/notes/GPU.md`.

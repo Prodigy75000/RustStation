@@ -67,6 +67,15 @@ Working, and confirmed against real hardware behaviour rather than asserted:
   byte for byte across all 150 625 lines** of randomised arguments. Nine
   separate hardware behaviours had to be got right to reach that, and each is
   pinned by a unit test; the walk is in [`docs/TESTS.md`](docs/TESTS.md).
+- **The BIOS reaches its own main menu**, with the memory card and CD player
+  entries and the animated background, which it could not do before the CD-ROM
+  controller existed. `cargo run --release --bin shot -- <bios.bin>
+  --steps 300000000`. One rendering fault is visible and recorded in
+  [`docs/notes/GPU.md`](docs/notes/GPU.md).
+- **CD-ROM**: the controller only, with an **empty drive**. Commands, the
+  response queue, interrupts and the drive status byte. No disc image support,
+  so anything that would read a sector answers with the error hardware gives for
+  an empty tray.
 - **Controllers**: SIO0, with a digital pad in each of the two ports. Verified
   end to end against the suite's `input/pad`, which prints the buttons it sees:
   holding three prints those three and nothing else.
@@ -80,17 +89,19 @@ Working, and confirmed against real hardware behaviour rather than asserted:
 
 Not started:
 
-- SPU, CD-ROM, memory cards.
+- Disc images, and therefore sector reads, the table of contents and XA audio.
+- SPU, MDEC, memory cards.
 - Per-instruction cycle costs. Every instruction is one cycle and
   multiply/divide do not stall.
 
-**A disc will not boot**, because there is no CD-ROM. Homebrew and test
-binaries sideloaded as PSX-EXEs do run, and now draw.
+**A disc will not boot**, because there is no disc image support: the CD-ROM
+controller is here but there is nothing for it to read. Homebrew and test
+binaries sideloaded as PSX-EXEs do run, and draw.
 
 ## Layout
 
 ```
-crates/psx-core/       the emulator: cpu, cop0, gte, gpu, sio, bus, exe, save
+crates/psx-core/       the emulator: cpu, cop0, gte, gpu, sio, cdrom, bus, save
 crates/psx-libretro/   the C ABI shim (cdylib)
 crates/psx-runner/     dev harnesses: psx, testrom, fingerprint
 bios/                  your BIOS dumps (gitignored)

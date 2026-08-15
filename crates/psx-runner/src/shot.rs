@@ -209,6 +209,10 @@ fn main() -> ExitCode {
     let non_black = pixels.chunks(3).filter(|p| p != &[0, 0, 0]).count();
     println!("wrote {out_path} ({width}x{height})");
     println!(
+        "stubs: {} reads, {} writes on decoded-but-unemulated ports; {} unmapped reads, {} unmapped writes",
+        psx.bus.stub_reads, psx.bus.stub_writes, psx.bus.unmapped_reads, psx.bus.unmapped_writes
+    );
+    println!(
         "sio: {} bytes exchanged, {} answered by a device",
         psx.bus.sio.transfers, psx.bus.sio.acknowledged
     );
@@ -223,7 +227,7 @@ fn main() -> ExitCode {
         }
     );
     println!(
-        "gpu: {} textured primitives drawn untextured, {} oversized discarded",
+        "gpu: {} textured primitives, {} oversized discarded",
         psx.bus.gpu.textured_primitives, psx.bus.gpu.oversized_primitives
     );
     println!(

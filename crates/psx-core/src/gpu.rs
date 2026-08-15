@@ -162,8 +162,10 @@ pub struct Gpu {
     /// Latched reply for the next GPUREAD, for the GP1 info commands.
     gpuread_latch: u32,
 
-    /// Textured primitives drawn as flat colour because textures are not
-    /// implemented. A number rather than a memory.
+    /// Textured primitives drawn. Counted, not judged: textures are
+    /// implemented, so this is a workload figure rather than a shortfall. It
+    /// stays because "how much of this frame was textured?" is the first
+    /// question worth asking when a picture is wrong in a texture-shaped way.
     pub textured_primitives: u64,
     /// Primitives discarded for exceeding the GPU's maximum extent.
     pub oversized_primitives: u64,

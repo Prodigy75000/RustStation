@@ -29,7 +29,7 @@
 use crate::bus::{self, Bus};
 use crate::cpu::Cpu;
 use crate::video::Standard;
-use crate::{dma, gpu, sio, Psx};
+use crate::{cdrom, dma, gpu, sio, Psx};
 
 /// Core magic. The trailing digit is a generation marker: it only changes if
 /// the stream stops being a RustStation state at all.
@@ -48,7 +48,11 @@ pub const MAGIC: &[u8; 8] = b"RSTAPSX1";
 /// * 5: adds SIO0, the controller port. The pads themselves are **not** in
 ///   here: button state is an input the host supplies each frame, and a state
 ///   that carried it would replay the buttons held when it was taken.
-pub const FORMAT_VERSION: u16 = 5;
+/// * 6: adds the CD-ROM controller, including its queue of scheduled responses.
+///   Unlike the pads, the drive's own state *is* serialized: whether an
+///   interrupt is outstanding is machine state, and a state restored without it
+///   leaves software waiting for a response that will never arrive.
+pub const FORMAT_VERSION: u16 = 6;
 
 const HEADER_BYTES: usize = 8 + 2;
 const CPU_BYTES: usize = 32 * 4     // regs
@@ -89,7 +93,8 @@ const TIMED_BYTES: usize = 2 + 2                  // irq: stat, mask
     + 8                                           // timers.sync_uses
     + GPU_BYTES
     + DMA_BYTES
-    + SIO_BYTES;
+    + SIO_BYTES
+    + CDROM_BYTES;
 
 /// The GP0 FIFO is serialized as a fixed-size array so the state stays a
 /// constant length. The longest real command is 12 words (a Gouraud textured
@@ -115,6 +120,17 @@ const SIO_BYTES: usize = 2 * 3      // mode, ctrl, baud
     + 1                             // target
     + 8 + 1                         // /ACK countdown, and whether one is armed
     + 1; // ack level, interrupt latch
+
+/// The CD-ROM controller, added in format version 6. Every array is fixed width
+/// so the state stays a constant length whatever is queued.
+const CDROM_BYTES: usize = 8      // index, irq enable/flags, stat, mode, three lengths
+    + 3                           // the Setloc target
+    + 16                          // parameter FIFO
+    + 16                          // response FIFO
+    + 8                           // the countdown to the next response
+    + 1                           // how many responses are queued
+    + 2 * (2 + 16)                // and the queue itself
+    + 1; // disc present
 
 /// Exact serialized length for [`FORMAT_VERSION`]. Derived from the field
 /// widths above rather than from `save_state().len()`, so a test that pins it
@@ -351,6 +367,7 @@ fn write_bus(w: &mut Writer, b: &Bus) {
     write_gpu(w, &b.gpu);
     write_dma(w, &b.dma);
     write_sio(w, &b.sio);
+    write_cdrom(w, &b.cdrom);
 }
 
 fn write_gpu(w: &mut Writer, g: &gpu::Gpu) {
@@ -392,6 +409,19 @@ fn write_dma(w: &mut Writer, d: &dma::Dma) {
     }
     w.u32(d.control);
     w.u32(d.interrupt_raw());
+}
+
+fn write_cdrom(w: &mut Writer, c: &cdrom::Cdrom) {
+    let (regs, seek_loc, params, response, countdown) = c.parts();
+    w.bytes(&regs);
+    w.bytes(&seek_loc);
+    w.bytes(&params);
+    w.bytes(&response);
+    w.u64(countdown);
+    let (len, pending) = c.pending_parts();
+    w.u8(len);
+    w.bytes(&pending);
+    w.bool(c.disc);
 }
 
 fn write_sio(w: &mut Writer, s: &sio::Sio) {
@@ -562,6 +592,7 @@ fn read_bus(r: &mut Reader, b: &mut Bus) -> Option<()> {
     read_gpu(r, &mut b.gpu)?;
     read_dma(r, &mut b.dma)?;
     read_sio(r, &mut b.sio)?;
+    read_cdrom(r, &mut b.cdrom)?;
 
     Some(())
 }
@@ -604,6 +635,24 @@ fn read_dma(r: &mut Reader, d: &mut dma::Dma) -> Option<()> {
     d.control = r.u32()?;
     let interrupt = r.u32()?;
     d.restore_interrupt(interrupt);
+    Some(())
+}
+
+fn read_cdrom(r: &mut Reader, c: &mut cdrom::Cdrom) -> Option<()> {
+    let mut regs = [0u8; 8];
+    let mut seek_loc = [0u8; 3];
+    let mut params = [0u8; 16];
+    let mut response = [0u8; 16];
+    let mut pending = [0u8; 2 * (2 + 16)];
+    regs.copy_from_slice(r.take(8)?);
+    seek_loc.copy_from_slice(r.take(3)?);
+    params.copy_from_slice(r.take(16)?);
+    response.copy_from_slice(r.take(16)?);
+    let countdown = r.u64()?;
+    let len = r.u8()?;
+    pending.copy_from_slice(r.take(2 * (2 + 16))?);
+    c.disc = r.bool()?;
+    c.restore(regs, seek_loc, params, response, countdown, len, pending);
     Some(())
 }
 
@@ -813,6 +862,26 @@ mod tests {
         psx.bus.store8(0x1F80_1040, 0x42); // and ask it to report
         psx.bus.tick(340); // far enough in for /ACK to be low, not yet released
 
+        // The CD-ROM, caught mid-command: an acknowledgement delivered and
+        // unread, a completion still queued behind it, a seek target set and
+        // parameters left in the FIFO. Same reasoning again: every field of the
+        // response queue has to be non-zero for the golden to be able to see a
+        // reordering of it.
+        psx.bus.store8(0x1F80_1800, 0x01); // index 1
+        psx.bus.store8(0x1F80_1802, 0x1F); // interrupt enable
+        psx.bus.store8(0x1F80_1800, 0x00); // index 0
+        for p in [0x00u8, 0x02, 0x16] {
+            psx.bus.store8(0x1F80_1802, p);
+        }
+        psx.bus.store8(0x1F80_1801, 0x02); // Setloc
+        psx.bus.tick(60_000);
+        psx.bus.store8(0x1F80_1800, 0x01);
+        psx.bus.store8(0x1F80_1803, 0x07); // acknowledge it
+        psx.bus.store8(0x1F80_1800, 0x00);
+        psx.bus.store8(0x1F80_1801, 0x0A); // Init: acknowledges now, completes later
+        psx.bus.tick(60_000);
+        psx.bus.store8(0x1F80_1802, 0x42); // and a parameter for a command not yet sent
+
         psx
     }
 
@@ -830,15 +899,15 @@ mod tests {
 
         // Header, byte for byte.
         assert_eq!(&snap[0..8], MAGIC);
-        assert_eq!(&snap[8..10], &[0x05, 0x00]);
+        assert_eq!(&snap[8..10], &[0x06, 0x00]);
 
         // Total length, pinned to a literal, deliberately NOT compared against
         // `Psx::state_size()`, which would only compare the layout to itself.
-        assert_eq!(snap.len(), 3_147_742);
+        assert_eq!(snap.len(), 3_147_831);
 
         // Whole-buffer checksum: any added, removed, reordered or re-widened
         // field moves it.
-        assert_eq!(fnv1a64(&snap), 0xB6EF_25A2_F74A_DEA0);
+        assert_eq!(fnv1a64(&snap), 0xE27A_4764_3024_CA2E);
     }
 
     #[test]

@@ -31,6 +31,7 @@
 //! CD-ROM; sideloaded PSX-EXEs do run, and draw.
 
 pub mod bus;
+pub mod cdrom;
 pub mod cop0;
 pub mod cpu;
 pub mod dma;
