@@ -66,6 +66,9 @@ Working, and confirmed against real hardware behaviour rather than asserted:
   **`gte/test-all` passes 1150 of 1150.** Nine separate hardware behaviours had
   to be got right to reach that, and each is pinned by a unit test; the walk is
   in [`docs/TESTS.md`](docs/TESTS.md).
+- **Controllers**: SIO0, with a digital pad in each of the two ports. Verified
+  end to end against the suite's `input/pad`, which prints the buttons it sees:
+  holding three prints those three and nothing else.
 - **BIOS TTY capture** through the A/B call gates, so a test binary's own verdict
   is readable without a screen.
 - **PSX-EXE sideload** at the BIOS shell hand-over point.
@@ -76,7 +79,7 @@ Working, and confirmed against real hardware behaviour rather than asserted:
 
 Not started:
 
-- SPU, CD-ROM, controllers, memory cards.
+- SPU, CD-ROM, memory cards.
 - Per-instruction cycle costs. Every instruction is one cycle and
   multiply/divide do not stall.
 
@@ -86,7 +89,7 @@ binaries sideloaded as PSX-EXEs do run, and now draw.
 ## Layout
 
 ```
-crates/psx-core/       the emulator: cpu, cop0, gte, bus, exe, save
+crates/psx-core/       the emulator: cpu, cop0, gte, gpu, sio, bus, exe, save
 crates/psx-libretro/   the C ABI shim (cdylib)
 crates/psx-runner/     dev harnesses: psx, testrom, fingerprint
 bios/                  your BIOS dumps (gitignored)

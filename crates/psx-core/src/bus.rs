@@ -14,6 +14,7 @@
 use crate::dma::Dma;
 use crate::gpu::Gpu;
 use crate::irq::{self, Irq};
+use crate::sio::Sio;
 use crate::timers::Timers;
 use crate::video::{Standard, Video};
 
@@ -71,7 +72,8 @@ const RAM: Range = Range(0x0000_0000, 8 * 1024 * 1024); // 2 MB mirrored to 8 MB
 const EXPANSION_1: Range = Range(0x1F00_0000, 8 * 1024 * 1024);
 const SCRATCHPAD: Range = Range(0x1F80_0000, 1024);
 const MEM_CTRL: Range = Range(0x1F80_1000, 36);
-const PERIPHERAL: Range = Range(0x1F80_1040, 32); // joypad + serial
+const SIO0: Range = Range(0x1F80_1040, 16); // controllers and memory cards
+const SIO1: Range = Range(0x1F80_1050, 16); // the serial link port, unpopulated
 const RAM_SIZE_REG: Range = Range(0x1F80_1060, 4);
 const IRQ_CTRL: Range = Range(0x1F80_1070, 8);
 const DMA: Range = Range(0x1F80_1080, 0x80);
@@ -130,6 +132,7 @@ pub struct Bus {
     pub timers: Timers,
     pub gpu: Gpu,
     pub dma: Dma,
+    pub sio: Sio,
 
     /// Counters for ports we decode but do not emulate yet. These exist so the
     /// harnesses can answer "what did the BIOS touch that we ignore?" without a
@@ -162,6 +165,7 @@ impl Bus {
             timers: Timers::new(),
             gpu: Gpu::new(),
             dma: Dma::new(),
+            sio: Sio::new(),
             stub_reads: 0,
             stub_writes: 0,
             unmapped_reads: 0,
@@ -219,11 +223,15 @@ impl Bus {
             }
             let blank = (self.video.in_hblank(), self.video.in_vblank());
             self.timers.run(elapsed, &ticks, blank, &mut self.irq);
+            self.sio.run(elapsed, &mut self.irq);
             self.synced_to = self.cycle;
         }
 
         let mut next = self.video.cycles_to_vblank();
         if let Some(t) = self.timers.cycles_to_irq(&self.video) {
+            next = next.min(t);
+        }
+        if let Some(t) = self.sio.cycles_to_event() {
             next = next.min(t);
         }
         self.next_event = self.cycle + next.max(1);
@@ -317,10 +325,16 @@ impl Bus {
         if let Some(off) = DMA.contains(abs) {
             return self.dma.read(off);
         }
+        if let Some(off) = SIO0.contains(abs) {
+            // The acknowledge is a scheduled event, so a status read has to see
+            // the present rather than the last time the scheduler stopped.
+            self.sync();
+            return self.sio.read(off, width);
+        }
         if SPU.contains(abs).is_some()
             || CDROM.contains(abs).is_some()
             || MDEC.contains(abs).is_some()
-            || PERIPHERAL.contains(abs).is_some()
+            || SIO1.contains(abs).is_some()
             || EXPANSION_1.contains(abs).is_some()
             || EXPANSION_2.contains(abs).is_some()
         {
@@ -406,11 +420,19 @@ impl Bus {
             }
             return;
         }
+        if let Some(off) = SIO0.contains(abs) {
+            self.sync();
+            self.sio.write(off, width, val);
+            // A write can start a transfer or drop the select line, either of
+            // which moves when the port next needs attention.
+            self.sync();
+            return;
+        }
         if SPU.contains(abs).is_some()
             || CDROM.contains(abs).is_some()
             || MDEC.contains(abs).is_some()
             || DMA.contains(abs).is_some()
-            || PERIPHERAL.contains(abs).is_some()
+            || SIO1.contains(abs).is_some()
             || EXPANSION_1.contains(abs).is_some()
             || EXPANSION_2.contains(abs).is_some()
         {

@@ -22,6 +22,7 @@ Structure that works:
 | [`TIMING.md`](TIMING.md) | The master clock, scheduler, interrupts, video timing, root counters |
 | [`GPU.md`](GPU.md) | VRAM, GP0/GP1, the rasterizer, textures, and DMA |
 | [`GTE.md`](GTE.md) | COP2: the fixed-point geometry coprocessor |
+| [`SIO.md`](SIO.md) | SIO0: the controller and memory card port |
 
-Still to write, in the order the work is likely to happen: CD-ROM, SPU,
-controllers and memory cards.
+Still to write, in the order the work is likely to happen: CD-ROM, SPU and
+memory cards. Memory cards share `SIO.md`'s port and will be added to it.

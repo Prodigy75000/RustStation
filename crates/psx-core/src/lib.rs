@@ -13,16 +13,22 @@
 //! * R3000A interpreter: the full user + COP0 instruction set, both delay
 //!   slots, exceptions.
 //! * The memory map: 2 MB RAM (with its KUSEG mirrors), 1 KB scratchpad,
-//!   512 KB BIOS, and a decoded-but-stubbed I/O window.
+//!   512 KB BIOS, and a decoded I/O window.
+//! * The master clock and its run-until-next-event scheduler, the interrupt
+//!   controller, video timing and the three root counters.
+//! * The GPU: VRAM, GP0/GP1, the rasterizer, textures, and the DMA that reaches
+//!   it.
+//! * The GTE, conformant against `gte/test-all`.
+//! * SIO0: the controller port, with a digital pad.
 //! * BIOS TTY capture, so a conformance binary's own verdict is readable.
 //! * PSX-EXE sideload at the BIOS shell hook.
 //! * Save states that satisfy the in-house byte-identical contract.
 //!
 //! ## What does not exist yet
 //!
-//! GPU, SPU, CD-ROM, DMA, timers, controllers, and the GTE's 15 commands. No
-//! instruction timing model. A disc will not boot. The near-term bar is the
-//! R3000A passing a CPU conformance suite, not a game rendering.
+//! CD-ROM, SPU, MDEC, memory cards. No per-instruction timing model: every
+//! instruction costs one cycle. **A disc will not boot**, because there is no
+//! CD-ROM; sideloaded PSX-EXEs do run, and draw.
 
 pub mod bus;
 pub mod cop0;
@@ -33,6 +39,7 @@ pub mod gpu;
 pub mod gte;
 pub mod irq;
 pub mod save;
+pub mod sio;
 pub mod timers;
 pub mod video;
 

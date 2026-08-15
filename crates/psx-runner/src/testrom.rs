@@ -40,7 +40,9 @@ const DEFAULT_RUN_STEPS: u64 = 200_000_000;
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 3 {
-        eprintln!("usage: testrom <bios.bin> <test.exe|--dir DIR> [--steps N] [--boot-steps N]");
+        eprintln!(
+            "usage: testrom <bios.bin> <test.exe|--dir DIR> [--steps N] [--boot-steps N] \n             [--hold BUTTON,BUTTON]"
+        );
         return ExitCode::FAILURE;
     }
 
@@ -48,6 +50,7 @@ fn main() -> ExitCode {
     let mut dir: Option<String> = None;
     let mut run_steps = DEFAULT_RUN_STEPS;
     let mut boot_steps = DEFAULT_BOOT_STEPS;
+    let mut hold = 0u16;
 
     let mut i = 1;
     while i < args.len() {
@@ -66,6 +69,17 @@ fn main() -> ExitCode {
                     .get(i)
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(boot_steps);
+            }
+            "--hold" => {
+                i += 1;
+                match args.get(i).map(|s| parse_buttons(s)) {
+                    Some(Ok(bits)) => hold = bits,
+                    Some(Err(name)) => {
+                        eprintln!("unknown button {name:?}");
+                        return ExitCode::FAILURE;
+                    }
+                    None => {}
+                }
             }
             other => positional.push(other.to_string()),
         }
@@ -110,7 +124,7 @@ fn main() -> ExitCode {
     let mut ungraded = 0usize;
 
     for target in &targets {
-        match run_one(&bios, target, boot_steps, run_steps) {
+        match run_one(&bios, target, boot_steps, run_steps, hold) {
             Ok(report) => {
                 println!("=== {} ===", target.display());
                 print!("{}", report.tty);
@@ -188,12 +202,53 @@ struct Report {
     reference: Option<bool>,
 }
 
-fn run_one(bios: &[u8], path: &Path, boot_steps: u64, run_steps: u64) -> Result<Report, String> {
+/// Parse `--hold cross,start` into a [`psx_core::sio::Pad::buttons`] mask.
+///
+/// This exists so the pad path can be checked end to end: the suite's `pad`
+/// test prints the buttons it sees, and comparing a run with nothing held
+/// against a run with something held is the only way to tell a working port
+/// from one that answers plausibly and ignores the pad.
+fn parse_buttons(list: &str) -> Result<u16, String> {
+    use psx_core::sio::button as b;
+    let mut bits = 0u16;
+    for name in list.split(',').filter(|s| !s.is_empty()) {
+        let bit = match name.trim().to_ascii_lowercase().as_str() {
+            "select" | "sel" => b::SELECT,
+            "l3" => b::L3,
+            "r3" => b::R3,
+            "start" => b::START,
+            "up" => b::UP,
+            "right" => b::RIGHT,
+            "down" => b::DOWN,
+            "left" => b::LEFT,
+            "l2" => b::L2,
+            "r2" => b::R2,
+            "l1" => b::L1,
+            "r1" => b::R1,
+            "triangle" => b::TRIANGLE,
+            "circle" => b::CIRCLE,
+            "cross" | "x" => b::CROSS,
+            "square" => b::SQUARE,
+            other => return Err(other.to_string()),
+        };
+        bits |= 1 << bit;
+    }
+    Ok(bits)
+}
+
+fn run_one(
+    bios: &[u8],
+    path: &Path,
+    boot_steps: u64,
+    run_steps: u64,
+    hold: u16,
+) -> Result<Report, String> {
     let image = std::fs::read(path).map_err(|e| e.to_string())?;
     let exe = Exe::parse(&image).map_err(|e| e.to_string())?;
 
     let mut psx = Psx::new(bios.to_vec()).map_err(|e| e.to_string())?;
     psx.sideload_exe(exe);
+    psx.bus.sio.pads[0].buttons = hold;
 
     // Phase 1: BIOS boot, until the shell hands over and the EXE goes in.
     let mut booted = false;

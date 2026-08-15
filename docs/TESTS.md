@@ -171,8 +171,8 @@ output from three different changes meant the code path was not being reached,
 because those tests use **raw** textures, which bypass both modulation and
 dithering. The remaining error there is in the texel fetch, not the blend.
 
-Everything else outside `cpu/`, `timers/` and `gpu/` (CD-ROM, SPU, MDEC, input)
-is untested because none of those subsystems exist.
+Everything else outside `cpu/`, `timers/`, `gpu/`, `gte/` and `input/` (CD-ROM,
+SPU, MDEC) is untested because none of those subsystems exist.
 
 ## GTE, as of 2026-08-16
 
@@ -264,3 +264,50 @@ and are expected to be non-zero.
 The BIOS does not reach its shell hand-over on its own, because it is waiting on
 a CD-ROM that does not exist. Sideloading a PSX-EXE works regardless: the
 harness runs until the hand-over point is reached and swaps the binary in there.
+
+## Controllers, as of 2026-08-16
+
+`input/pad` prints the name of every button it currently sees held, so it grades
+UNGRADED and its value is in what it prints. The harness grew a `--hold` flag to
+drive it:
+
+```
+testrom <bios.bin> tests/test-suite/input/pad/pad.exe --hold cross,start,up
+```
+
+| Held | Printed |
+|---|---|
+| nothing | nothing |
+| `cross,start,up` | `PAD_UP`, `PAD_X`, `PAD_START` |
+
+That comparison is the whole test. A port that answers plausibly and ignores the
+pad prints the same thing either way, and the first version of this code did:
+it printed **all sixteen** names with nothing held, because the BIOS was giving
+up part way through the report and filling the buffer with zeroes, and zero
+means pressed.
+
+### The bug that cost the most, and what nearly hid it
+
+The BIOS was reading three bytes of the five-byte pad report and abandoning the
+transfer. The cause was that a new byte written while the previous `/ACK` pulse
+was still low did not reset the pulse's phase, so the next countdown expiry was
+read as the *release* of the old pulse instead of the assertion of the new one,
+and that byte never raised its interrupt.
+
+Sweeping the acknowledge delay to find the problem gave complete reads at 175,
+200, 275 and 300 cycles and nothing at 150, 225, 250 or 338. **Bands, not a
+threshold.** Any one of the working values would have made this table green
+while leaving the bug in place, for exactly the reason the video clock constant
+in this file was wrong: a constant chosen because it makes a symptom go away is
+fitted to the symptom.
+
+Two register traces settled it, and both are worth keeping in mind for the
+subsystems still to come:
+
+* The BIOS reads the pad with the controller interrupt **masked off**, polling
+  `I_STAT` bit 7 in a tight loop. Timing arguments that start from "the handler
+  runs when the device acknowledges" are reasoning about a loop that is not
+  running.
+* Changing what the pad *replied* changed nothing: the transfer still stopped
+  after three bytes whatever the content. That ruled out every protocol
+  hypothesis at once and pointed at the port rather than the device.

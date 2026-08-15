@@ -40,10 +40,43 @@ use std::process::ExitCode;
 use psx_core::gpu::{VRAM_HEIGHT, VRAM_WIDTH};
 use psx_core::{exe::Exe, Psx};
 
+/// `--hold cross,start` into a pad button mask. Duplicated from `testrom`
+/// rather than shared: these two binaries have no common module, and a
+/// sixteen-line table is cheaper than inventing one for it.
+fn psx_runner_buttons(list: &str) -> Result<u16, String> {
+    use psx_core::sio::button as b;
+    let mut bits = 0u16;
+    for name in list.split(',').filter(|s| !s.is_empty()) {
+        let bit = match name.trim().to_ascii_lowercase().as_str() {
+            "select" | "sel" => b::SELECT,
+            "l3" => b::L3,
+            "r3" => b::R3,
+            "start" => b::START,
+            "up" => b::UP,
+            "right" => b::RIGHT,
+            "down" => b::DOWN,
+            "left" => b::LEFT,
+            "l2" => b::L2,
+            "r2" => b::R2,
+            "l1" => b::L1,
+            "r1" => b::R1,
+            "triangle" => b::TRIANGLE,
+            "circle" => b::CIRCLE,
+            "cross" | "x" => b::CROSS,
+            "square" => b::SQUARE,
+            other => return Err(other.to_string()),
+        };
+        bits |= 1 << bit;
+    }
+    Ok(bits)
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("usage: shot <bios.bin> [--exe file.exe] [--steps N] [--out shot.png] [--vram]");
+        eprintln!(
+            "usage: shot <bios.bin> [--exe file.exe] [--steps N] [--out shot.png] [--vram] \n             [--hold BUTTON,BUTTON]"
+        );
         return ExitCode::FAILURE;
     }
 
@@ -53,6 +86,7 @@ fn main() -> ExitCode {
     let mut steps: u64 = 60_000_000;
     let mut whole_vram = false;
     let mut compare_path: Option<String> = None;
+    let mut hold = 0u16;
 
     let mut i = 1;
     while i < args.len() {
@@ -70,6 +104,17 @@ fn main() -> ExitCode {
                 steps = args.get(i).and_then(|s| s.parse().ok()).unwrap_or(steps);
             }
             "--vram" => whole_vram = true,
+            "--hold" => {
+                i += 1;
+                hold = args
+                    .get(i)
+                    .map(|s| psx_runner_buttons(s))
+                    .unwrap_or(Ok(0))
+                    .unwrap_or_else(|name| {
+                        eprintln!("unknown button {name:?}, holding nothing");
+                        0
+                    });
+            }
             "--compare" => {
                 i += 1;
                 compare_path = args.get(i).cloned();
@@ -116,6 +161,7 @@ fn main() -> ExitCode {
             }
         }
     }
+    psx.bus.sio.pads[0].buttons = hold;
 
     psx.run(steps);
 
@@ -162,6 +208,10 @@ fn main() -> ExitCode {
 
     let non_black = pixels.chunks(3).filter(|p| p != &[0, 0, 0]).count();
     println!("wrote {out_path} ({width}x{height})");
+    println!(
+        "sio: {} bytes exchanged, {} answered by a device",
+        psx.bus.sio.transfers, psx.bus.sio.acknowledged
+    );
     println!(
         "{non_black} non-black pixels, display {}x{}{}",
         psx.bus.gpu.display_width(),

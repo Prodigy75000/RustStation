@@ -29,7 +29,7 @@
 use crate::bus::{self, Bus};
 use crate::cpu::Cpu;
 use crate::video::Standard;
-use crate::{dma, gpu, Psx};
+use crate::{dma, gpu, sio, Psx};
 
 /// Core magic. The trailing digit is a generation marker: it only changes if
 /// the stream stops being a RustStation state at all.
@@ -45,7 +45,10 @@ pub const MAGIC: &[u8; 8] = b"RSTAPSX1";
 ///   DMA controller.
 /// * 4: the GTE gains real state, serialized as its logical fields rather than
 ///   as the register slots software sees.
-pub const FORMAT_VERSION: u16 = 4;
+/// * 5: adds SIO0, the controller port. The pads themselves are **not** in
+///   here: button state is an input the host supplies each frame, and a state
+///   that carried it would replay the buttons held when it was taken.
+pub const FORMAT_VERSION: u16 = 5;
 
 const HEADER_BYTES: usize = 8 + 2;
 const CPU_BYTES: usize = 32 * 4     // regs
@@ -85,7 +88,8 @@ const TIMED_BYTES: usize = 2 + 2                  // irq: stat, mask
     + 3 * (2 + 2 + 2 + 4 + 1 + 1)                 // three root counters
     + 8                                           // timers.sync_uses
     + GPU_BYTES
-    + DMA_BYTES;
+    + DMA_BYTES
+    + SIO_BYTES;
 
 /// The GP0 FIFO is serialized as a fixed-size array so the state stays a
 /// constant length. The longest real command is 12 words (a Gouraud textured
@@ -103,6 +107,14 @@ const GPU_BYTES: usize = 4 + gpu::VRAM_WORDS * 2   // length-prefixed VRAM
     + 4; // mask set / mask check / display disabled / irq
 
 const DMA_BYTES: usize = dma::CHANNELS * 3 * 4 + 4 + 4;
+
+/// SIO0, added in format version 5. The port only, not the pads.
+const SIO_BYTES: usize = 2 * 3      // mode, ctrl, baud
+    + 2                             // the RX latch, with its presence bit
+    + 4                             // step
+    + 1                             // target
+    + 8 + 1                         // /ACK countdown, and whether one is armed
+    + 1; // ack level, interrupt latch
 
 /// Exact serialized length for [`FORMAT_VERSION`]. Derived from the field
 /// widths above rather than from `save_state().len()`, so a test that pins it
@@ -338,6 +350,7 @@ fn write_bus(w: &mut Writer, b: &Bus) {
 
     write_gpu(w, &b.gpu);
     write_dma(w, &b.dma);
+    write_sio(w, &b.sio);
 }
 
 fn write_gpu(w: &mut Writer, g: &gpu::Gpu) {
@@ -379,6 +392,19 @@ fn write_dma(w: &mut Writer, d: &dma::Dma) {
     }
     w.u32(d.control);
     w.u32(d.interrupt_raw());
+}
+
+fn write_sio(w: &mut Writer, s: &sio::Sio) {
+    let (mode, ctrl, baud, rx, step, target, ack, armed, flags) = s.parts();
+    w.u16(mode);
+    w.u16(ctrl);
+    w.u16(baud);
+    w.u16(rx);
+    w.u32(step);
+    w.u8(target);
+    w.u64(ack);
+    w.u8(armed);
+    w.u8(flags);
 }
 
 fn read_cpu(r: &mut Reader, cpu: &mut Cpu) -> Option<()> {
@@ -535,6 +561,7 @@ fn read_bus(r: &mut Reader, b: &mut Bus) -> Option<()> {
 
     read_gpu(r, &mut b.gpu)?;
     read_dma(r, &mut b.dma)?;
+    read_sio(r, &mut b.sio)?;
 
     Some(())
 }
@@ -577,6 +604,20 @@ fn read_dma(r: &mut Reader, d: &mut dma::Dma) -> Option<()> {
     d.control = r.u32()?;
     let interrupt = r.u32()?;
     d.restore_interrupt(interrupt);
+    Some(())
+}
+
+fn read_sio(r: &mut Reader, s: &mut sio::Sio) -> Option<()> {
+    let mode = r.u16()?;
+    let ctrl = r.u16()?;
+    let baud = r.u16()?;
+    let rx = r.u16()?;
+    let step = r.u32()?;
+    let target = r.u8()?;
+    let ack = r.u64()?;
+    let armed = r.u8()?;
+    let flags = r.u8()?;
+    s.restore(mode, ctrl, baud, rx, step, target, ack, armed, flags);
     Some(())
 }
 
@@ -762,6 +803,16 @@ mod tests {
         psx.bus.store32(0x1F80_1084, 0x0002_0010);
         psx.bus.store32(0x1F80_10F4, (1 << 23) | (1 << 18));
 
+        // SIO0, left part way through a controller read with /ACK asserted and
+        // the interrupt latched. Same reasoning as the GPU transfer above: a
+        // port sitting at all zeroes cannot show a reordering of its fields.
+        psx.bus.store16(0x1F80_1048, 0x000D); // MODE
+        psx.bus.store16(0x1F80_104E, 0x0088); // BAUD
+        psx.bus.store16(0x1F80_104A, 0x1003); // TXEN | select | ACK interrupt
+        psx.bus.store8(0x1F80_1040, 0x01); // address the controller
+        psx.bus.store8(0x1F80_1040, 0x42); // and ask it to report
+        psx.bus.tick(340); // far enough in for /ACK to be low, not yet released
+
         psx
     }
 
@@ -779,15 +830,15 @@ mod tests {
 
         // Header, byte for byte.
         assert_eq!(&snap[0..8], MAGIC);
-        assert_eq!(&snap[8..10], &[0x04, 0x00]);
+        assert_eq!(&snap[8..10], &[0x05, 0x00]);
 
         // Total length, pinned to a literal, deliberately NOT compared against
         // `Psx::state_size()`, which would only compare the layout to itself.
-        assert_eq!(snap.len(), 3_147_719);
+        assert_eq!(snap.len(), 3_147_742);
 
         // Whole-buffer checksum: any added, removed, reordered or re-widened
         // field moves it.
-        assert_eq!(fnv1a64(&snap), 0x2E82_799E_DFA3_59D5);
+        assert_eq!(fnv1a64(&snap), 0xB6EF_25A2_F74A_DEA0);
     }
 
     #[test]

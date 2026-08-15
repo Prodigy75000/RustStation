@@ -25,6 +25,7 @@ use std::ffi::{c_char, c_uint, c_void, CStr, CString};
 use std::path::PathBuf;
 use std::ptr;
 
+use psx_core::sio::button;
 use psx_core::{exe::Exe, save, Psx};
 
 // ---------------------------------------------------------------------------
@@ -232,12 +233,61 @@ pub unsafe extern "C" fn retro_get_system_av_info(info: *mut SystemAvInfo) {
 }
 
 #[no_mangle]
-pub extern "C" fn retro_set_controller_port_device(_port: c_uint, _device: c_uint) {}
+pub extern "C" fn retro_set_controller_port_device(port: c_uint, device: c_uint) {
+    // Only the digital pad exists, so the one thing worth honouring is a port
+    // being emptied: a game that polls an absent controller must time out
+    // rather than read a pad that answers with nothing held.
+    if let Some(psx) = unsafe { psx_mut() } {
+        if let Some(pad) = psx.bus.sio.pads.get_mut(port as usize) {
+            pad.connected = device != 0;
+        }
+    }
+}
 
 #[no_mangle]
 pub unsafe extern "C" fn retro_reset() {
     if let Some(psx) = psx_mut() {
         psx.reset();
+    }
+}
+
+/// RetroPad device and button ids, and the pad bit each one drives.
+///
+/// The mapping is the conventional PlayStation one: RetroPad B/A/Y/X are
+/// Cross/Circle/Square/Triangle. It is spelled out rather than derived, because
+/// the two layouts are rotated relative to each other and every core that gets
+/// this wrong gets it wrong in the same confidently-symmetrical way.
+const RETRO_DEVICE_JOYPAD: c_uint = 1;
+const PAD_MAP: [(c_uint, u16); 16] = [
+    (0, button::SELECT),
+    (3, button::START),
+    (4, button::UP),
+    (5, button::DOWN),
+    (6, button::LEFT),
+    (7, button::RIGHT),
+    (8, button::CROSS),    // RETRO_DEVICE_ID_JOYPAD_A
+    (1, button::CIRCLE),   // B
+    (2, button::SQUARE),   // Y
+    (9, button::TRIANGLE), // X
+    (10, button::L1),
+    (11, button::R1),
+    (12, button::L2),
+    (13, button::R2),
+    (14, button::L3),
+    (15, button::R3),
+];
+
+/// Read both ports from the frontend into the emulated pads.
+unsafe fn poll_pads(psx: &mut Psx) {
+    let Some(state) = INPUT_STATE_CB else { return };
+    for port in 0..2u32 {
+        let mut held = 0u16;
+        for (id, bit) in PAD_MAP {
+            if state(port, RETRO_DEVICE_JOYPAD, 0, id) != 0 {
+                held |= 1 << bit;
+            }
+        }
+        psx.bus.sio.pads[port as usize].buttons = held;
     }
 }
 
@@ -248,6 +298,7 @@ pub unsafe extern "C" fn retro_run() {
     }
 
     if let Some(psx) = psx_mut() {
+        poll_pads(psx);
         psx.run(CYCLES_PER_FRAME);
 
         // The GPU picks the resolution, and software changes it mid-game, so
