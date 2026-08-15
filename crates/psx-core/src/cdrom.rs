@@ -9,11 +9,10 @@
 //! or a stream of responses rather than returning a value. What is modelled here
 //! is therefore a queue of scheduled responses.
 //!
-//! Only the controller is implemented, with an empty drive. There is no disc
-//! image support and no sector data, so anything that would need to read
-//! something answers with the error the hardware gives for an empty tray. See
-//! `docs/notes/CDROM.md`.
+//! The drive reads from a [`crate::disc::Disc`] when one is inserted, and
+//! answers with the empty-tray error when one is not. See `docs/notes/CDROM.md`.
 
+use crate::disc::{self, Disc, RAW_SECTOR};
 use crate::irq::{self, Irq};
 
 /// Cycles from a command being written to its acknowledgement.
@@ -25,7 +24,17 @@ const ACK_DELAY: u64 = 50_401;
 /// a second response.
 const COMPLETE_DELAY: u64 = 120_000;
 
+/// Cycles per sector at single speed.
+///
+/// This one is not a guess: the drive turns at exactly 75 sectors per second,
+/// so it is the CPU clock divided by 75. `cdrom/timing` measures 446 040 ticks
+/// against this 451 584, and 222 222 against the double-speed 225 792, which is
+/// within about 1% and is the closest thing to a confirmation available without
+/// a disc of its own.
+const SECTOR_CYCLES: u64 = 33_868_800 / 75;
+
 /// Response interrupt codes, in the low three bits of the flags register.
+const INT1_DATA: u8 = 1;
 const INT2_COMPLETE: u8 = 2;
 const INT3_ACK: u8 = 3;
 const INT5_ERROR: u8 = 5;
@@ -34,6 +43,16 @@ const INT5_ERROR: u8 = 5;
 const STAT_ERROR: u8 = 1 << 0;
 const STAT_MOTOR: u8 = 1 << 1;
 const STAT_SHELL_OPEN: u8 = 1 << 4;
+const STAT_READING: u8 = 1 << 5;
+const STAT_SEEKING: u8 = 1 << 6;
+
+/// Mode bits, from `Setmode`.
+const MODE_WHOLE_SECTOR: u8 = 1 << 5;
+const MODE_DOUBLE_SPEED: u8 = 1 << 7;
+
+/// Bytes a sector yields: the user data alone, or everything from the header on.
+const DATA_2048: usize = 2048;
+const DATA_2340: usize = 2340;
 
 /// The controller firmware's own date and version, reported by `Test(0x20)`.
 /// Measured hardware data, used as data: this is the SCPH-1001 drive's.
@@ -75,7 +94,6 @@ impl Response {
     }
 }
 
-#[derive(Clone)]
 pub struct Cdrom {
     index: u8,
     irq_enable: u8,
@@ -100,14 +118,35 @@ pub struct Cdrom {
     /// Cycles until the head of `pending` is delivered.
     countdown: u64,
 
-    /// Is there a disc in the drive? No image support yet, so this is false and
-    /// the commands that would read from it report the empty-tray error.
-    pub disc: bool,
+    /// Where the head is, and where `Setloc` last pointed it.
+    read_lba: u32,
+    seek_target: u32,
+    /// A read is running: sectors keep arriving until something stops it.
+    reading: bool,
+    /// Cycles until the next sector, while `reading`.
+    sector_countdown: u64,
+
+    /// The last sector read, from its header onwards, which is what `GetlocL`
+    /// reports and what the data FIFO serves.
+    sector: [u8; DATA_2340],
+    /// How much of `sector` software has asked for, and how far it has read.
+    /// Zero until the request register's buffer-read bit is set: the sector
+    /// exists in the drive before software asks for it.
+    data_len: u16,
+    data_pos: u16,
+
+    /// The disc in the drive. Host-provided and **not serialized**, the same
+    /// way the BIOS image is not: a save state records that a disc was present,
+    /// not the disc itself.
+    pub disc: Option<Disc>,
 
     /// Commands seen, and commands this core does not recognise. Host-side
     /// observation only, never serialized.
     pub commands: u64,
     pub unknown_commands: u64,
+    /// Sectors delivered. The figure that says whether a game is actually
+    /// loading or just asking politely.
+    pub sectors_read: u64,
 }
 
 impl Default for Cdrom {
@@ -136,9 +175,17 @@ impl Cdrom {
             pending: [Response::default(); PENDING_MAX],
             pending_len: 0,
             countdown: 0,
-            disc: false,
+            read_lba: 0,
+            seek_target: 0,
+            reading: false,
+            sector_countdown: 0,
+            sector: [0; DATA_2340],
+            data_len: 0,
+            data_pos: 0,
+            disc: None,
             commands: 0,
             unknown_commands: 0,
+            sectors_read: 0,
         }
     }
 
@@ -149,7 +196,7 @@ impl Cdrom {
         let v = match offset & 3 {
             0 => self.status_register(),
             1 => self.pop_response(),
-            2 => 0, // the data FIFO, which stays empty without a disc
+            2 => self.pop_data(),
             _ => match self.index {
                 1 | 3 => self.irq_flags | 0xE0,
                 _ => self.irq_enable | 0xE0,
@@ -174,6 +221,19 @@ impl Cdrom {
                 1 => self.irq_enable = val & 0x1F,
                 _ => {}
             },
+            // Index 0 of the last address is the request register: bit 7 hands
+            // the sector the drive is holding to the data FIFO. Until software
+            // asks, the sector exists but is not readable, which is why the
+            // FIFO is loaded here and not when the sector arrives.
+            3 if self.index == 0 => {
+                if val & 0x80 != 0 {
+                    self.data_len = self.sector_bytes() as u16;
+                    self.data_pos = 0;
+                } else {
+                    self.data_len = 0;
+                    self.data_pos = 0;
+                }
+            }
             // A write to the flags register acknowledges the bits set in it.
             // It does not assign: treating it as an assignment leaves the line
             // stuck. Bit 6 is a separate strobe that empties the parameters.
@@ -200,7 +260,47 @@ impl Cdrom {
         if self.response_pos < self.response_len {
             s |= 1 << 5; // response FIFO not empty
         }
+        if self.data_pos < self.data_len {
+            s |= 1 << 6; // data FIFO not empty
+        }
         s
+    }
+
+    /// How many bytes of a sector this mode serves: the 2048-byte user data, or
+    /// everything from the sector header on.
+    fn sector_bytes(&self) -> usize {
+        if self.mode & MODE_WHOLE_SECTOR != 0 {
+            DATA_2340
+        } else {
+            DATA_2048
+        }
+    }
+
+    /// Take one byte from the data FIFO.
+    ///
+    /// With the whole sector selected the FIFO starts at the header; otherwise
+    /// it starts at the user data, 12 bytes further in.
+    fn pop_data(&mut self) -> u8 {
+        if self.data_pos >= self.data_len {
+            return 0;
+        }
+        let skip = if self.mode & MODE_WHOLE_SECTOR != 0 {
+            0
+        } else {
+            12
+        };
+        let v = self.sector[skip + self.data_pos as usize];
+        self.data_pos += 1;
+        v
+    }
+
+    /// Drain the data FIFO a word at a time, which is what DMA channel 3 does.
+    pub fn read_word(&mut self) -> u32 {
+        let mut w = 0u32;
+        for i in 0..4 {
+            w |= (self.pop_data() as u32) << (8 * i);
+        }
+        w
     }
 
     fn pop_response(&mut self) -> u8 {
@@ -269,8 +369,10 @@ impl Cdrom {
                 self.queue(INT3_ACK, &[s], ACK_DELAY);
             }
             0x02 => {
-                // Setloc, in BCD minute/second/frame
+                // Setloc, in BCD minute/second/frame. It only records where to
+                // go; nothing moves until a seek or a read.
                 self.seek_loc = [self.param(0), self.param(1), self.param(2)];
+                self.seek_target = disc::msf_bcd_to_lba(self.seek_loc);
                 let s = self.take_stat();
                 self.queue(INT3_ACK, &[s], ACK_DELAY);
             }
@@ -295,31 +397,38 @@ impl Cdrom {
                 self.queue(INT2_COMPLETE, &[s], COMPLETE_DELAY);
             }
             0x08 | 0x09 => {
-                // Stop, Pause
+                // Stop, Pause. The acknowledgement still reports the drive as
+                // reading; only the completion says it has stopped.
                 let s = self.take_stat();
                 self.queue(INT3_ACK, &[s], ACK_DELAY);
-                self.queue(INT2_COMPLETE, &[s], COMPLETE_DELAY);
+                self.reading = false;
+                self.stat &= !(STAT_READING | STAT_SEEKING);
+                if cmd == 0x08 {
+                    self.stat &= !STAT_MOTOR;
+                }
+                let done = self.stat;
+                self.queue(INT2_COMPLETE, &[done], COMPLETE_DELAY);
             }
             0x19 => self.test(),
             0x1A => {
                 // GetID: acknowledge, then say what is in the drive.
-                // There is only one answer to give, because there is no disc
-                // image support to give another one from. When there is, this
-                // is where the licensed-game reply goes, and `disc` is the flag
-                // that will choose between them.
                 let s = self.take_stat();
                 self.queue(INT3_ACK, &[s], ACK_DELAY);
-                self.queue(INT5_ERROR, &NO_DISC_ID, COMPLETE_DELAY);
+                match self.region() {
+                    Some(region) => {
+                        let mut out = [0x02, 0x00, 0x20, 0x00, 0, 0, 0, 0];
+                        out[4..].copy_from_slice(&region);
+                        self.queue(INT2_COMPLETE, &out, COMPLETE_DELAY);
+                    }
+                    None => self.queue(INT5_ERROR, &NO_DISC_ID, COMPLETE_DELAY),
+                }
             }
-            // Everything that needs to read something. With an empty tray the
-            // hardware answers with the error, not with silence, and software
-            // that waits for a response it will never get is the failure mode
-            // this avoids.
-            0x06 | 0x10 | 0x11 | 0x13 | 0x14 | 0x15 | 0x16 | 0x1B => {
-                let s = self.take_stat();
-                self.queue(INT3_ACK, &[s], ACK_DELAY);
-                self.queue(INT5_ERROR, &[s | STAT_ERROR, 0x80], COMPLETE_DELAY);
-            }
+            0x15 | 0x16 => self.seek(),
+            0x06 | 0x1B => self.start_read(),
+            0x10 => self.getloc_l(),
+            0x11 => self.getloc_p(),
+            0x13 => self.get_tn(),
+            0x14 => self.get_td(),
             _ => {
                 self.unknown_commands += 1;
                 let s = self.take_stat();
@@ -330,6 +439,184 @@ impl Cdrom {
         // Per command, not per write: a command with no parameters would
         // otherwise inherit the previous one's.
         self.params_len = 0;
+    }
+
+    /// Everything that needs a disc answers the same way without one: an
+    /// acknowledgement, then an error. Not silence. Software left waiting for a
+    /// response that never comes is the failure this avoids.
+    fn no_disc(&mut self) {
+        let s = self.take_stat();
+        self.queue(INT3_ACK, &[s], ACK_DELAY);
+        self.queue(INT5_ERROR, &[s | STAT_ERROR, 0x80], COMPLETE_DELAY);
+    }
+
+    fn seek(&mut self) {
+        if self.disc.is_none() {
+            return self.no_disc();
+        }
+        let s = self.take_stat() | STAT_SEEKING;
+        self.queue(INT3_ACK, &[s], ACK_DELAY);
+        self.read_lba = self.seek_target;
+        self.reading = false;
+        self.stat = (self.stat & !(STAT_READING | STAT_SEEKING)) | STAT_MOTOR;
+        // The head has to land before GetlocL can report where it is, so the
+        // sector under it is fetched now rather than at the next read.
+        let lba = self.read_lba;
+        self.fetch_sector(lba);
+        let done = self.stat;
+        self.queue(INT2_COMPLETE, &[done], COMPLETE_DELAY);
+    }
+
+    fn start_read(&mut self) {
+        if self.disc.is_none() {
+            return self.no_disc();
+        }
+        self.read_lba = self.seek_target;
+        self.reading = true;
+        self.stat = (self.stat & !STAT_SEEKING) | STAT_MOTOR | STAT_READING;
+        let s = self.take_stat();
+        self.queue(INT3_ACK, &[s], ACK_DELAY);
+        self.sector_countdown = self.sector_cycles();
+    }
+
+    fn sector_cycles(&self) -> u64 {
+        if self.mode & MODE_DOUBLE_SPEED != 0 {
+            SECTOR_CYCLES / 2
+        } else {
+            SECTOR_CYCLES
+        }
+    }
+
+    /// Pull the sector at `lba` into the drive's buffer.
+    ///
+    /// Returns false past the end of the disc, which is how a read runs off the
+    /// lead-out rather than looping forever.
+    fn fetch_sector(&mut self, lba: u32) -> bool {
+        let Some(disc) = self.disc.as_mut() else {
+            return false;
+        };
+        let mut raw = [0u8; RAW_SECTOR];
+        if !disc.read_sector(lba, &mut raw) {
+            return false;
+        }
+        // From the header on: the 12-byte sync pattern is not part of what the
+        // drive hands over.
+        self.sector.copy_from_slice(&raw[12..12 + DATA_2340]);
+        true
+    }
+
+    /// `GetlocL`: the header and subheader of the sector under the head.
+    ///
+    /// Taken from the sector's own header rather than from where we believe the
+    /// head is, which is the entire point of the command.
+    fn getloc_l(&mut self) {
+        if self.disc.is_none() {
+            return self.no_disc();
+        }
+        let mut out = [0u8; 8];
+        out.copy_from_slice(&self.sector[..8]);
+        self.queue(INT3_ACK, &out, ACK_DELAY);
+    }
+
+    /// `GetlocP`: track, index, and the position both within the track and on
+    /// the disc as a whole.
+    fn getloc_p(&mut self) {
+        let Some(d) = self.disc.as_ref() else {
+            return self.no_disc();
+        };
+        let lba = self.read_lba;
+        let (track, index, start) = match d.track_at(lba) {
+            Some(t) => (t.number, u8::from(lba >= t.start_lba), t.start_lba),
+            None => (1, 1, 0),
+        };
+        // The relative position counts from the track, so it carries no lead-in.
+        let within = lba.saturating_sub(start);
+        let rel = disc::lba_to_msf_bcd(within.saturating_sub(disc::LEAD_IN));
+        let abs = disc::lba_to_msf_bcd(lba);
+        let out = [
+            disc::to_bcd(track),
+            disc::to_bcd(index),
+            rel[0],
+            rel[1],
+            rel[2],
+            abs[0],
+            abs[1],
+            abs[2],
+        ];
+        self.queue(INT3_ACK, &out, ACK_DELAY);
+    }
+
+    /// `GetTN`: the first and last track numbers, in BCD.
+    fn get_tn(&mut self) {
+        let Some(d) = self.disc.as_ref() else {
+            return self.no_disc();
+        };
+        let first = d.tracks.first().map(|t| t.number).unwrap_or(1);
+        let last = d.tracks.last().map(|t| t.number).unwrap_or(1);
+        let s = self.take_stat();
+        let out = [s, disc::to_bcd(first), disc::to_bcd(last)];
+        self.queue(INT3_ACK, &out, ACK_DELAY);
+    }
+
+    /// `GetTD`: where a track starts, as minute and second. Track 0 means the
+    /// lead-out, which is where the disc ends.
+    fn get_td(&mut self) {
+        let n = disc::from_bcd(self.param(0));
+        let Some(d) = self.disc.as_ref() else {
+            return self.no_disc();
+        };
+        let lba = if n == 0 {
+            d.length
+        } else {
+            match d.tracks.iter().find(|t| t.number == n) {
+                Some(t) => t.start_lba,
+                None => {
+                    let s = self.take_stat();
+                    self.queue(INT5_ERROR, &[s | STAT_ERROR, 0x10], ACK_DELAY);
+                    return;
+                }
+            }
+        };
+        let msf = disc::lba_to_msf_bcd(lba);
+        let s = self.take_stat();
+        let out = [s, msf[0], msf[1]];
+        self.queue(INT3_ACK, &out, ACK_DELAY);
+    }
+
+    /// The four `SCEx` bytes `GetID` reports, or `None` for an empty tray.
+    ///
+    /// Read from the licence text the disc carries in its system area rather
+    /// than assumed from the BIOS, because the two can disagree and it is the
+    /// disagreement that produces the "wrong region" screen. **Untested**:
+    /// there is no disc here to try it against, so the fallback matters, and
+    /// the fallback is to report the disc as licensed rather than to reject it.
+    fn region(&mut self) -> Option<[u8; 4]> {
+        self.disc.as_ref()?;
+        let mut raw = [0u8; RAW_SECTOR];
+        let mut text = String::new();
+        for lba in 4..16 {
+            let ok = match self.disc.as_mut() {
+                Some(d) => d.read_sector(lba, &mut raw),
+                None => false,
+            };
+            if !ok {
+                break;
+            }
+            text.extend(raw.iter().map(|&b| {
+                if b.is_ascii_graphic() || b == b' ' {
+                    b as char
+                } else {
+                    ' '
+                }
+            }));
+        }
+        Some(if text.contains("Europe") {
+            *b"SCEE"
+        } else if text.contains("Japan") {
+            *b"SCEI"
+        } else {
+            *b"SCEA"
+        })
     }
 
     fn test(&mut self) {
@@ -352,6 +639,12 @@ impl Cdrom {
     /// second response never overwrites the first and never arrives early.
     pub fn run(&mut self, elapsed: u64, irq: &mut Irq) {
         if self.pending_len == 0 {
+            // A running read produces a sector at a time for as long as nothing
+            // stops it, which is not a queued response: the queue is two deep
+            // and a read is unbounded.
+            if self.reading {
+                self.run_read(elapsed, irq);
+            }
             return;
         }
         if self.countdown > elapsed {
@@ -392,16 +685,68 @@ impl Cdrom {
         }
     }
 
+    /// Deliver the next sector of a running read.
+    ///
+    /// Gated on the interrupt being acknowledged like everything else, so a
+    /// host that stops servicing the drive stalls the read instead of silently
+    /// dropping sectors on the floor.
+    fn run_read(&mut self, elapsed: u64, irq: &mut Irq) {
+        if self.sector_countdown > elapsed {
+            self.sector_countdown -= elapsed;
+            return;
+        }
+        self.sector_countdown = 0;
+        if self.irq_flags != 0 {
+            return;
+        }
+
+        let lba = self.read_lba;
+        if !self.fetch_sector(lba) {
+            // Off the end of the disc. Stop, and say so, rather than looping.
+            self.reading = false;
+            self.stat &= !STAT_READING;
+            let s = self.stat | STAT_ERROR;
+            self.response[0] = s;
+            self.response_len = 1;
+            self.response_pos = 0;
+            self.irq_flags = INT5_ERROR;
+            if self.irq_enable & INT5_ERROR & 0x07 != 0 {
+                irq.raise(irq::CDROM);
+            }
+            return;
+        }
+        self.read_lba = lba.wrapping_add(1);
+        self.sectors_read += 1;
+
+        self.response[0] = self.stat;
+        self.response_len = 1;
+        self.response_pos = 0;
+        self.irq_flags = INT1_DATA;
+        self.sector_countdown = self.sector_cycles();
+
+        if trace_enabled() {
+            eprintln!("cdrom int1 sector {lba}");
+        }
+        if self.irq_enable & INT1_DATA & 0x07 != 0 {
+            irq.raise(irq::CDROM);
+        }
+    }
+
     /// Cycles until the next response is due, for the scheduler.
     ///
     /// `None` while an unacknowledged interrupt is blocking delivery: there is
     /// nothing to wake up for until software writes the flags back.
     pub fn cycles_to_event(&self) -> Option<u64> {
-        if self.pending_len == 0 || self.irq_flags != 0 {
-            None
-        } else {
-            Some(self.countdown.max(1))
+        if self.irq_flags != 0 {
+            return None;
         }
+        if self.pending_len > 0 {
+            return Some(self.countdown.max(1));
+        }
+        if self.reading {
+            return Some(self.sector_countdown.max(1));
+        }
+        None
     }
 
     // ---- save state ------------------------------------------------------
@@ -437,6 +782,43 @@ impl Cdrom {
             out[base + 2..base + 2 + RESPONSE_MAX].copy_from_slice(&r.data);
         }
         (self.pending_len, out)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    /// The drive's own position and buffer, as distinct from the register
+    /// block. Serialized because a state restored mid-read has to resume the
+    /// read, not silently drop it.
+    pub(crate) fn drive_parts(&self) -> (u32, u32, u8, u64, u16, u16, &[u8; DATA_2340]) {
+        (
+            self.read_lba,
+            self.seek_target,
+            u8::from(self.reading),
+            self.sector_countdown,
+            self.data_len,
+            self.data_pos,
+            &self.sector,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn restore_drive(
+        &mut self,
+        read_lba: u32,
+        seek_target: u32,
+        reading: u8,
+        sector_countdown: u64,
+        data_len: u16,
+        data_pos: u16,
+        sector: [u8; DATA_2340],
+    ) {
+        self.read_lba = read_lba;
+        self.seek_target = seek_target;
+        self.reading = reading != 0;
+        self.sector_countdown = sector_countdown;
+        // Clamped, not trusted: a length past the buffer would index out of it.
+        self.data_len = data_len.min(DATA_2340 as u16);
+        self.data_pos = data_pos.min(DATA_2340 as u16);
+        self.sector = sector;
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -477,6 +859,7 @@ impl Cdrom {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::disc::Disc;
 
     /// Write a command with parameters, the way software does.
     fn issue(c: &mut Cdrom, cmd: u8, params: &[u8]) {
@@ -661,6 +1044,236 @@ mod tests {
             0,
             "but the CPU never sees it"
         );
+    }
+
+
+    // ---- with a disc in the drive ---------------------------------------
+
+    /// A synthetic disc whose every sector carries its own number, so a read
+    /// can be checked against the sector it should have come from.
+    fn with_disc() -> Cdrom {
+        let cue = "FILE \"x.bin\" BINARY\n TRACK 01 MODE2/2352\n INDEX 01 00:00:00\n";
+        let mut image = vec![0u8; RAW_SECTOR * 32];
+        for lba in 0..32 {
+            let base = lba * RAW_SECTOR;
+            // A plausible Mode 2 Form 1 header, then a marker in the user data.
+            let msf = disc::lba_to_msf_bcd(lba as u32);
+            image[base + 12..base + 15].copy_from_slice(&msf);
+            image[base + 15] = 2;
+            image[base + 16] = 0x11; // subheader: file
+            image[base + 17] = 0x22; // channel
+            image[base + 24] = lba as u8;
+            image[base + 25] = 0xA5;
+        }
+        let mut c = enabled();
+        c.disc = Disc::from_memory(cue, vec![image]).ok();
+        assert!(c.disc.is_some());
+        c
+    }
+
+    /// Seek to `lba` and start reading, leaving the drive running.
+    fn seek_and_read(c: &mut Cdrom, irq: &mut Irq, lba: u32) {
+        let msf = disc::lba_to_msf_bcd(lba);
+        issue(c, 0x02, &msf); // Setloc
+        let _ = take(c, irq);
+        issue(c, 0x15, &[]); // SeekL
+        let _ = take(c, irq);
+        let _ = take(c, irq);
+        issue(c, 0x06, &[]); // ReadN
+        let _ = take(c, irq);
+    }
+
+    #[test]
+    fn a_read_delivers_sectors_one_at_a_time() {
+        let mut c = with_disc();
+        let mut irq = Irq::new();
+        seek_and_read(&mut c, &mut irq, 10);
+
+        for expected in 10..14u32 {
+            let (code, _) = take(&mut c, &mut irq);
+            assert_eq!(code, INT1_DATA, "sector {expected}");
+
+            // The sector is in the drive but not readable until asked for.
+            assert_eq!(c.status_register() & (1 << 6), 0, "FIFO empty until asked");
+            c.write(0, 0);
+            c.write(3, 0x80);
+            assert_ne!(c.status_register() & (1 << 6), 0, "and full once asked");
+
+            assert_eq!(c.pop_data(), expected as u8, "user data, first byte");
+            assert_eq!(c.pop_data(), 0xA5);
+
+            // Clear it again, or the next pass sees this sector's leftovers:
+            // the FIFO holds what it was given until told otherwise.
+            c.write(3, 0x00);
+        }
+        assert_eq!(c.sectors_read, 4);
+    }
+
+    #[test]
+    fn the_whole_sector_mode_serves_the_header_too() {
+        let mut c = with_disc();
+        let mut irq = Irq::new();
+        issue(&mut c, 0x0E, &[MODE_WHOLE_SECTOR]); // Setmode
+        let _ = take(&mut c, &mut irq);
+        seek_and_read(&mut c, &mut irq, 5);
+        let _ = take(&mut c, &mut irq);
+
+        c.write(0, 0);
+        c.write(3, 0x80);
+        assert_eq!(c.data_len, DATA_2340 as u16, "2340 bytes, not 2048");
+        // The first byte is now the header's minute, not the user data.
+        assert_eq!(c.pop_data(), disc::lba_to_msf_bcd(5)[0]);
+    }
+
+    #[test]
+    fn double_speed_halves_the_time_between_sectors() {
+        let mut single = with_disc();
+        let mut double = with_disc();
+        let mut irq = Irq::new();
+
+        issue(&mut double, 0x0E, &[MODE_DOUBLE_SPEED]);
+        let _ = take(&mut double, &mut irq);
+
+        seek_and_read(&mut single, &mut irq, 0);
+        seek_and_read(&mut double, &mut irq, 0);
+        assert_eq!(single.sector_cycles(), SECTOR_CYCLES);
+        assert_eq!(double.sector_cycles(), SECTOR_CYCLES / 2);
+    }
+
+    #[test]
+    fn getloc_l_reports_the_sector_under_the_head() {
+        let mut c = with_disc();
+        let mut irq = Irq::new();
+        let msf = disc::lba_to_msf_bcd(9);
+        issue(&mut c, 0x02, &msf);
+        let _ = take(&mut c, &mut irq);
+        issue(&mut c, 0x15, &[]);
+        let _ = take(&mut c, &mut irq);
+        let _ = take(&mut c, &mut irq);
+
+        issue(&mut c, 0x10, &[]); // GetlocL
+        let (code, data) = take(&mut c, &mut irq);
+        assert_eq!(code, INT3_ACK);
+        // Header, then subheader: the position comes from the sector itself.
+        assert_eq!(&data[..3], &msf, "minute, second, frame");
+        assert_eq!(data[3], 2, "mode");
+        assert_eq!(data[4], 0x11, "subheader file");
+        assert_eq!(data[5], 0x22, "subheader channel");
+    }
+
+    #[test]
+    fn getloc_p_reports_the_track_and_both_positions() {
+        let mut c = with_disc();
+        let mut irq = Irq::new();
+        seek_and_read(&mut c, &mut irq, 20);
+        let _ = take(&mut c, &mut irq); // one sector, so the head has moved
+
+        issue(&mut c, 0x11, &[]); // GetlocP
+        let (code, data) = take(&mut c, &mut irq);
+        assert_eq!(code, INT3_ACK);
+        assert_eq!(data[0], 0x01, "track 1, in BCD");
+        assert_eq!(data[1], 0x01, "index 1");
+        assert_eq!(&data[5..8], &disc::lba_to_msf_bcd(21), "absolute position");
+    }
+
+    #[test]
+    fn get_tn_and_get_td_describe_the_table_of_contents() {
+        let cue = "FILE \"x.bin\" BINARY\n\
+                   TRACK 01 MODE2/2352\n INDEX 01 00:00:00\n\
+                   TRACK 02 AUDIO\n INDEX 01 00:01:00\n";
+        let mut c = enabled();
+        c.disc = Disc::from_memory(cue, vec![vec![0u8; RAW_SECTOR * 200]]).ok();
+        let mut irq = Irq::new();
+
+        issue(&mut c, 0x13, &[]); // GetTN
+        let (_, tn) = take(&mut c, &mut irq);
+        assert_eq!(&tn[1..3], &[0x01, 0x02], "first and last track, in BCD");
+
+        issue(&mut c, 0x14, &[0x02]); // GetTD for track 2
+        let (_, td) = take(&mut c, &mut irq);
+        let expected = disc::lba_to_msf_bcd(75);
+        assert_eq!(&td[1..3], &expected[..2], "minute and second of track 2");
+    }
+
+    #[test]
+    fn get_td_for_a_track_that_is_not_there_is_an_error() {
+        let mut c = with_disc();
+        let mut irq = Irq::new();
+        issue(&mut c, 0x14, &[0x09]);
+        let (code, _) = take(&mut c, &mut irq);
+        assert_eq!(code, INT5_ERROR);
+    }
+
+    #[test]
+    fn getid_reports_a_licensed_disc_when_one_is_present() {
+        let mut c = with_disc();
+        let mut irq = Irq::new();
+        issue(&mut c, 0x1A, &[]);
+        let (first, _) = take(&mut c, &mut irq);
+        assert_eq!(first, INT3_ACK);
+        let (second, data) = take(&mut c, &mut irq);
+        assert_eq!(second, INT2_COMPLETE, "not the empty-tray error");
+        assert_eq!(&data[4..8], b"SCEA", "the default when no region is stamped");
+    }
+
+    #[test]
+    fn the_region_comes_from_the_disc_not_from_a_guess() {
+        let cue = "FILE \"x.bin\" BINARY\n TRACK 01 MODE2/2352\n INDEX 01 00:00:00\n";
+        let mut image = vec![0u8; RAW_SECTOR * 32];
+        let text = b"Licensed  by          Sony Computer Entertainment Europe";
+        image[4 * RAW_SECTOR + 24..4 * RAW_SECTOR + 24 + text.len()].copy_from_slice(text);
+
+        let mut c = enabled();
+        c.disc = Disc::from_memory(cue, vec![image]).ok();
+        let mut irq = Irq::new();
+        issue(&mut c, 0x1A, &[]);
+        let _ = take(&mut c, &mut irq);
+        let (_, data) = take(&mut c, &mut irq);
+        assert_eq!(&data[4..8], b"SCEE");
+    }
+
+    #[test]
+    fn pause_stops_the_sectors_arriving() {
+        let mut c = with_disc();
+        let mut irq = Irq::new();
+        seek_and_read(&mut c, &mut irq, 0);
+        let _ = take(&mut c, &mut irq);
+        let before = c.sectors_read;
+
+        issue(&mut c, 0x09, &[]); // Pause
+        let _ = take(&mut c, &mut irq);
+        let _ = take(&mut c, &mut irq);
+
+        c.run(SECTOR_CYCLES * 8, &mut irq);
+        assert_eq!(c.sectors_read, before, "nothing more arrived");
+        assert_eq!(c.cycles_to_event(), None, "and nothing is scheduled");
+    }
+
+    #[test]
+    fn reading_off_the_end_of_the_disc_stops_with_an_error() {
+        let mut c = with_disc();
+        let mut irq = Irq::new();
+        // The synthetic disc is 32 sectors long.
+        seek_and_read(&mut c, &mut irq, 30);
+        assert_eq!(take(&mut c, &mut irq).0, INT1_DATA, "sector 30");
+        assert_eq!(take(&mut c, &mut irq).0, INT1_DATA, "sector 31");
+
+        let (code, _) = take(&mut c, &mut irq);
+        assert_eq!(code, INT5_ERROR, "rather than looping forever");
+        assert!(!c.reading);
+    }
+
+    #[test]
+    fn a_stalled_host_delays_the_read_rather_than_losing_sectors() {
+        let mut c = with_disc();
+        let mut irq = Irq::new();
+        seek_and_read(&mut c, &mut irq, 0);
+
+        // Deliver one sector and never acknowledge it.
+        c.run(SECTOR_CYCLES, &mut irq);
+        assert_eq!(c.irq_flags, INT1_DATA);
+        c.run(SECTOR_CYCLES * 10, &mut irq);
+        assert_eq!(c.sectors_read, 1, "the read stalls, it does not skip ahead");
     }
 
     #[test]

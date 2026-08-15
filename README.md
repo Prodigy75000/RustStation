@@ -72,10 +72,15 @@ Working, and confirmed against real hardware behaviour rather than asserted:
   controller existed. `cargo run --release --bin shot -- <bios.bin>
   --steps 300000000`. One rendering fault is visible and recorded in
   [`docs/notes/GPU.md`](docs/notes/GPU.md).
-- **CD-ROM**: the controller only, with an **empty drive**. Commands, the
-  response queue, interrupts and the drive status byte. No disc image support,
-  so anything that would read a sector answers with the error hardware gives for
-  an empty tray.
+- **CD-ROM**: the controller, seeking, and reads that deliver a sector at a time
+  through the data FIFO and DMA channel 3. **With a synthetic disc the BIOS runs
+  its whole recognition sequence and draws the PlayStation licence screen, with
+  the text on it read off the disc.** Reproduce it with `python
+  tools/fakedisc.py out/fakedisc`. Not yet tried against a real game.
+- **Disc images**: BIN/CUE, with the cue sheet's tracks, pregaps and indices.
+  Raw 2352-byte sectors throughout, because a 2048-byte image has no sector
+  header for `GetlocL` to report and no room for CD-DA. CHD would be a second
+  implementation of the same interface.
 - **Controllers**: SIO0, with a digital pad in each of the two ports. Verified
   end to end against the suite's `input/pad`, which prints the buttons it sees:
   holding three prints those three and nothing else.
@@ -89,19 +94,21 @@ Working, and confirmed against real hardware behaviour rather than asserted:
 
 Not started:
 
-- Disc images, and therefore sector reads, the table of contents and XA audio.
+- XA audio, CD-DA playback, and the CD-ROM's sub-channel.
+- CHD images.
 - SPU, MDEC, memory cards.
 - Per-instruction cycle costs. Every instruction is one cycle and
   multiply/divide do not stall.
 
-**A disc will not boot**, because there is no disc image support: the CD-ROM
-controller is here but there is nothing for it to read. Homebrew and test
-binaries sideloaded as PSX-EXEs do run, and draw.
+**No real game has been tried yet**, for want of a dump to try. The disc path is
+proven as far as a synthetic disc can prove it: the BIOS recognises the disc,
+reads its system area and puts text from it on screen. Homebrew and test
+binaries sideloaded as PSX-EXEs also run, and draw.
 
 ## Layout
 
 ```
-crates/psx-core/       the emulator: cpu, cop0, gte, gpu, sio, cdrom, bus, save
+crates/psx-core/       the emulator: cpu, gte, gpu, sio, cdrom, disc, bus, save
 crates/psx-libretro/   the C ABI shim (cdylib)
 crates/psx-runner/     dev harnesses: psx, testrom, fingerprint
 bios/                  your BIOS dumps (gitignored)
@@ -133,6 +140,9 @@ cargo run --release --bin testrom -- bios/scph5501.bin --dir tests/test-suite/cp
 
 # Prove save-state byte parity across two builds.
 cargo run --release --bin fingerprint -- bios/scph5501.bin --steps 1000000
+
+# Boot a disc.
+cargo run --release --bin shot -- bios/scph5501.bin --disc game.cue --steps 400000000
 
 cargo test --workspace
 ```

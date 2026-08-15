@@ -130,7 +130,11 @@ const CDROM_BYTES: usize = 8      // index, irq enable/flags, stat, mode, three 
     + 8                           // the countdown to the next response
     + 1                           // how many responses are queued
     + 2 * (2 + 16)                // and the queue itself
-    + 1; // disc present
+    + 4 + 4                       // the head position and the Setloc target
+    + 1                           // whether a read is running
+    + 8                           // cycles to the next sector
+    + 2 + 2                       // how much of the sector software asked for
+    + 2340; // and the sector itself
 
 /// Exact serialized length for [`FORMAT_VERSION`]. Derived from the field
 /// widths above rather than from `save_state().len()`, so a test that pins it
@@ -421,7 +425,15 @@ fn write_cdrom(w: &mut Writer, c: &cdrom::Cdrom) {
     let (len, pending) = c.pending_parts();
     w.u8(len);
     w.bytes(&pending);
-    w.bool(c.disc);
+
+    let (read_lba, seek_target, reading, countdown, data_len, data_pos, sector) = c.drive_parts();
+    w.u32(read_lba);
+    w.u32(seek_target);
+    w.u8(reading);
+    w.u64(countdown);
+    w.u16(data_len);
+    w.u16(data_pos);
+    w.bytes(sector);
 }
 
 fn write_sio(w: &mut Writer, s: &sio::Sio) {
@@ -651,8 +663,25 @@ fn read_cdrom(r: &mut Reader, c: &mut cdrom::Cdrom) -> Option<()> {
     let countdown = r.u64()?;
     let len = r.u8()?;
     pending.copy_from_slice(r.take(2 * (2 + 16))?);
-    c.disc = r.bool()?;
     c.restore(regs, seek_loc, params, response, countdown, len, pending);
+
+    let read_lba = r.u32()?;
+    let seek_target = r.u32()?;
+    let reading = r.u8()?;
+    let sector_countdown = r.u64()?;
+    let data_len = r.u16()?;
+    let data_pos = r.u16()?;
+    let mut sector = [0u8; 2340];
+    sector.copy_from_slice(r.take(2340)?);
+    c.restore_drive(
+        read_lba,
+        seek_target,
+        reading,
+        sector_countdown,
+        data_len,
+        data_pos,
+        sector,
+    );
     Some(())
 }
 
@@ -867,6 +896,19 @@ mod tests {
         // parameters left in the FIFO. Same reasoning again: every field of the
         // response queue has to be non-zero for the golden to be able to see a
         // reordering of it.
+        //
+        // That extends to the drive itself, which is why there is a disc here.
+        // With an empty tray the head never moves and the sector buffer stays
+        // 2340 zeroes, so a reordering of the drive's fields would be invisible
+        // no matter how carefully the registers were stirred.
+        let cue = "FILE \"x.bin\" BINARY\n TRACK 01 MODE2/2352\n INDEX 01 00:00:00\n";
+        let mut image = vec![0u8; 2352 * 40];
+        for (i, b) in image.iter_mut().enumerate() {
+            *b = (i * 7 + 3) as u8;
+        }
+        psx.bus.cdrom.disc = crate::disc::Disc::from_memory(cue, vec![image]).ok();
+        assert!(psx.bus.cdrom.disc.is_some(), "the fixture's disc must load");
+
         psx.bus.store8(0x1F80_1800, 0x01); // index 1
         psx.bus.store8(0x1F80_1802, 0x1F); // interrupt enable
         psx.bus.store8(0x1F80_1800, 0x00); // index 0
@@ -878,9 +920,20 @@ mod tests {
         psx.bus.store8(0x1F80_1800, 0x01);
         psx.bus.store8(0x1F80_1803, 0x07); // acknowledge it
         psx.bus.store8(0x1F80_1800, 0x00);
-        psx.bus.store8(0x1F80_1801, 0x0A); // Init: acknowledges now, completes later
+        psx.bus.store8(0x1F80_1801, 0x15); // SeekL: moves the head and reads a sector
         psx.bus.tick(60_000);
-        psx.bus.store8(0x1F80_1802, 0x42); // and a parameter for a command not yet sent
+        psx.bus.store8(0x1F80_1803, 0x80); // hand that sector to the data FIFO
+        let _ = psx.bus.load(0x1F80_1802, 1); // and take a byte, so data_pos moves
+
+        // A second Setloc, pointing somewhere the head has not gone. Without
+        // this the seek target and the head position hold the same value and
+        // the golden cannot tell them apart: swapping the two in the
+        // serializer left the checksum unchanged until this was added.
+        for p in [0x01u8, 0x20, 0x30] {
+            psx.bus.store8(0x1F80_1802, p);
+        }
+        psx.bus.store8(0x1F80_1801, 0x02);
+        psx.bus.store8(0x1F80_1802, 0x42); // a parameter for a command not yet sent
 
         psx
     }
@@ -903,11 +956,11 @@ mod tests {
 
         // Total length, pinned to a literal, deliberately NOT compared against
         // `Psx::state_size()`, which would only compare the layout to itself.
-        assert_eq!(snap.len(), 3_147_831);
+        assert_eq!(snap.len(), 3_150_191);
 
         // Whole-buffer checksum: any added, removed, reordered or re-widened
         // field moves it.
-        assert_eq!(fnv1a64(&snap), 0xE27A_4764_3024_CA2E);
+        assert_eq!(fnv1a64(&snap), 0x96AB_A924_D199_0C70);
     }
 
     #[test]

@@ -26,6 +26,7 @@ use std::path::PathBuf;
 use std::ptr;
 
 use psx_core::sio::button;
+use psx_core::disc::Disc;
 use psx_core::{exe::Exe, save, Psx};
 
 // ---------------------------------------------------------------------------
@@ -349,15 +350,37 @@ pub unsafe extern "C" fn retro_load_game(info: *const GameInfo) -> bool {
         }
     };
 
-    // A null info is "boot with no content", the BIOS menu. Valid, and the
-    // only thing this core can currently do end to end.
-    if !info.is_null() && !(*info).data.is_null() && (*info).size > 0 {
-        let image = std::slice::from_raw_parts((*info).data as *const u8, (*info).size);
-        match Exe::parse(image) {
-            Ok(exe) => psx.sideload_exe(exe),
-            Err(e) => {
-                eprintln!("[RustStation] {e}");
-                return false;
+    // A null info is "boot with no content", the BIOS menu. Valid on its own.
+    if !info.is_null() {
+        // A disc is loaded by path, not from the buffer the frontend may have
+        // read for us: a cue sheet names other files beside it, and a disc is
+        // too large to want in memory anyway.
+        let path = if (*info).path.is_null() {
+            None
+        } else {
+            CStr::from_ptr((*info).path).to_str().ok()
+        };
+        let is_disc = path.is_some_and(|p| {
+            let p = p.to_ascii_lowercase();
+            p.ends_with(".cue") || p.ends_with(".bin") || p.ends_with(".iso") || p.ends_with(".img")
+        });
+
+        if is_disc {
+            match Disc::open(std::path::Path::new(path.unwrap())) {
+                Ok(d) => psx.bus.cdrom.disc = Some(d),
+                Err(e) => {
+                    eprintln!("[RustStation] {e}");
+                    return false;
+                }
+            }
+        } else if !(*info).data.is_null() && (*info).size > 0 {
+            let image = std::slice::from_raw_parts((*info).data as *const u8, (*info).size);
+            match Exe::parse(image) {
+                Ok(exe) => psx.sideload_exe(exe),
+                Err(e) => {
+                    eprintln!("[RustStation] {e}");
+                    return false;
+                }
             }
         }
     }

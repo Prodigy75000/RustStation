@@ -365,3 +365,44 @@ is the thing that would settle them, and it needs a disc.
 It also produced the first evidence about the GPU that did not come from a test
 pattern: the menu draws colour noise where its two icons should be. Recorded in
 `docs/notes/GPU.md`.
+
+### With a disc: the licence screen
+
+The second milestone, and a much stronger one, because it exercises the whole
+path rather than the register block alone.
+
+```
+python tools/fakedisc.py out/fakedisc
+cargo run --release --bin shot -- <bios.bin> \
+    --disc out/fakedisc/fake.cue --steps 400000000 --out out/shots/fake.png
+```
+
+`fakedisc.py` writes a disc that will not boot, but does carry a correct Mode 2
+Form 1 sector layout and a licence string in its system area. The BIOS then runs
+its entire recognition sequence, and the trace is worth reading in full:
+
+```
+Test(20) -> 94 09 19 c0        the drive firmware's own version
+GetStat  -> 10                 shell-open, latched, on the first look
+GetStat  -> 00                 and clear on the second
+GetID    -> 02 00 20 00 SCEA   a licensed disc, region read off the disc
+Setloc(00:02:04)               LBA 4, the licence sector
+SeekL    -> INT3 40, INT2 02   seeking, then landed
+Setmode(80)                    double speed
+ReadN    -> INT1 sector 4      one sector, delivered
+Pause
+```
+
+The BIOS then draws the PlayStation licence screen, and **the text on it is the
+string written into sector 4 of the image**. That is the cue parser, the LBA to
+MSF conversion, the seek, the sector fetch, the data FIFO and DMA channel 3 all
+agreeing with each other, checked by a picture rather than by an assertion each
+of them individually passes.
+
+It is committed as a tool rather than described in prose because a milestone
+nobody can reproduce is not much of a milestone, and no disc image can go in
+this repository.
+
+**What it still does not prove:** that a real game boots. The synthetic disc has
+no filesystem, no `SYSTEM.CNF` and no executable, so everything past "the BIOS
+likes this disc" is untested. The timing constants remain approximate.

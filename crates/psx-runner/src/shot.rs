@@ -87,6 +87,7 @@ fn main() -> ExitCode {
     let mut whole_vram = false;
     let mut compare_path: Option<String> = None;
     let mut hold = 0u16;
+    let mut disc_path: Option<String> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -104,6 +105,10 @@ fn main() -> ExitCode {
                 steps = args.get(i).and_then(|s| s.parse().ok()).unwrap_or(steps);
             }
             "--vram" => whole_vram = true,
+            "--disc" => {
+                i += 1;
+                disc_path = args.get(i).cloned();
+            }
             "--hold" => {
                 i += 1;
                 hold = args
@@ -163,6 +168,19 @@ fn main() -> ExitCode {
     }
     psx.bus.sio.pads[0].buttons = hold;
 
+    if let Some(path) = &disc_path {
+        match psx_core::disc::Disc::open(std::path::Path::new(path)) {
+            Ok(d) => {
+                println!("disc: {} tracks, {} sectors", d.tracks.len(), d.length);
+                psx.bus.cdrom.disc = Some(d);
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
     psx.run(steps);
 
     let (width, height, pixels) = if whole_vram {
@@ -211,6 +229,10 @@ fn main() -> ExitCode {
     println!(
         "stubs: {} reads, {} writes on decoded-but-unemulated ports; {} unmapped reads, {} unmapped writes",
         psx.bus.stub_reads, psx.bus.stub_writes, psx.bus.unmapped_reads, psx.bus.unmapped_writes
+    );
+    println!(
+        "cdrom: {} commands ({} unknown), {} sectors read",
+        psx.bus.cdrom.commands, psx.bus.cdrom.unknown_commands, psx.bus.cdrom.sectors_read
     );
     println!(
         "sio: {} bytes exchanged, {} answered by a device",

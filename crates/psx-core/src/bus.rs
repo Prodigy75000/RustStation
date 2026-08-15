@@ -424,6 +424,7 @@ impl Bus {
                     &mut self.dma,
                     &mut self.ram,
                     &mut self.gpu,
+                    &mut self.cdrom,
                     &mut self.irq,
                     channel,
                 );

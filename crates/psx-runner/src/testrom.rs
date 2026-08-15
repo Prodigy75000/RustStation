@@ -51,6 +51,7 @@ fn main() -> ExitCode {
     let mut run_steps = DEFAULT_RUN_STEPS;
     let mut boot_steps = DEFAULT_BOOT_STEPS;
     let mut hold = 0u16;
+    let mut disc: Option<String> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -69,6 +70,10 @@ fn main() -> ExitCode {
                     .get(i)
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(boot_steps);
+            }
+            "--disc" => {
+                i += 1;
+                disc = args.get(i).cloned();
             }
             "--hold" => {
                 i += 1;
@@ -124,7 +129,7 @@ fn main() -> ExitCode {
     let mut ungraded = 0usize;
 
     for target in &targets {
-        match run_one(&bios, target, boot_steps, run_steps, hold) {
+        match run_one(&bios, target, boot_steps, run_steps, hold, disc.as_deref()) {
             Ok(report) => {
                 println!("=== {} ===", target.display());
                 print!("{}", report.tty);
@@ -242,6 +247,7 @@ fn run_one(
     boot_steps: u64,
     run_steps: u64,
     hold: u16,
+    disc: Option<&str>,
 ) -> Result<Report, String> {
     let image = std::fs::read(path).map_err(|e| e.to_string())?;
     let exe = Exe::parse(&image).map_err(|e| e.to_string())?;
@@ -249,6 +255,9 @@ fn run_one(
     let mut psx = Psx::new(bios.to_vec()).map_err(|e| e.to_string())?;
     psx.sideload_exe(exe);
     psx.bus.sio.pads[0].buttons = hold;
+    if let Some(d) = disc {
+        psx.bus.cdrom.disc = Some(psx_core::disc::Disc::open(Path::new(d))?);
+    }
 
     // Phase 1: BIOS boot, until the shell hands over and the EXE goes in.
     let mut booted = false;

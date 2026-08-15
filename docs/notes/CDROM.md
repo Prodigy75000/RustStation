@@ -6,12 +6,22 @@ protocol and the interrupt path. No third-party emulator source consulted.
 
 Implemented in `crates/psx-core/src/cdrom.rs`.
 
-**Status: the controller only, with an empty drive.** Commands, responses,
-interrupts and the drive status byte are here. There is no disc image support and
-no sector data, so every command that would need to read something answers with
-the error the hardware gives for an empty tray. The milestone this was built to
-is the BIOS getting past its boot logo to its own "no disc" screen, which is what
-it does on a real console with nothing in the drive.
+**Status: the controller and sector reads.** Commands, responses, interrupts,
+the drive status byte, seeking, and a running read that delivers a sector at a
+time into the data FIFO and out through DMA channel 3. Discs come from
+[`DISC.md`](DISC.md)'s layer, which the controller knows nothing about beyond
+"table of contents plus a function from LBA to 2352 bytes".
+
+Two milestones, both reproducible:
+
+* With **no disc**, the BIOS gets past its boot logo to its own main menu, which
+  is what a real console does with an empty tray.
+* With a **synthetic disc** (`tools/fakedisc.py`), the BIOS runs its whole
+  recognition sequence and draws the PlayStation licence screen, with the text
+  on it read out of sector 4 of the disc.
+
+Not yet done: XA audio, CD-DA playback, sub-channel Q, and the region check
+against a real game.
 
 ## What it is
 
@@ -106,6 +116,27 @@ six zeroes, which means "no disc". A closed lid with nothing in it is not an
 error condition at the status-byte level; the drive reports the absence only
 when asked what the disc is.
 
+With a disc, the second response is a completion instead, carrying `02h, 00h,
+20h, 00h` and the four region bytes.
+
+## Reading
+
+`ReadN` does not return sectors. It starts the drive, and sectors then arrive on
+their own at 75 per second, or 150 at double speed, each as its own `INT1`,
+until something stops it. So a read is **not** a queued response: the response
+queue is two deep and a read is unbounded, and modelling it as a queue entry
+either truncates it at two sectors or grows the queue without limit.
+
+A delivered sector sits in the drive and is **not readable yet**. Software sets
+bit 7 of the request register to hand it to the data FIFO, and only then can it
+be read a byte at a time or pulled out by DMA channel 3. Loading the FIFO when
+the sector arrives instead looks right until software reads a sector it never
+asked for.
+
+`Setmode` bit 5 decides what the FIFO contains: the 2048-byte user data, or all
+2340 bytes from the sector header onwards. The 12-byte sync pattern is never
+part of it.
+
 ## Traps
 
 * **The index register changes what an address means**, including for reads. A
@@ -119,15 +150,27 @@ when asked what the disc is.
 
 ## Open questions
 
-1. **The timing constants are approximate.** `cdrom/timing` measures them
-   precisely and ships a hardware log, but every measurement in it needs a disc
-   in the drive, so none of it can be checked yet. The values here are the
-   commonly cited ones: roughly 50 000 cycles to the first acknowledgement, and
-   longer for a completion. What would settle it: a disc image, then that test.
-2. **No disc image support.** Sector reads, the data FIFO, sub-channel
-   position, the table of contents and XA audio all wait on it. Three of the
-   four tests in `cdrom/` need one, and the fourth needs the lid opened by hand
-   part way through.
-3. **The status byte for an empty tray with the lid closed** is reported here as
+1. **The command timing constants are approximate.** Roughly 50 000 cycles to
+   the first acknowledgement and longer for a completion, both commonly cited
+   and neither measured. `cdrom/timing` would settle them, and now that discs
+   load it can be run: it needs any disc in the tray, not a particular one, and
+   its per-command figures are drive properties rather than disc properties.
+
+   The **sector rate** is the exception and is not a guess: the drive turns at
+   exactly 75 sectors per second, so it is the CPU clock over 75, which is
+   451 584 cycles. The hardware log measures 446 040 against that, and 222 222
+   against the double-speed 225 792, both within about 1%.
+2. **No real game has been tried.** The disc path is proven as far as a
+   synthetic disc can prove it, which stops at "the BIOS likes this disc". The
+   synthetic image has no filesystem, no `SYSTEM.CNF` and no executable, so
+   everything past recognition is untested.
+3. **XA audio, CD-DA playback and the Q sub-channel do not exist.** `GetlocP`
+   derives its position arithmetically from the track table instead of reading
+   a sub-channel, which is right for a data track and approximate for audio.
+4. **Disc swapping is not wired up.** The shell-open bit latches correctly, but
+   nothing yet opens the lid: there is no host-facing way to eject. That is what
+   `cdrom/disc-swap` tests, and it also needs a person to open the tray part way
+   through, so it may never be gradeable unattended.
+5. **The status byte for an empty tray with the lid closed** is reported here as
    motor off with the shell-open bit latched until first read. That is inferred
    from what makes the BIOS behave, not measured.

@@ -24,6 +24,7 @@ Structure that works:
 | [`GTE.md`](GTE.md) | COP2: the fixed-point geometry coprocessor |
 | [`SIO.md`](SIO.md) | SIO0: the controller and memory card port |
 | [`CDROM.md`](CDROM.md) | The CD-ROM controller |
+| [`DISC.md`](DISC.md) | Disc images: cue sheets, tracks and raw sectors |
 
 Still to write, in the order the work is likely to happen: SPU, MDEC, and
 memory cards. Memory cards share `SIO.md`'s port and will be added to it.
