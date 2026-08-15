@@ -15,16 +15,16 @@
 //! blend modes, the mask bit, the drawing area and drawing offset, and all four
 //! VRAM transfer commands (fill, CPU to VRAM, VRAM to CPU, VRAM to VRAM).
 //!
+//! **Textures**: texture pages, 4-bit and 8-bit CLUT lookup, 15-bit direct
+//! colour, the texture window, the textured-rectangle flips, fully transparent
+//! texels, the per-texel semi-transparency bit, and raw versus modulated
+//! colour. Texture coordinates interpolate affinely across a polygon, which is
+//! what the hardware does and why PlayStation textures swim.
+//!
 //! ## What does not
 //!
-//! **Textures.** Their command words are decoded and skipped correctly, so a
-//! textured primitive draws as a solid polygon in its base colour rather than
-//! desynchronising the command FIFO, and [`Gpu::textured_primitives`] counts
-//! them. That is the next piece of work and it is a large one: texture pages,
-//! 4/8/15-bit CLUT lookup, the texture window, and blending.
-//!
-//! Also absent: 24-bit display output, interlace, and the texture cache the
-//! `clut-cache` test exercises.
+//! 24-bit display output, interlace, and the texture cache the `clut-cache`
+//! test exercises. Nothing models how long drawing takes.
 
 use crate::video::{Standard, DOT_DIVIDER_256, DOT_DIVIDER_320, DOT_DIVIDER_368};
 use crate::video::{DOT_DIVIDER_512, DOT_DIVIDER_640};
@@ -33,7 +33,8 @@ pub const VRAM_WIDTH: usize = 1024;
 pub const VRAM_HEIGHT: usize = 512;
 pub const VRAM_WORDS: usize = VRAM_WIDTH * VRAM_HEIGHT;
 
-/// A vertex as the rasterizer wants it: signed VRAM coordinates plus a colour.
+/// A vertex as the rasterizer wants it: signed VRAM coordinates, a colour, and
+/// a texture coordinate.
 #[derive(Clone, Copy, Default, Debug)]
 struct Vertex {
     x: i32,
@@ -41,6 +42,27 @@ struct Vertex {
     r: i32,
     g: i32,
     b: i32,
+    u: i32,
+    v: i32,
+}
+
+/// Where a primitive's texels come from.
+///
+/// The page and colour depth come from the draw mode (which a textured polygon
+/// can itself overwrite, via the texpage word on its second vertex), and the
+/// palette from the CLUT word on its first.
+#[derive(Clone, Copy)]
+struct Tex {
+    /// Top-left of the 256x256 texture page, in VRAM pixels.
+    page_x: u32,
+    page_y: u32,
+    /// 0 = 4-bit CLUT, 1 = 8-bit CLUT, otherwise 15-bit direct.
+    depth: u32,
+    /// Top-left of the palette, in VRAM pixels.
+    clut_x: u32,
+    clut_y: u32,
+    /// Use the texel colour as-is, with no shading applied.
+    raw: bool,
 }
 
 /// How a primitive combines with what is already in VRAM.
@@ -378,7 +400,11 @@ impl Gpu {
             0x80..=0x9F => self.vram_to_vram(&words),
             0xA0..=0xBF => self.begin_transfer(&words, Port::ToVram),
             0xC0..=0xDF => self.begin_transfer(&words, Port::FromVram),
-            0xE1 => self.draw_mode = (self.draw_mode & !0x7FF) | (words[0] & 0x7FF),
+            // Fourteen bits, not eleven: 11 is texture-disable and 12/13 are the
+            // textured-rectangle flips. Masking to 0x7FF silently drops the
+            // flips, which shows up as four identical copies of a texture the
+            // hardware mirrors into four quadrants.
+            0xE1 => self.draw_mode = (self.draw_mode & !0x3FFF) | (words[0] & 0x3FFF),
             0xE2 => self.texture_window = words[0] & 0x000F_FFFF,
             0xE3 => {
                 self.draw_left = (words[0] & 0x3FF) as i32;
@@ -488,9 +514,7 @@ impl Gpu {
         let quad = cmd & 0x08 != 0;
         let textured = cmd & 0x04 != 0;
         let semi = cmd & 0x02 != 0;
-        if textured {
-            self.textured_primitives += 1;
-        }
+        let raw = cmd & 0x01 != 0;
 
         let count = if quad { 4 } else { 3 };
         let mut v = [Vertex::default(); 4];
@@ -498,6 +522,8 @@ impl Gpu {
         // data starts at 1.
         let mut i = 1usize;
         let base = words[0];
+        let mut clut = 0u32;
+        let mut texpage = self.draw_mode;
 
         for (n, slot) in v.iter_mut().enumerate().take(count) {
             let colour_word = if gouraud && n > 0 {
@@ -509,16 +535,38 @@ impl Gpu {
             };
             let pos = words[i];
             i += 1;
+
+            let mut vertex = self.vertex(pos, colour_word);
             if textured {
-                i += 1; // CLUT / texpage / UV word, decoded but unused
+                let word = words[i];
+                i += 1;
+                vertex.u = (word & 0xFF) as i32;
+                vertex.v = ((word >> 8) & 0xFF) as i32;
+                // The upper half means different things per vertex: the palette
+                // on the first, the texture page on the second, nothing after.
+                match n {
+                    0 => clut = word >> 16,
+                    1 => texpage = word >> 16,
+                    _ => {}
+                }
             }
-            *slot = self.vertex(pos, colour_word);
+            *slot = vertex;
         }
 
+        let tex = if textured {
+            self.textured_primitives += 1;
+            // A polygon's texpage word also *becomes* the draw mode's, which is
+            // why the next primitive can rely on it without resending E1.
+            self.draw_mode = (self.draw_mode & !0x1FF) | (texpage & 0x1FF);
+            Some(self.tex_params(texpage, clut, raw))
+        } else {
+            None
+        };
+
         let blend = self.blend_mode(semi);
-        self.triangle(v[0], v[1], v[2], gouraud, blend);
+        self.triangle(v[0], v[1], v[2], gouraud, blend, tex, semi);
         if quad {
-            self.triangle(v[1], v[2], v[3], gouraud, blend);
+            self.triangle(v[1], v[2], v[3], gouraud, blend, tex, semi);
         }
     }
 
@@ -529,6 +577,71 @@ impl Gpu {
             r: (colour & 0xFF) as i32,
             g: ((colour >> 8) & 0xFF) as i32,
             b: ((colour >> 16) & 0xFF) as i32,
+            u: 0,
+            v: 0,
+        }
+    }
+
+    /// Build the texture parameters for a primitive.
+    ///
+    /// `texpage` is the raw 16-bit attribute, either from the draw mode or from
+    /// a polygon's own second-vertex word; `clut` is the 16-bit palette
+    /// attribute from its first.
+    fn tex_params(&self, texpage: u32, clut: u32, raw: bool) -> Tex {
+        Tex {
+            page_x: (texpage & 0x0F) * 64,
+            page_y: ((texpage >> 4) & 1) * 256,
+            depth: (texpage >> 7) & 3,
+            // The palette X is in 16-pixel units; Y is a plain scanline.
+            clut_x: (clut & 0x3F) * 16,
+            clut_y: (clut >> 6) & 0x1FF,
+            raw,
+        }
+    }
+
+    /// Read one texel, or `None` if it is the fully transparent colour.
+    ///
+    /// A texel of all zeroes means "draw nothing here", which is how the
+    /// hardware does cut-outs. It is **not** the same as black: an opaque black
+    /// texel has bit 15 set. Treating zero as black fills every sprite's
+    /// surround with a solid box.
+    fn texel(&self, tex: &Tex, u: i32, v: i32) -> Option<u16> {
+        // The texture window folds a repeating patch over the page.
+        let mask_x = self.texture_window & 0x1F;
+        let mask_y = (self.texture_window >> 5) & 0x1F;
+        let off_x = (self.texture_window >> 10) & 0x1F;
+        let off_y = (self.texture_window >> 15) & 0x1F;
+
+        let u = u as u32 & 0xFF;
+        let v = v as u32 & 0xFF;
+        let u = (u & !(mask_x * 8)) | ((off_x & mask_x) * 8);
+        let v = (v & !(mask_y * 8)) | ((off_y & mask_y) * 8);
+
+        let row = ((tex.page_y + v) & 0x1FF) as usize * VRAM_WIDTH;
+        let raw = match tex.depth {
+            // Four bits per texel: eight to a halfword, indexing a 16-entry
+            // palette.
+            0 => {
+                let word = self.vram[row + (((tex.page_x + (u >> 2)) & 0x3FF) as usize)];
+                let index = (word >> ((u & 3) * 4)) & 0x0F;
+                let clut_row = (tex.clut_y & 0x1FF) as usize * VRAM_WIDTH;
+                self.vram[clut_row + (((tex.clut_x + index as u32) & 0x3FF) as usize)]
+            }
+            // Eight bits per texel, indexing a 256-entry palette.
+            1 => {
+                let word = self.vram[row + (((tex.page_x + (u >> 1)) & 0x3FF) as usize)];
+                let index = (word >> ((u & 1) * 8)) & 0xFF;
+                let clut_row = (tex.clut_y & 0x1FF) as usize * VRAM_WIDTH;
+                self.vram[clut_row + (((tex.clut_x + index as u32) & 0x3FF) as usize)]
+            }
+            // Straight 15-bit colour, one texel per halfword.
+            _ => self.vram[row + (((tex.page_x + u) & 0x3FF) as usize)],
+        };
+
+        if raw == 0 {
+            None
+        } else {
+            Some(raw)
         }
     }
 
@@ -536,34 +649,58 @@ impl Gpu {
         let size = (cmd >> 3) & 3;
         let textured = cmd & 0x04 != 0;
         let semi = cmd & 0x02 != 0;
-        if textured {
-            self.textured_primitives += 1;
-        }
+        let raw = cmd & 0x01 != 0;
 
         let mut i = 2usize;
-        if textured {
+        let (base_u, base_v, tex) = if textured {
+            let word = words[i];
             i += 1;
-        }
+            self.textured_primitives += 1;
+            // A rectangle carries no texpage of its own; it uses the draw
+            // mode's.
+            let t = self.tex_params(self.draw_mode, word >> 16, raw);
+            ((word & 0xFF) as i32, ((word >> 8) & 0xFF) as i32, Some(t))
+        } else {
+            (0, 0, None)
+        };
+
         let (w, h) = match size {
             1 => (1i32, 1i32),
             2 => (8, 8),
             3 => (16, 16),
             _ => {
                 let d = words[i];
-                (
-                    (d & 0x3FF) as i32,
-                    ((d >> 16) & 0x1FF) as i32,
-                )
+                ((d & 0x3FF) as i32, ((d >> 16) & 0x1FF) as i32)
             }
         };
 
         let v = self.vertex(words[1], words[0]);
         let blend = self.blend_mode(semi);
-        let colour = (v.r, v.g, v.b);
+        let shade = (v.r, v.g, v.b);
 
-        for y in v.y..v.y + h {
-            for x in v.x..v.x + w {
-                self.plot(x, y, colour, blend);
+        // Draw-mode bits 12 and 13 mirror a textured rectangle's texture. They
+        // apply to rectangles only, not to polygons, which flip by swapping
+        // their own UVs.
+        let flip_x = self.draw_mode & (1 << 12) != 0;
+        let flip_y = self.draw_mode & (1 << 13) != 0;
+
+        for dy in 0..h {
+            for dx in 0..w {
+                // A rectangle's texture coordinates step one for one with the
+                // pixels; there is no interpolation and no scaling.
+                let u = if flip_x { base_u - dx } else { base_u + dx };
+                let vv = if flip_y { base_v - dy } else { base_v + dy };
+                self.shade_pixel(
+                    v.x + dx,
+                    v.y + dy,
+                    shade,
+                    blend,
+                    tex.as_ref(),
+                    u,
+                    vv,
+                    semi,
+                    false,
+                );
             }
         }
     }
@@ -636,7 +773,17 @@ impl Gpu {
         false
     }
 
-    fn triangle(&mut self, a: Vertex, b: Vertex, c: Vertex, gouraud: bool, blend: Blend) {
+    #[allow(clippy::too_many_arguments)]
+    fn triangle(
+        &mut self,
+        a: Vertex,
+        b: Vertex,
+        c: Vertex,
+        gouraud: bool,
+        blend: Blend,
+        tex: Option<Tex>,
+        semi: bool,
+    ) {
         if self.oversized([a.x, b.x, c.x], [a.y, b.y, c.y]) {
             return;
         }
@@ -676,9 +823,30 @@ impl Gpu {
                 } else {
                     (a.r, a.g, a.b)
                 };
-                // A flat colour is already exact in 5 bits; only interpolated
-                // output has anything to dither.
-                self.plot_dithered(x, y, colour, blend, gouraud);
+                // Texture coordinates interpolate the same way the colour does.
+                // Affine, not perspective-correct, which is what the hardware
+                // does and the reason PlayStation textures swim.
+                let (u, v) = if tex.is_some() {
+                    (
+                        (w0 * a.u + w1 * b.u + w2 * c.u) / area,
+                        (w0 * a.v + w1 * b.v + w2 * c.v) / area,
+                    )
+                } else {
+                    (0, 0)
+                };
+                // A flat, untextured colour is already exact in 5 bits; only
+                // interpolated or modulated output has anything to dither.
+                self.shade_pixel(
+                    x,
+                    y,
+                    colour,
+                    blend,
+                    tex.as_ref(),
+                    u,
+                    v,
+                    semi,
+                    gouraud || tex.is_some(),
+                );
             }
         }
     }
@@ -709,7 +877,7 @@ impl Gpu {
             } else {
                 (a.r, a.g, a.b)
             };
-            self.plot_dithered(x, y, colour, blend, gouraud);
+            self.plot_dithered(x, y, colour, blend, gouraud, false);
 
             if x == b.x && y == b.y {
                 break;
@@ -732,12 +900,69 @@ impl Gpu {
         self.draw_mode & (1 << 9) != 0
     }
 
-    /// Write one pixel, honouring the drawing area, the mask bit and the blend
-    /// mode. Every primitive goes through here; only the VRAM fill does not.
-    fn plot(&mut self, x: i32, y: i32, colour: (i32, i32, i32), blend: Blend) {
-        self.plot_dithered(x, y, colour, blend, false)
+    /// Resolve one pixel of a primitive and write it.
+    ///
+    /// This is where shading and texturing meet, and the ordering matters:
+    ///
+    /// 1. A fully transparent texel (all sixteen bits zero) is skipped
+    ///    entirely. Nothing is written, not even a blend.
+    /// 2. Otherwise the texel's **bit 15** decides whether *this pixel* is
+    ///    semi-transparent. A semi-transparent primitive still draws its
+    ///    bit-15-clear texels opaque, which is how a sprite gets solid parts
+    ///    and translucent parts from one draw.
+    /// 3. Unless the command is "raw", the texel is modulated by the vertex
+    ///    colour, where 0x80 is neutral rather than 0xFF.
+    #[allow(clippy::too_many_arguments)]
+    fn shade_pixel(
+        &mut self,
+        x: i32,
+        y: i32,
+        shade: (i32, i32, i32),
+        blend: Blend,
+        tex: Option<&Tex>,
+        u: i32,
+        v: i32,
+        semi: bool,
+        dither: bool,
+    ) {
+        let Some(tex) = tex else {
+            self.plot_dithered(x, y, shade, blend, dither, false);
+            return;
+        };
+
+        let Some(texel) = self.texel(tex, u, v) else {
+            return; // fully transparent: draw nothing at all
+        };
+
+        let stp = texel & 0x8000 != 0;
+        // 5 to 8 bits by a plain shift, so the reverse conversion in `plot` is
+        // exactly lossless for a raw texel.
+        let (tr, tg, tb) = (
+            ((texel & 0x1F) << 3) as i32,
+            (((texel >> 5) & 0x1F) << 3) as i32,
+            (((texel >> 10) & 0x1F) << 3) as i32,
+        );
+
+        let colour = if tex.raw {
+            (tr, tg, tb)
+        } else {
+            // Modulation is centred on 0x80, so a mid-grey vertex colour leaves
+            // the texture untouched and brighter values can lighten it.
+            (
+                (tr * shade.0) >> 7,
+                (tg * shade.1) >> 7,
+                (tb * shade.2) >> 7,
+            )
+        };
+
+        let effective = if semi && stp { blend } else { Blend::Opaque };
+        // A raw texel is already exactly representable, so dithering it would
+        // only add error.
+        self.plot_dithered(x, y, colour, effective, dither && !tex.raw, stp);
     }
 
+    /// Write one pixel, honouring the drawing area, the mask bit and the blend
+    /// mode. Every primitive goes through here; only the VRAM fill does not.
     fn plot_dithered(
         &mut self,
         x: i32,
@@ -745,6 +970,7 @@ impl Gpu {
         colour: (i32, i32, i32),
         blend: Blend,
         dither: bool,
+        force_mask: bool,
     ) {
         if x < self.draw_left || x > self.draw_right || y < self.draw_top || y > self.draw_bottom {
             return;
@@ -773,7 +999,9 @@ impl Gpu {
         } else {
             blend_pixels(dst, src, blend)
         };
-        if self.mask_set {
+        // The mask-set bit forces it; a textured pixel also carries its texel's
+        // own bit 15 through into VRAM.
+        if self.mask_set || force_mask {
             out |= 0x8000;
         }
         self.vram[idx] = out;
@@ -1305,6 +1533,79 @@ mod tests {
         assert_eq!(command_length(0x02), Some(3)); // fill
         assert_eq!(command_length(0x80), Some(4)); // vram to vram
         assert_eq!(command_length(0xA0), Some(3)); // cpu to vram
+    }
+
+    /// Put a 16-entry palette at (0, 256) and a 4-bit texture page at (0, 300).
+    fn with_4bit_texture(g: &mut Gpu) {
+        for i in 0..16u16 {
+            // Palette entry i is a red ramp, with bit 15 set so it is opaque.
+            g.vram[256 * VRAM_WIDTH + i as usize] = 0x8000 | (i * 2);
+        }
+        // One halfword holds four texels: indices 1, 2, 3, 4.
+        g.vram[300 * VRAM_WIDTH] = 0x4321;
+    }
+
+    /// The CLUT word's X is in 16-pixel units and its Y is a plain scanline.
+    #[test]
+    fn four_bit_texels_index_the_palette() {
+        let mut g = gpu();
+        with_4bit_texture(&mut g);
+
+        // Texture page Y = 256 x 1... the page base is (0, 256), so address the
+        // texture rows relative to it.
+        let texpage = 1 << 4; // page Y base 256, 4-bit
+        let clut = 256 << 6; // palette at X = 0, Y = 256
+        let tex = g.tex_params(texpage, clut, true);
+
+        // Row 300 is 44 rows into the page at Y=256.
+        assert_eq!(g.texel(&tex, 0, 44), Some(0x8000 | 2), "index 1");
+        assert_eq!(g.texel(&tex, 1, 44), Some(0x8000 | 4), "index 2");
+        assert_eq!(g.texel(&tex, 2, 44), Some(0x8000 | 6), "index 3");
+        assert_eq!(g.texel(&tex, 3, 44), Some(0x8000 | 8), "index 4");
+    }
+
+    /// A texel of all zeroes means "draw nothing", not "draw black". Getting
+    /// this wrong puts a solid box around every sprite.
+    #[test]
+    fn a_fully_transparent_texel_draws_nothing() {
+        let mut g = gpu();
+        g.vram[10 * VRAM_WIDTH + 5] = 0; // transparent
+        g.vram[10 * VRAM_WIDTH + 6] = 0x8000; // opaque black
+
+        let tex = g.tex_params(2 << 7, 0, true); // 15-bit direct, page (0,0)
+        assert_eq!(g.texel(&tex, 5, 10), None);
+        assert_eq!(g.texel(&tex, 6, 10), Some(0x8000));
+    }
+
+    /// Modulation is centred on 0x80, not 0xFF, so a mid-grey vertex colour
+    /// leaves the texture alone.
+    #[test]
+    fn modulation_treats_0x80_as_neutral() {
+        let mut g = gpu();
+        let texel = to_rgb555(128, 64, 32) | 0x8000;
+        g.vram[0] = texel;
+
+        // A 1x1 textured rectangle at (20, 20), non-raw, with a neutral colour.
+        g.gp0(0x6400_8080 | (0x80 << 16)); // variable size, textured, colour 0x808080
+        g.gp0((20 << 16) | 20);
+        g.gp0(0x0000_0000); // uv (0,0), clut 0
+        g.gp0((1 << 16) | 1);
+
+        assert_eq!(
+            px(&g, 20, 20) & 0x7FFF,
+            texel & 0x7FFF,
+            "a neutral shade should leave the texel unchanged"
+        );
+    }
+
+    /// The draw mode is fourteen bits wide. Masking it to eleven drops the
+    /// textured-rectangle flip bits, which is invisible until something flips.
+    #[test]
+    fn draw_mode_keeps_the_flip_bits() {
+        let mut g = gpu();
+        g.gp0(0xE100_0000 | (1 << 12) | (1 << 13));
+        assert_ne!(g.draw_mode & (1 << 12), 0, "X-flip was dropped");
+        assert_ne!(g.draw_mode & (1 << 13), 0, "Y-flip was dropped");
     }
 
     #[test]

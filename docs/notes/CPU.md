@@ -117,7 +117,6 @@ are not rediscovered, roughly in order of how much they matter.
 
 | | What | Consequence |
 |---|---|---|
-| A1 | An interrupt is taken *instead of* a pending GTE command rather than after it, so the command is dropped | Broken geometry in Crash Bandicoot 1-3, Spyro. **Latent** while GTE commands are no-ops; the dispatch bug is in `cpu.rs` and should be fixed alongside the GTE, or it will be misdiagnosed as a GTE bug |
 | B1 | `MFC0` of a nonexistent COP0 register (r0, r1, r2, r4, r10) returns 0 instead of raising Reserved Instruction | None known |
 | B2 | `Cause.CE` is never written, so a handler cannot tell which coprocessor was refused | The BIOS `atof`/`strtod` failure path |
 | B3 | `Cause.BT` and `TAR` (cop0r6) are not set on a delay-slot exception | None known. Cheap, and `next_pc` already holds the target |
@@ -128,6 +127,14 @@ are not rediscovered, roughly in order of how much they matter.
 runs, so the handler starts with an empty load-delay slot. It was unreachable
 until interrupts could actually fire. See `../notes/TIMING.md` and
 `an_exception_commits_the_pending_load_before_the_handler_runs`.
+
+**A1 is fixed**: an interrupt no longer swallows a pending GTE command. When the
+instruction about to run is a `COP2 imm25`, the interrupt is deferred by one
+instruction so the command executes first. Taking it the other way round means
+the command is skipped on the way in and skipped again by the BIOS handler, so
+it never runs, and every interrupt landing on one silently drops a geometry
+operation. `an_interrupt_does_not_swallow_a_gte_command` pins it, and was proven
+to fail without the check.
 
 ## Open questions
 

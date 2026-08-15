@@ -269,6 +269,51 @@ fn an_exception_commits_the_pending_load_before_the_handler_runs() {
     );
 }
 
+/// A pending interrupt must not swallow a GTE command.
+///
+/// Hardware runs the command and *then* takes the interrupt. Taking it first
+/// drops the command entirely, because the BIOS handler steps `EPC` past it on
+/// the way back out, assuming it already ran. Every interrupt that lands on a
+/// GTE command then loses a geometry operation.
+#[test]
+fn an_interrupt_does_not_swallow_a_gte_command() {
+    // COP2 command form: opcode 0x12, bit 25 set.
+    const GTE_COMMAND: u32 = 0x4A00_0001;
+
+    let mut psx = machine(&[
+        lui(1, 0x1F80),
+        ori(1, 1, 0x1074), // I_MASK
+        addiu(2, 0, 1),
+        sw(2, 0, 1),
+        lui(3, 0x4040),
+        ori(3, 3, 0x0401), // CU2 | BEV | IM2 | IEc
+        mtc0(3, 12),
+        nop(),
+        GTE_COMMAND,
+        nop(),
+        beq(0, 0, -1),
+    ]);
+
+    for _ in 0..8 {
+        psx.step();
+    }
+    assert_eq!(psx.cpu.gte.unimplemented_commands, 0, "ran too early");
+
+    // Interrupt exactly on the GTE command.
+    psx.bus.raise_irq(irq::VBLANK);
+    psx.step();
+
+    assert_eq!(
+        psx.cpu.gte.unimplemented_commands, 1,
+        "the GTE command was skipped by the interrupt"
+    );
+    assert_ne!(psx.cpu.pc, BEV_HANDLER, "the interrupt should have deferred");
+
+    // It is only deferred, not lost.
+    psx.step();
+    assert_eq!(psx.cpu.pc, BEV_HANDLER, "the interrupt never arrived");
+}
+
 /// Timer 1 counts HBlanks, so after one frame it should hold the console's
 /// scanline count rather than a cycle count.
 #[test]

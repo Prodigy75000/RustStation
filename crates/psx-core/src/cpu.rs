@@ -263,12 +263,34 @@ impl Cpu {
         self.load = (reg as u8, val);
     }
 
+    /// Is the instruction about to run a GTE command (`COP2 imm25`)?
+    ///
+    /// Hardware **executes** a GTE command and only then takes a pending
+    /// interrupt, with `EPC` pointing at the command; the BIOS handler knows
+    /// this and steps `EPC` past it. Taking the interrupt first instead means
+    /// the command is skipped on the way in and skipped again by the handler,
+    /// so it never runs at all. Every interrupt that happens to land on one
+    /// silently drops a geometry operation, which is why Crash Bandicoot and
+    /// Spyro come out misshapen on cores that get this wrong.
+    ///
+    /// Deferring by one instruction is the cheaper of the two fixes the
+    /// reference offers, and the one that does not need the exception path to
+    /// know about coprocessors.
+    fn pending_is_gte_command(&self, bus: &mut Bus) -> bool {
+        if !self.pc.is_multiple_of(4) {
+            return false;
+        }
+        // COP2 opcode (0x12) with bit 25 set: the command form rather than a
+        // register move.
+        bus.load32(self.pc) & 0xFE00_0000 == 0x4A00_0000
+    }
+
     /// Execute one instruction.
     pub fn step(&mut self, bus: &mut Bus) {
         // The interrupt controller drives the single external line into Cause
         // bit 10; the check is a level test, so it is refreshed every step.
         self.cop0.set_external_irq(bus.irq_pending());
-        if self.cop0.interrupt_ready() {
+        if self.cop0.interrupt_ready() && !self.pending_is_gte_command(bus) {
             // An interrupt is taken *at* the next instruction boundary, so
             // current_pc has to name the instruction that will be re-run.
             self.current_pc = self.pc;

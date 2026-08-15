@@ -119,24 +119,34 @@ cargo run --release --bin shot -- <bios.bin> \
     --compare tests/test-suite/gpu/triangle/vram.png --out out/shots/triangle.png
 ```
 
-| Test | Pixels differing | Of which beyond a rounding step | Reading |
-|---|---|---|---|
-| `clipping` | **0.000%** | 0.000% | Pixel-exact |
-| `lines` | 0.188% | 0.019% | Essentially correct |
-| `quad` | 0.324% | 0.300% | Polygon edges |
-| `clut-cache` | 0.977% | 0.975% | Textures |
-| `rectangles` | 1.619% | 1.602% | Textures (5376 primitives) |
-| `triangle` | 5.179% | 0.189% | Dither phase, plus edges |
-| `texture-overflow` | 6.246% | 6.132% | Textures |
-| `uv-interpolation` | 7.900% | 6.420% | Textures |
-| `vram-to-vram-overlap` | 8.778% | 8.561% | Textures |
-| `transparency` | 85.352% | 85.352% | See below |
-| `texture-flip` | 52.782% | 51.613% | Textures |
+Sorted by the column that matters, which is the third one, not the second.
 
-`triangle` is the one worth reading carefully: 5% of pixels differ, but all but
-0.19% differ by exactly **one** 5-bit step. That is a dithering phase
-difference, not a broken rasterizer. Before dithering was implemented it was
-6.75% with the same 0.19% of real differences.
+| Test | Pixels differing | Of which beyond a rounding step | Before textures | Reading |
+|---|---|---|---|---|
+| `texture-overflow` | **0.000%** | 0.000% | 6.246% | Pixel-exact |
+| `rectangles` | **0.000%** | 0.000% | 1.619% | Pixel-exact |
+| `clipping` | **0.000%** | 0.000% | 0.000% | Pixel-exact |
+| `lines` | 0.188% | 0.019% | 0.188% | Essentially correct |
+| `clut-cache` | 0.176% | 0.174% | 0.977% | |
+| `triangle` | 5.179% | 0.189% | 5.179% | Dither phase, plus edges |
+| `quad` | 0.324% | 0.300% | 0.324% | Polygon edges |
+| `texture-flip` | 25.635% | 0.849% | 52.782% | Structurally right, see below |
+| `vram-to-vram-overlap` | 1.441% | 1.224% | 8.778% | |
+| `uv-interpolation` | 4.699% | 3.220% | 7.900% | Affine interpolation precision |
+| `transparency` | 85.352% | 85.352% | 85.352% | Background fill, see below |
+
+Two entries need reading rather than scanning.
+
+**`triangle`**: 5% of pixels differ, but all except 0.19% differ by exactly
+**one** 5-bit step. That is a dithering phase difference, not a broken
+rasterizer. Before dithering was implemented it was 6.75%, with the same 0.19%
+of real differences.
+
+**`texture-flip`**: 25.6% differ but only 0.85% by more than a rounding step,
+down from 51.6%. The structural half was `GP0(0xE1)` masking the draw mode to
+eleven bits and so discarding the textured-rectangle flip bits (12 and 13). The
+hardware mirrors one texture into four quadrants; this core drew four identical
+copies until that mask was widened.
 
 **`transparency`'s 85% is misleading and was checked by eye.** The blended
 colour swatches, which is what the test is actually about, match the reference.
@@ -144,6 +154,22 @@ The entire difference is the background: hardware ends up with all of VRAM
 filled light grey, and this core fills only 320x240 of it. That is a
 `fill_rectangle` question, recorded in `docs/notes/GPU.md`, not a
 semi-transparency one.
+
+### Four hypotheses tested and rejected
+
+Worth recording, because each looked plausible and cost only a measurement:
+
+| Hypothesis | Result |
+|---|---|
+| The dither matrix is transposed | `triangle` got **worse**, 5.18% to 6.09% |
+| Hardware does not dither textured polygons | No change at all |
+| Modulation rounds rather than truncates | No change at all |
+| A flipped rectangle anchors its UV at the far edge | **Worse**, 25.6% to 37.9% |
+
+The two "no change at all" results were themselves the finding: byte-identical
+output from three different changes meant the code path was not being reached,
+because those tests use **raw** textures, which bypass both modulation and
+dithering. The remaining error there is in the texel fetch, not the blend.
 
 Everything else outside `cpu/`, `timers/` and `gpu/` (CD-ROM, SPU, MDEC, input)
 is untested because none of those subsystems exist.

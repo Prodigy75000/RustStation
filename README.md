@@ -55,10 +55,11 @@ Working, and confirmed against real hardware behaviour rather than asserted:
   exactly; per-frame ones are within 0.2%. Instruction cycle costs are the
   remaining gap, and are blocked on the I-cache.
 - **GPU**: VRAM, the GP0/GP1 ports, flat and Gouraud triangles and quads,
-  rectangles, lines, semi-transparency, dithering, the mask bit and all four
-  VRAM transfers. **`gpu/clipping` from the suite is pixel-exact** against its
-  reference image; `lines` and `quad` are within 0.3%. Textures are the big
-  remaining gap.
+  rectangles, lines, semi-transparency, dithering, the mask bit, all four VRAM
+  transfers, and **textures** (4/8/15-bit, CLUTs, the texture window, the
+  rectangle flips). Three of the suite's image tests are **pixel-exact**
+  against their references (`clipping`, `rectangles`, `texture-overflow`) and
+  seven of eleven are within 1.3%. See [`docs/TESTS.md`](docs/TESTS.md).
 - **DMA**: channel 2 (block and linked-list) and channel 6 (ordering table),
   which is what makes the GPU reachable at all.
 - **BIOS TTY capture** through the A/B call gates, so a test binary's own verdict
@@ -71,8 +72,6 @@ Working, and confirmed against real hardware behaviour rather than asserted:
 
 Not started:
 
-- **Textures**, the largest single gap in the GPU. Textured primitives draw as
-  flat polygons and are counted rather than desynchronising the command stream.
 - SPU, CD-ROM, controllers, memory cards.
 - The GTE's 15 commands. The register file exists and is serialized; the
   commands are counted and dropped.

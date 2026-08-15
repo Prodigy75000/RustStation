@@ -65,14 +65,38 @@ transfers (fill, CPU to VRAM, VRAM to CPU, VRAM to VRAM).
   suite's convention for `--vram` and the display convention for the libretro
   framebuffer, and says so.
 
+## Textures
+
+Implemented: texture pages, 4-bit and 8-bit CLUT lookup, 15-bit direct colour,
+the texture window, the textured-rectangle flip bits, transparent texels, the
+per-texel semi-transparency bit, and raw versus modulated colour. UV
+interpolates affinely across a polygon, and steps one-for-one across a
+rectangle.
+
+Three things that each cost a debugging round:
+
+* **A texel of all zeroes means "draw nothing", not "draw black".** An opaque
+  black texel has bit 15 set. Treating zero as black puts a solid box around
+  every sprite.
+* **Modulation is centred on 0x80, not 0xFF.** A mid-grey vertex colour leaves
+  the texture untouched, and brighter values lighten it.
+* **The draw mode is fourteen bits wide, not eleven.** Bits 12 and 13 are the
+  textured-rectangle flips. Masking `GP0(0xE1)` to `0x7FF` discards them, which
+  is invisible until something flips: `texture-flip` drew four identical copies
+  of a texture the hardware mirrors into four quadrants, and that one mask was
+  worth 51 percentage points on that test.
+
 ## Open questions
 
-1. **Textures.** The single biggest gap. Command words are decoded and skipped
-   correctly, so a textured primitive draws as a flat polygon rather than
-   desynchronising the FIFO, and `Gpu::textured_primitives` counts them. Needs
-   texture pages, 4/8/15-bit CLUT lookup, the texture window, and blending.
-   Accounts for essentially all of the remaining error on `rectangles`,
-   `texture-flip`, `uv-interpolation`, `texture-overflow` and `clut-cache`.
+1. **The residual texture error is in the fetch, not the blend.** `texture-flip`
+   still differs on 24.8% of pixels by exactly one 5-bit step. Three separate
+   experiments (transposing the dither matrix, not dithering textured polygons,
+   rounding the modulation) all produced *byte-identical* output, which is
+   itself the finding: those tests use raw textures, so none of those paths run.
+   Suspect the texel coordinate, since a one-step error across a gradient is
+   what an off-by-one in U or V looks like. Anchoring a flipped rectangle's UV
+   at the far edge instead of decrementing was tried and is wrong (25.6% to
+   37.9%).
 2. **The `transparency` background fill.** The blended swatches match the
    reference, but hardware ends up with the whole of VRAM filled light grey and
    this core only fills 320x240 of it. The fill command masks its width to
