@@ -106,6 +106,48 @@ these numbers are dominated by instruction fetch, so fitting per-region wait
 states now would be fitting constants to the wrong model. See
 `docs/notes/TIMING.md`.
 
+## GPU, as of 2026-08-15
+
+These are image comparisons, not pass/fail tests. `shot --compare` diffs our
+VRAM against the `vram.png` the suite ships and buckets the differences, because
+a single percentage cannot tell "the same picture, rounded differently" from "a
+different picture". One step of a 5-bit channel is 8 in 8-bit terms.
+
+```
+cargo run --release --bin shot -- <bios.bin> \
+    --exe tests/test-suite/gpu/triangle/triangle.exe \
+    --compare tests/test-suite/gpu/triangle/vram.png --out out/shots/triangle.png
+```
+
+| Test | Pixels differing | Of which beyond a rounding step | Reading |
+|---|---|---|---|
+| `clipping` | **0.000%** | 0.000% | Pixel-exact |
+| `lines` | 0.188% | 0.019% | Essentially correct |
+| `quad` | 0.324% | 0.300% | Polygon edges |
+| `clut-cache` | 0.977% | 0.975% | Textures |
+| `rectangles` | 1.619% | 1.602% | Textures (5376 primitives) |
+| `triangle` | 5.179% | 0.189% | Dither phase, plus edges |
+| `texture-overflow` | 6.246% | 6.132% | Textures |
+| `uv-interpolation` | 7.900% | 6.420% | Textures |
+| `vram-to-vram-overlap` | 8.778% | 8.561% | Textures |
+| `transparency` | 85.352% | 85.352% | See below |
+| `texture-flip` | 52.782% | 51.613% | Textures |
+
+`triangle` is the one worth reading carefully: 5% of pixels differ, but all but
+0.19% differ by exactly **one** 5-bit step. That is a dithering phase
+difference, not a broken rasterizer. Before dithering was implemented it was
+6.75% with the same 0.19% of real differences.
+
+**`transparency`'s 85% is misleading and was checked by eye.** The blended
+colour swatches, which is what the test is actually about, match the reference.
+The entire difference is the background: hardware ends up with all of VRAM
+filled light grey, and this core fills only 320x240 of it. That is a
+`fill_rectangle` question, recorded in `docs/notes/GPU.md`, not a
+semi-transparency one.
+
+Everything else outside `cpu/`, `timers/` and `gpu/` (CD-ROM, SPU, MDEC, input)
+is untested because none of those subsystems exist.
+
 ## What `cpu/cop` settled
 
 It started at 12/17 and found one wrong rule that five cases turned on:

@@ -11,6 +11,8 @@
 //! `mask_region` below is the whole of "virtual memory" here. See
 //! `docs/MEMORY_MAP.md`.
 
+use crate::dma::Dma;
+use crate::gpu::Gpu;
 use crate::irq::{self, Irq};
 use crate::timers::Timers;
 use crate::video::{Standard, Video};
@@ -126,6 +128,8 @@ pub struct Bus {
     pub irq: Irq,
     pub video: Video,
     pub timers: Timers,
+    pub gpu: Gpu,
+    pub dma: Dma,
 
     /// Counters for ports we decode but do not emulate yet. These exist so the
     /// harnesses can answer "what did the BIOS touch that we ignore?" without a
@@ -156,6 +160,8 @@ impl Bus {
             irq: Irq::new(),
             video: Video::new(Standard::Ntsc),
             timers: Timers::new(),
+            gpu: Gpu::new(),
+            dma: Dma::new(),
             stub_reads: 0,
             stub_writes: 0,
             unmapped_reads: 0,
@@ -221,6 +227,19 @@ impl Bus {
             next = next.min(t);
         }
         self.next_event = self.cycle + next.max(1);
+    }
+
+    /// Push the GPU's display settings into the video timing.
+    ///
+    /// The dot clock divider and the video standard both come from GP1(0x08),
+    /// and timer 0 counts dot clocks, so a resolution change silently rescales
+    /// a running timer if this is not done. The devices are caught up first, or
+    /// the cycles since the last sync would be re-counted at the new rate.
+    fn sync_display(&mut self) {
+        self.sync();
+        self.video.set_dot_divider(self.gpu.dot_divider());
+        self.video.set_standard(self.gpu.standard());
+        self.sync();
     }
 
     /// Cycle at which some device next needs attention.
@@ -289,16 +308,18 @@ impl Bus {
             return v;
         }
         if let Some(off) = GPU.contains(abs) {
-            self.stub_reads += 1;
-            // GPUSTAT. Bits 26/27/28 are "ready for command / ready to send
-            // VRAM / ready to receive DMA"; the BIOS spins on them at boot, so
-            // a zero here is an instant hang. Everything else is still a lie.
-            return if off == 4 { 0x1C00_0000 } else { 0 };
+            return if off < 4 {
+                self.gpu.read()
+            } else {
+                self.gpu.status()
+            };
+        }
+        if let Some(off) = DMA.contains(abs) {
+            return self.dma.read(off);
         }
         if SPU.contains(abs).is_some()
             || CDROM.contains(abs).is_some()
             || MDEC.contains(abs).is_some()
-            || DMA.contains(abs).is_some()
             || PERIPHERAL.contains(abs).is_some()
             || EXPANSION_1.contains(abs).is_some()
             || EXPANSION_2.contains(abs).is_some()
@@ -361,8 +382,31 @@ impl Bus {
             self.sync();
             return;
         }
-        if GPU.contains(abs).is_some()
-            || SPU.contains(abs).is_some()
+        if let Some(off) = GPU.contains(abs) {
+            if off < 4 {
+                self.gpu.gp0(val);
+            } else {
+                self.gpu.gp1(val);
+                // GP1 can change the resolution or the video standard, either
+                // of which moves the dot clock and the frame length underneath
+                // the timers.
+                self.sync_display();
+            }
+            return;
+        }
+        if let Some(off) = DMA.contains(abs) {
+            if let Some(channel) = self.dma.write(off, val) {
+                Dma::run(
+                    &mut self.dma,
+                    &mut self.ram,
+                    &mut self.gpu,
+                    &mut self.irq,
+                    channel,
+                );
+            }
+            return;
+        }
+        if SPU.contains(abs).is_some()
             || CDROM.contains(abs).is_some()
             || MDEC.contains(abs).is_some()
             || DMA.contains(abs).is_some()

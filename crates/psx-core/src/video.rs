@@ -151,7 +151,25 @@ impl Video {
     }
 
     pub fn set_dot_divider(&mut self, divider: u64) {
-        self.dot_divider = divider.max(1);
+        let d = divider.max(1);
+        if d != self.dot_divider {
+            // The remainder is in units of the old divider, so carrying it over
+            // would scale it by the wrong amount.
+            self.dot_frac = 0;
+            self.dot_divider = d;
+        }
+    }
+
+    /// Switch video standard. Clamps the beam into the new raster, which is
+    /// smaller for NTSC than for PAL.
+    pub fn set_standard(&mut self, standard: Standard) {
+        if standard == self.standard {
+            return;
+        }
+        self.standard = standard;
+        self.line %= standard.lines_per_frame();
+        self.dot_in_line %= standard.cycles_per_line();
+        self.in_vblank = self.line >= standard.vblank_line();
     }
 
     /// Advance by `cpu_cycles` and report what ticked.

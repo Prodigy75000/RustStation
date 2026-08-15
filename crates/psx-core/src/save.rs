@@ -29,7 +29,7 @@
 use crate::bus::{self, Bus};
 use crate::cpu::Cpu;
 use crate::video::Standard;
-use crate::Psx;
+use crate::{dma, gpu, Psx};
 
 /// Core magic. The trailing digit is a generation marker: it only changes if
 /// the stream stops being a RustStation state at all.
@@ -41,7 +41,9 @@ pub const MAGIC: &[u8; 8] = b"RSTAPSX1";
 /// * 1: CPU, COP0, GTE register file, RAM, scratchpad, memory control.
 /// * 2: adds the master clock and the timed devices (interrupt controller,
 ///   video timing, root counters).
-pub const FORMAT_VERSION: u16 = 2;
+/// * 3: adds the GPU (including 1 MB of VRAM, which doubles the state) and the
+///   DMA controller.
+pub const FORMAT_VERSION: u16 = 3;
 
 const HEADER_BYTES: usize = 8 + 2;
 const CPU_BYTES: usize = 32 * 4     // regs
@@ -63,7 +65,26 @@ const BUS_BYTES: usize = 4 + bus::RAM_SIZE   // length-prefixed RAM
 const TIMED_BYTES: usize = 2 + 2                  // irq: stat, mask
     + 1 + 8 + 4 + 8 + 8 + 8 + 1 + 8               // video
     + 3 * (2 + 2 + 2 + 4 + 1 + 1)                 // three root counters
-    + 8; // timers.sync_uses
+    + 8                                           // timers.sync_uses
+    + GPU_BYTES
+    + DMA_BYTES;
+
+/// The GP0 FIFO is serialized as a fixed-size array so the state stays a
+/// constant length. The longest real command is 12 words (a Gouraud textured
+/// quad), and a poly-line is trimmed to its last segment as it goes, so this
+/// has headroom.
+const FIFO_SLOTS: usize = 16;
+
+/// The GPU, added in format version 3. VRAM alone is 1 MB.
+const GPU_BYTES: usize = 4 + gpu::VRAM_WORDS * 2   // length-prefixed VRAM
+    + 1 + FIFO_SLOTS * 4                           // FIFO depth, then the slots
+    + 1                                            // port
+    + 4 * 5                                        // transfer: x, y, w, h, done
+    + 6 * 4                                        // drawing area and offset
+    + 9 * 4                                        // draw mode, window, display
+    + 4; // mask set / mask check / display disabled / irq
+
+const DMA_BYTES: usize = dma::CHANNELS * 3 * 4 + 4 + 4;
 
 /// Exact serialized length for [`FORMAT_VERSION`]. Derived from the field
 /// widths above rather than from `save_state().len()`, so a test that pins it
@@ -246,6 +267,50 @@ fn write_bus(w: &mut Writer, b: &Bus) {
         w.bool(sync_released);
     }
     w.u64(b.timers.sync_uses);
+
+    write_gpu(w, &b.gpu);
+    write_dma(w, &b.dma);
+}
+
+fn write_gpu(w: &mut Writer, g: &gpu::Gpu) {
+    w.u32(g.vram.len() as u32);
+    for px in &g.vram {
+        w.u16(*px);
+    }
+
+    let fifo = g.fifo();
+    let depth = fifo.len().min(FIFO_SLOTS);
+    w.u8(depth as u8);
+    for slot in 0..FIFO_SLOTS {
+        w.u32(fifo.get(slot).copied().unwrap_or(0));
+    }
+
+    let (areas, regs, (port, done, mask_set, mask_check, display_disabled)) = g.parts();
+    w.u8(port as u8);
+    let (tx, ty, tw, th) = g.transfer_parts();
+    w.u32(tx);
+    w.u32(ty);
+    w.u32(tw);
+    w.u32(th);
+    w.u32(done);
+    for a in areas {
+        w.u32(a as u32);
+    }
+    w.u32s(&regs);
+    w.bool(mask_set);
+    w.bool(mask_check);
+    w.bool(display_disabled);
+    w.bool(g.irq_raised());
+}
+
+fn write_dma(w: &mut Writer, d: &dma::Dma) {
+    for ch in &d.channels {
+        w.u32(ch.madr);
+        w.u32(ch.bcr);
+        w.u32(ch.chcr);
+    }
+    w.u32(d.control);
+    w.u32(d.interrupt_raw());
 }
 
 fn read_cpu(r: &mut Reader, cpu: &mut Cpu) -> Option<()> {
@@ -338,6 +403,50 @@ fn read_bus(r: &mut Reader, b: &mut Bus) -> Option<()> {
     }
     b.timers.sync_uses = r.u64()?;
 
+    read_gpu(r, &mut b.gpu)?;
+    read_dma(r, &mut b.dma)?;
+
+    Some(())
+}
+
+fn read_gpu(r: &mut Reader, g: &mut gpu::Gpu) -> Option<()> {
+    let _len = r.u32()?;
+    for px in g.vram.iter_mut() {
+        *px = r.u16()?;
+    }
+
+    let depth = (r.u8()? as usize).min(FIFO_SLOTS);
+    let mut fifo = Vec::with_capacity(depth);
+    for slot in 0..FIFO_SLOTS {
+        let word = r.u32()?;
+        if slot < depth {
+            fifo.push(word);
+        }
+    }
+
+    let port = r.u8()? as u32;
+    let transfer = (r.u32()?, r.u32()?, r.u32()?, r.u32()?, r.u32()?);
+    let mut areas = [0i32; 6];
+    for a in areas.iter_mut() {
+        *a = r.u32()? as i32;
+    }
+    let mut regs = [0u32; 9];
+    r.u32s(&mut regs)?;
+    let flags = (r.bool()?, r.bool()?, r.bool()?, r.bool()?);
+
+    g.restore(areas, regs, port, transfer, flags, fifo);
+    Some(())
+}
+
+fn read_dma(r: &mut Reader, d: &mut dma::Dma) -> Option<()> {
+    for ch in d.channels.iter_mut() {
+        ch.madr = r.u32()?;
+        ch.bcr = r.u32()?;
+        ch.chcr = r.u32()?;
+    }
+    d.control = r.u32()?;
+    let interrupt = r.u32()?;
+    d.restore_interrupt(interrupt);
     Some(())
 }
 
@@ -487,6 +596,39 @@ mod tests {
         psx.bus.tick(123_457);
         psx.bus.raise_irq(crate::irq::VBLANK);
 
+        // The GPU: a display mode, a drawing area, and something actually drawn
+        // so VRAM is not a uniform block.
+        psx.bus.store32(0x1F80_1814, 0x0800_0001); // 320x240 NTSC
+        psx.bus.store32(0x1F80_1814, 0x0300_0000); // display on
+        psx.bus.store32(0x1F80_1810, 0xE300_0000); // drawing area top-left
+        psx.bus.store32(0x1F80_1810, 0xE400_0000 | (255 << 10) | 511);
+        psx.bus.store32(0x1F80_1810, 0xE500_0000 | (3 << 11) | 7); // offset
+        psx.bus.store32(0x1F80_1810, 0x3000_00FF); // gouraud triangle
+        psx.bus.store32(0x1F80_1810, 0);
+        psx.bus.store32(0x1F80_1810, 0x0000_FF00);
+        psx.bus.store32(0x1F80_1810, 60);
+        psx.bus.store32(0x1F80_1810, 0x00FF_0000);
+        psx.bus.store32(0x1F80_1810, 40 << 16);
+
+        // A completed VRAM upload, so the transfer registers hold distinct
+        // non-zero values, and then a half-finished command left in the FIFO.
+        // Without both, whole fields of the GPU's state are zero in the golden
+        // snapshot and a reordering of them would go unnoticed.
+        psx.bus.store32(0x1F80_1810, 0xA000_0000);
+        psx.bus.store32(0x1F80_1810, (7 << 16) | 13); // to (13, 7)
+        psx.bus.store32(0x1F80_1810, (3 << 16) | 4); // 4 x 3
+        for i in 0..6u32 {
+            psx.bus.store32(0x1F80_1810, 0x1111_1111 * (i + 1));
+        }
+        psx.bus.store32(0x1F80_1810, 0x2000_00FF); // a triangle, left unfinished
+        psx.bus.store32(0x1F80_1810, 0x0010_0010);
+
+        // The DMA controller: one channel armed but not started.
+        psx.bus.store32(0x1F80_10F0, 0x0765_4321);
+        psx.bus.store32(0x1F80_1080, 0x0010_0000);
+        psx.bus.store32(0x1F80_1084, 0x0002_0010);
+        psx.bus.store32(0x1F80_10F4, (1 << 23) | (1 << 18));
+
         psx
     }
 
@@ -504,15 +646,15 @@ mod tests {
 
         // Header, byte for byte.
         assert_eq!(&snap[0..8], MAGIC);
-        assert_eq!(&snap[8..10], &[0x02, 0x00]);
+        assert_eq!(&snap[8..10], &[0x03, 0x00]);
 
         // Total length, pinned to a literal, deliberately NOT compared against
         // `Psx::state_size()`, which would only compare the layout to itself.
-        assert_eq!(snap.len(), 2_098_947);
+        assert_eq!(snap.len(), 3_147_769);
 
         // Whole-buffer checksum: any added, removed, reordered or re-widened
         // field moves it.
-        assert_eq!(fnv1a64(&snap), 0xCD17_E780_A751_77E6);
+        assert_eq!(fnv1a64(&snap), 0xF7BE_096A_DE82_FA61);
     }
 
     #[test]

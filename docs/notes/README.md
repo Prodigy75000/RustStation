@@ -19,6 +19,8 @@ Structure that works:
 | Note | Subsystem |
 |---|---|
 | [`CPU.md`](CPU.md) | MIPS R3000A / LSI CW33300 |
+| [`TIMING.md`](TIMING.md) | The master clock, scheduler, interrupts, video timing, root counters |
+| [`GPU.md`](GPU.md) | VRAM, GP0/GP1, the rasterizer, and DMA |
 
-Still to write, in the order the work is likely to happen: GPU, DMA, timers,
-CD-ROM, SPU, GTE commands, controllers and memory cards.
+Still to write, in the order the work is likely to happen: textures, CD-ROM,
+SPU, the GTE commands, controllers and memory cards.

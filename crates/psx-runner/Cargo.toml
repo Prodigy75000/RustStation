@@ -26,5 +26,13 @@ path = "src/testrom.rs"
 name = "fingerprint"
 path = "src/fingerprint.rs"
 
+# Dump VRAM or the display area to a PNG, for eyeballing against the reference
+# images the hardware test suite ships.
+[[bin]]
+name = "shot"
+path = "src/shot.rs"
+
 [dependencies]
 psx-core = { path = "../psx-core" }
+# Dev-harness only. The core and the shipped libretro cdylib pull in nothing.
+png = "0.17"

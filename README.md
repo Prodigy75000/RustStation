@@ -54,6 +54,13 @@ Working, and confirmed against real hardware behaviour rather than asserted:
   root counters. Short-delay timer measurements match the captured hardware log
   exactly; per-frame ones are within 0.2%. Instruction cycle costs are the
   remaining gap, and are blocked on the I-cache.
+- **GPU**: VRAM, the GP0/GP1 ports, flat and Gouraud triangles and quads,
+  rectangles, lines, semi-transparency, dithering, the mask bit and all four
+  VRAM transfers. **`gpu/clipping` from the suite is pixel-exact** against its
+  reference image; `lines` and `quad` are within 0.3%. Textures are the big
+  remaining gap.
+- **DMA**: channel 2 (block and linked-list) and channel 6 (ordering table),
+  which is what makes the GPU reachable at all.
 - **BIOS TTY capture** through the A/B call gates, so a test binary's own verdict
   is readable without a screen.
 - **PSX-EXE sideload** at the BIOS shell hand-over point.
@@ -64,14 +71,16 @@ Working, and confirmed against real hardware behaviour rather than asserted:
 
 Not started:
 
-- GPU drawing, SPU, CD-ROM, DMA, controllers, memory cards.
+- **Textures**, the largest single gap in the GPU. Textured primitives draw as
+  flat polygons and are counted rather than desynchronising the command stream.
+- SPU, CD-ROM, controllers, memory cards.
 - The GTE's 15 commands. The register file exists and is serialized; the
   commands are counted and dropped.
 - Per-instruction cycle costs. Every instruction is one cycle and
   multiply/divide do not stall.
 
-**A disc will not boot.** The near-term bar is the R3000A passing a CPU
-conformance suite, not a game rendering.
+**A disc will not boot**, because there is no CD-ROM. Homebrew and test
+binaries sideloaded as PSX-EXEs do run, and now draw.
 
 ## Layout
 

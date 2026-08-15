@@ -3,15 +3,18 @@
 
 //! libretro C ABI front-end for RustStation.
 //!
-//! **This core cannot yet run a game.** There is no GPU, no SPU, no CD-ROM and
-//! no controller, so `retro_run` steps the CPU for a frame's worth of cycles
-//! and hands back a black frame and silence. The shim exists now, rather than
-//! later, for three reasons: the state-transfer surface (`retro_serialize` /
-//! `retro_unserialize`) is the one the netplay handshake negotiates against and
-//! it is already honest; the RetroAchievements memory interface needs system
-//! RAM exposed from day one (a core that never publishes it hangs the
-//! achievement runtime on "waiting for core memory map"); and the deploy path
-//! to a device is then a script rather than a project.
+//! **This core cannot yet run a disc.** There is no SPU, no CD-ROM and no
+//! controller, so `retro_run` steps the CPU for a frame's worth of cycles and
+//! hands back silence. It does now hand back a **real picture**: whatever the
+//! GPU has drawn into the displayed part of VRAM.
+//!
+//! The shim exists ahead of all that for three reasons: the state-transfer
+//! surface (`retro_serialize` / `retro_unserialize`) is the one the netplay
+//! handshake negotiates against and it is already honest; the
+//! RetroAchievements memory interface needs system RAM exposed from day one (a
+//! core that never publishes it hangs the achievement runtime on "waiting for
+//! core memory map"); and the deploy path to a device is then a script rather
+//! than a project.
 //!
 //! Content is a PSX-EXE for now, since that is what the conformance suites ship as.
 //! Disc images land with the CD-ROM subsystem.
@@ -246,18 +249,23 @@ pub unsafe extern "C" fn retro_run() {
 
     if let Some(psx) = psx_mut() {
         psx.run(CYCLES_PER_FRAME);
-    }
 
-    // No GPU yet: a black frame, every frame. Deliberately not a test pattern:
-    // a black screen is honest about there being nothing to show, and a test
-    // pattern would be mistaken for progress.
-    if let Some(video) = VIDEO_CB {
-        video(
-            (*ptr::addr_of!(FRAMEBUFFER)).as_ptr() as *const c_void,
-            FB_WIDTH as c_uint,
-            FB_HEIGHT as c_uint,
-            FB_WIDTH * 4,
-        );
+        // The GPU picks the resolution, and software changes it mid-game, so
+        // the geometry is read per frame rather than fixed at load. It can only
+        // shrink from the maximum declared in `retro_get_system_av_info`.
+        let width = psx.bus.gpu.display_width() as usize;
+        let height = psx.bus.gpu.display_height() as usize;
+        let fb = &mut *ptr::addr_of_mut!(FRAMEBUFFER);
+        psx.bus.gpu.framebuffer(fb);
+
+        if let Some(video) = VIDEO_CB {
+            video(
+                fb.as_ptr() as *const c_void,
+                width as c_uint,
+                height as c_uint,
+                width * 4,
+            );
+        }
     }
 
     // No SPU yet: silence. It must still be *emitted*, because a frontend starved of

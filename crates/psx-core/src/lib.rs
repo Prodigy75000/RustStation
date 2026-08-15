@@ -27,7 +27,9 @@
 pub mod bus;
 pub mod cop0;
 pub mod cpu;
+pub mod dma;
 pub mod exe;
+pub mod gpu;
 pub mod gte;
 pub mod irq;
 pub mod save;
@@ -86,6 +88,10 @@ impl Psx {
         self.cpu = Cpu::new();
         self.bus.ram.iter_mut().for_each(|b| *b = 0);
         self.bus.scratchpad.iter_mut().for_each(|b| *b = 0);
+        // VRAM survives a reset on hardware, and so does the DMA control
+        // register's power-on value, so `Gpu::reset` clears neither.
+        self.bus.gpu.reset();
+        self.bus.dma = crate::dma::Dma::new();
         self.bus.stub_reads = 0;
         self.bus.stub_writes = 0;
         self.bus.unmapped_reads = 0;
