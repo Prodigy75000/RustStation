@@ -243,6 +243,23 @@ fn run_one(bios: &[u8], path: &Path, boot_steps: u64, run_steps: u64) -> Result<
     })
 }
 
+/// A suite's closing tally, as `Passed tests: 1150` / `Failed tests: 0`.
+///
+/// Both halves are required: one alone is a fragment of some other sentence,
+/// and guessing the missing half is how a partial run gets called complete.
+fn tally(tty: &str) -> Option<(usize, usize)> {
+    let (mut passed, mut failed) = (None, None);
+    for line in tty.lines() {
+        let l = line.trim().to_ascii_lowercase();
+        if let Some(n) = l.strip_prefix("passed tests:") {
+            passed = n.trim().parse::<usize>().ok();
+        } else if let Some(n) = l.strip_prefix("failed tests:") {
+            failed = n.trim().parse::<usize>().ok();
+        }
+    }
+    Some((passed?, failed?))
+}
+
 /// Grade on the suite's own verdict lines, and refuse to invent one when it did
 /// not print any. A false FAIL is cheap to investigate; a false PASS is how a
 /// core that emulates nothing gets called green.
@@ -260,6 +277,21 @@ fn grade(tty: &str) -> (Verdict, String) {
             Verdict::Ungraded,
             "the test states it has no assertions; compare with psx.log".to_string(),
         );
+    }
+
+    // Some suites end with their own tally instead of, or as well as, per-case
+    // lines. It is authoritative where it exists, and counting prefixes without
+    // it is actively wrong: `Failed tests: 0` starts with "fail", so a clean
+    // 1150-of-1150 run graded FAIL until this was handled.
+    if let Some((passes, fails)) = tally(tty) {
+        return match (passes, fails) {
+            (_, f) if f > 0 => (Verdict::Fail, format!("{f} failed, {passes} passed")),
+            (0, _) => (
+                Verdict::Ungraded,
+                "its own tally counted no tests at all".to_string(),
+            ),
+            _ => (Verdict::Pass, format!("{passes} passed")),
+        };
     }
 
     let mut passes = 0usize;

@@ -1,9 +1,13 @@
 # GTE (COP2)
 
-**Status: implemented, not yet conformant.** All 15 command opcodes, the full
-register file and the divider are in. `gte/test-all` gets through its register
-tests and 19 opcode cases before stopping at a specific, reproducible failure,
-recorded below.
+**Status: conformant against `gte/test-all`, 1150 of 1150.** All 15 command
+opcodes, the full register file and the divider are in.
+
+Getting there took seven distinct fixes, each found the same way: the suite
+stops at the first mismatch and prints a per-register diff, so the register that
+disagrees names the stage that is wrong. They are written up under "Traps"
+below because every one of them is the kind of thing that reads as correct
+until a number says otherwise.
 
 Implemented in `crates/psx-core/src/gte.rs`.
 
@@ -39,6 +43,44 @@ detects a vertex at or behind the eye.
 
 ## Traps met so far
 
+* **The 44-bit accumulators wrap.** Going past the range does not merely raise
+  a flag and keep the wider value: the result is stored modulo 2^44 and sign
+  extended, so a large positive comes back out negative. `MAC1`..`MAC3` cannot
+  show this, because they are read as 32 bits and carry the same low bits
+  either way. It surfaces only in the consumers that take the full accumulator,
+  which is why the register that caught it was `SZ3` while `MAC3` sat there
+  matching.
+* **A row is accumulated one term at a time**, with the range checked and the
+  accumulator wrapped after each product, not evaluated as a single expression
+  and checked once. A running total that overflows on the second term and comes
+  back on the third leaves no trace in the total, so a single check misses it
+  entirely. The giveaway is that one accumulator can carry the positive *and*
+  the negative overflow flag from the same command, which no single check can
+  produce.
+* **The colour multiply is not scaled by `sf`.** `MAC = [R*IR1, G*IR2, B*IR3]
+  SHL 4` is exactly that, and `sf` belongs to the step after it. For the
+  depth-cued commands that next step is the interpolation, which needs the full
+  unshifted product, so shifting early throws away twelve bits of the colour
+  term. Invisible on any channel whose colour byte is zero, which is how it
+  survived to be found by a single blue channel in one `NCDS` case.
+* **The interpolation's difference from the far colour raises the accumulator
+  overflow flags without storing.** The flag is an output of that subtraction
+  even though `MAC` keeps its previous contents.
+* **That difference narrows to 32 bits before it saturates**, because `IR`
+  saturates from the 32-bit `MAC` register rather than from the wider
+  accumulator behind it. With `sf` clear there is no shift, so a far colour near
+  the top of its range gives a difference past 32 bits, and hardware wraps it to
+  a negative value instead of clamping to `+0x7FFF`. Measured both ways:
+  saturating from the full width costs half the suite.
+* **`CDP` (`0x14`) is not `DCPL` (`0x29`).** The mnemonics are near enough to
+  read as the same command, and both end in a depth cue, but `CDP` runs the
+  light-colour step first, so the colour it modulates is not the one already in
+  `IR`. Two opcodes pointing at one function is a bug no amount of staring at
+  that function will find.
+* **`OTZ` comes from the full-precision product, not from `MAC0` after
+  truncation.** A 16-bit scale factor times four 16-bit depths needs 34 bits, so
+  it overflows routinely and the truncated register can read positive where the
+  real value is negative. Same rule as the screen coordinates below.
 * **Screen coordinates come from the full-precision intermediate, not from
   `MAC0` after truncation.** `MAC0` is a 32-bit register and still stores the
   truncated value, and still flags the overflow. But `SX2`/`SY2` are derived
@@ -57,31 +99,38 @@ detects a vertex at or behind the eye.
 * **`MVMVA` with translation vector 2 is bugged on hardware.** The first two
   components are computed with the third missing. Reproduced because it is
   reachable, not because anything sensible relies on it.
+* **`MVMVA` with matrix 3 does not read a matrix.** The multiplexer is left
+  half-driven and the three rows come out of unrelated registers: only the first
+  involves the colour register, and the other two are `RT13` and `RT22`, each
+  repeated across its row. Also reachable, also reproduced.
 * **Every command clears `FLAG` first.** It reports what *this* command did, not
   an accumulated history.
 
+## Reading the suite
+
+`gte/test-all` prints the registers that disagree, by index, and nothing else.
+Two habits made that enough to work from:
+
+* **The register that disagrees is not always the one that is wrong.** Work
+  backwards to the earliest stage that could produce it, and pay attention to
+  what *matches*: `MAC3` agreeing while `SZ3` disagreed is what proved the
+  accumulator wraps, because the only difference between those two is the width
+  each reads at.
+* **The test does not print its own inputs.** `RSTA_GTE_TRACE=1` dumps the whole
+  register file around every command, and since the suite stops at the first
+  mismatch, the failing command is always the last one traced. Recovering the
+  operands that way turns a guess into arithmetic: the `CDP` bug was found by
+  hand-computing the expected result from a trace and noticing that no integer
+  multiplier could produce it, which meant the command was not the one being
+  executed.
+
 ## Open questions
 
-1. **`gte/test-all` stops at test 70**, `GTE 0x01 (sf=1, lm=0, tx=1, vx=1,
-   mx=2)`, with `IR0` reading `0x0000000C` where hardware gives `0x00000000`.
-   Every other register matches, including `FLAG`, so the flags agree and only
-   the depth-cue value is wrong. `IR0` is `(n * DQA + DQB) >> 12` saturated to
-   `0..0x1000`.
-
-   Two things already ruled out by measurement: computing it from the truncated
-   `MAC0` instead (that regresses to test 51), and the screen-coordinate
-   precision fix above (already applied, and what got us from 50 to 69). Since
-   `FLAG` matches, the divider result `n` is probably right, which points at the
-   `DQA`/`DQB` path itself.
-
-   The test prints per-register diffs and bails on the first failure, so each
-   fix reveals the next one. That makes this a walk rather than a search.
-2. **Command timing.** Each command takes a documented number of cycles and
+1. **Command timing.** Each command takes a documented number of cycles and
    stalls the CPU if a result is read too early. Here every command completes
    instantly, so a game that relies on the stall sees results sooner than it
    should. Harmless in isolation, but it interacts with the cycle-cost work in
    [`TIMING.md`](TIMING.md).
-3. **`gte-fuzz`** has not been run yet. It ships a reference log
-   (`gte_valid_0xc0ffee_50.log`) and will be the better oracle once `test-all`
-   is green, because it covers argument combinations a hand-written test does
-   not.
+2. **`gte-fuzz` is not in the local copy of the suite.** It would be the better
+   oracle now that `test-all` is green, because it covers argument combinations
+   a hand-written test does not. Worth fetching.

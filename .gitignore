@@ -36,3 +36,6 @@
 
 # Local convenience junction -> TrophyHubAndroid app jniLibs (deploy target)
 android-jnilibs/
+
+# Scratch from RSTA_GTE_TRACE runs.
+trace.log

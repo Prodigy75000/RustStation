@@ -58,8 +58,12 @@ const UNR_TABLE: [u8; 257] = [
     0x00,
 ];
 
-// FLAG bits. Named because a bare number here is unreviewable.
-const F_MAC1_POS: u32 = 30;
+// FLAG bits. Named because a bare number here is unreviewable, and tabulated
+// rather than computed because the two MAC runs are not adjacent: positive
+// overflow is 30..28 and negative is 27..25, so any single expression covering
+// both is off by one somewhere.
+const F_MAC_POS: [u32; 3] = [30, 29, 28];
+const F_MAC_NEG: [u32; 3] = [27, 26, 25];
 const F_MAC0_POS: u32 = 16;
 const F_MAC0_NEG: u32 = 15;
 const F_DIVIDE: u32 = 17;
@@ -69,6 +73,25 @@ const F_SY2: u32 = 13;
 const F_IR0: u32 = 12;
 /// Bits 30..23 and 18..13, the ones that feed the master error bit.
 const F_ERROR_MASK: u32 = 0x7F87_E000;
+
+/// Truncate to the accumulator's real width and sign extend from bit 43.
+///
+/// MAC1..MAC3 are 44-bit hardware registers. Passing that range does not just
+/// raise a flag and keep the wider value: the value **wraps**, so a large
+/// positive result comes back out negative. Nothing downstream can tell the
+/// difference through `MAC1`..`MAC3` themselves, which are read as 32 bits and
+/// so carry the same low bits either way. It shows up in the consumers that
+/// take the full accumulator, which is why `SZ3` was the register that caught
+/// this and `MAC3` was not.
+fn wrap44(value: i64) -> i64 {
+    (value << 20) >> 20
+}
+
+/// `RSTA_GTE_TRACE=1` dumps the register file around every command.
+fn trace_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("RSTA_GTE_TRACE").is_ok_and(|v| v != "0"))
+}
 
 #[derive(Clone, Default)]
 pub struct Gte {
@@ -142,18 +165,53 @@ impl Gte {
         }
     }
 
-    /// Write MAC1..MAC3, checking the 44-bit accumulator range and applying the
-    /// command's shift.
+    /// Raise the 44-bit overflow flags for accumulator `n` without storing.
     ///
-    /// The overflow check is on the **unshifted** value: the accumulator is
-    /// 44 bits wide regardless of whether the result is scaled down afterwards.
-    fn set_mac(&mut self, n: usize, value: i64, sf: bool) -> i32 {
+    /// The check is on the **unshifted** value: the accumulator is 44 bits wide
+    /// regardless of whether the result is scaled down afterwards.
+    ///
+    /// Split out from [`Gte::set_mac`] because the interpolation commands run
+    /// their difference from the far colour through the range check but keep
+    /// the previous `MAC` contents: the flag is an output of that subtraction
+    /// even though the register is not.
+    fn check_mac(&mut self, n: usize, value: i64) {
         if value > 0x7FF_FFFF_FFFF {
-            self.set_flag(F_MAC1_POS + 1 - n as u32);
+            self.set_flag(F_MAC_POS[n - 1]);
         }
         if value < -0x800_0000_0000 {
-            self.set_flag(F_MAC1_POS - 2 + 1 - n as u32);
+            self.set_flag(F_MAC_NEG[n - 1]);
         }
+    }
+
+    /// One row of a matrix-vector product, accumulated the way the hardware
+    /// does it: `base`, then the three products added **one at a time**, with
+    /// the range checked and the accumulator wrapped after each.
+    ///
+    /// Evaluating the row as a single 64-bit expression and checking once gets
+    /// the value right whenever nothing overflows, and gets the flags wrong
+    /// whenever something does. A running total that overflows on the second
+    /// term and comes back on the third leaves no trace in the total, and a row
+    /// can set the positive *and* the negative flag for the same accumulator in
+    /// one command, which no single check can produce.
+    ///
+    /// Returns the wrapped accumulator, before the command's shift. `MAC` is
+    /// left holding the shifted value.
+    fn mac_row(&mut self, n: usize, base: i64, terms: [i64; 3], sf: bool) -> i64 {
+        let mut acc = base;
+        for term in terms {
+            acc += term;
+            self.check_mac(n, acc);
+            acc = wrap44(acc);
+        }
+        self.mac[n] = if sf { acc >> 12 } else { acc } as i32;
+        acc
+    }
+
+    /// Write MAC1..MAC3: flag, wrap to the accumulator's real width, then apply
+    /// the command's shift.
+    fn set_mac(&mut self, n: usize, value: i64, sf: bool) -> i32 {
+        self.check_mac(n, value);
+        let value = wrap44(value);
         let out = if sf { value >> 12 } else { value } as i32;
         self.mac[n] = out;
         out
@@ -490,6 +548,10 @@ impl Gte {
 
     /// Execute `COP2 imm25`.
     pub fn command(&mut self, word: u32) {
+        if trace_enabled() {
+            self.trace("in ", word);
+        }
+
         // Every command clears the flags first: they report what *this* command
         // did, not an accumulated history.
         self.flag = 0;
@@ -506,7 +568,7 @@ impl Gte {
             0x11 => self.intpl(sf, lm),
             0x12 => self.mvmva(word, sf, lm),
             0x13 => self.ncd(0, sf, lm),
-            0x14 => self.dcpl(sf, lm),
+            0x14 => self.cdp(sf, lm),
             0x16 => {
                 for i in 0..3 {
                     self.ncd(i, sf, lm);
@@ -541,6 +603,26 @@ impl Gte {
         }
 
         self.refresh_error_bit();
+
+        if trace_enabled() {
+            self.trace("out", word);
+        }
+    }
+
+    /// Dump the whole register file around a command, for `RSTA_GTE_TRACE=1`.
+    ///
+    /// `gte/test-all` stops at the first mismatch and names the registers that
+    /// disagree, so the failing command is always the last one traced. This is
+    /// how its operands are recovered: the test does not print its own inputs.
+    fn trace(&self, when: &str, word: u32) {
+        let mut line = format!("gte {when} cmd={word:08x}");
+        for i in 0..32 {
+            line.push_str(&format!(" d{i}={:08x}", self.read_data(i)));
+        }
+        for i in 0..32 {
+            line.push_str(&format!(" c{i}={:08x}", self.read_control(i)));
+        }
+        eprintln!("{line}");
     }
 
     /// Perspective transform of vertex `n`.
@@ -551,15 +633,20 @@ impl Gte {
         let v = self.v[n];
         let mut z = 0i64;
         for row in 0..3 {
-            let sum = ((self.tr[row] as i64) << 12)
-                + self.rt[row][0] as i64 * v[0] as i64
-                + self.rt[row][1] as i64 * v[1] as i64
-                + self.rt[row][2] as i64 * v[2] as i64;
-            let m = self.set_mac(row + 1, sum, sf);
+            let terms = [
+                self.rt[row][0] as i64 * v[0] as i64,
+                self.rt[row][1] as i64 * v[1] as i64,
+                self.rt[row][2] as i64 * v[2] as i64,
+            ];
+            let acc = self.mac_row(row + 1, (self.tr[row] as i64) << 12, terms, sf);
+            let m = self.mac[row + 1];
             if row < 2 {
                 self.set_ir(row + 1, m, lm);
             } else {
-                z = sum >> 12;
+                // From the wrapped accumulator, and always shifted by 12
+                // whatever `sf` says: SZ3 is a depth in screen units, not a
+                // scaled fixed-point value.
+                z = acc >> 12;
                 // IR3's saturation flag is judged against the *shifted* value
                 // even when sf is clear, which is a documented quirk and not a
                 // convenience: the flag and the stored value disagree.
@@ -636,17 +723,27 @@ impl Gte {
         }
     }
 
+    /// The ordering-table depth of three or four screen Z values.
+    ///
+    /// `OTZ` comes from the **full-precision** product, not from `MAC0` after
+    /// it has been truncated to 32 bits. A 16-bit scale factor times four
+    /// 16-bit depths needs 34 bits, so the product overflows routinely, and the
+    /// truncated register can read positive where the real value is negative.
+    /// `MAC0` still stores the truncated value; only the saturation sees the
+    /// wider one. Same rule as the screen coordinates in [`Gte::rtps`].
     fn avsz3(&mut self) {
         let sum = self.sz[1] as i64 + self.sz[2] as i64 + self.sz[3] as i64;
-        let m = self.set_mac0(self.zsf3 as i64 * sum) as i64;
-        self.set_otz(m >> 12);
+        let value = self.zsf3 as i64 * sum;
+        self.set_mac0(value);
+        self.set_otz(value >> 12);
     }
 
     fn avsz4(&mut self) {
         let sum =
             self.sz[0] as i64 + self.sz[1] as i64 + self.sz[2] as i64 + self.sz[3] as i64;
-        let m = self.set_mac0(self.zsf4 as i64 * sum) as i64;
-        self.set_otz(m >> 12);
+        let value = self.zsf4 as i64 * sum;
+        self.set_mac0(value);
+        self.set_otz(value >> 12);
     }
 
     fn set_otz(&mut self, value: i64) {
@@ -667,14 +764,17 @@ impl Gte {
             0 => self.rt,
             1 => self.llm,
             2 => self.lcm,
-            // Selecting the reserved matrix gives a garbage one built from the
-            // colour register. Reproduced because it is reachable, not because
-            // anything sensible relies on it.
+            // Selecting the reserved matrix does not read a matrix at all: the
+            // multiplexer is left half-driven and the three rows come out of
+            // unrelated registers. Only the first row involves the colour
+            // register; the other two are one element of the rotation matrix
+            // each, repeated across the row. Reproduced because it is
+            // reachable, not because anything sensible relies on it.
             _ => {
                 let r = -((self.rgbc[0] as i16) << 4);
                 let g = (self.rgbc[0] as i16) << 4;
-                let b = self.ir[0];
-                [[r, g, b], [b, b, b], [b, b, b]]
+                let (rt13, rt22) = (self.rt[0][2], self.rt[1][1]);
+                [[r, g, self.ir[0]], [rt13; 3], [rt22; 3]]
             }
         };
 
@@ -711,11 +811,13 @@ impl Gte {
         };
 
         for row in 0..3 {
-            let sum = ((translation[row] as i64) << 12)
-                + matrix[row][0] as i64 * vector[0] as i64
-                + matrix[row][1] as i64 * vector[1] as i64
-                + matrix[row][2] as i64 * vector[2] as i64;
-            self.set_mac_and_ir(row + 1, sum, sf, lm);
+            let terms = [
+                matrix[row][0] as i64 * vector[0] as i64,
+                matrix[row][1] as i64 * vector[1] as i64,
+                matrix[row][2] as i64 * vector[2] as i64,
+            ];
+            self.mac_row(row + 1, (translation[row] as i64) << 12, terms, sf);
+            self.set_ir(row + 1, self.mac[row + 1], lm);
         }
     }
 
@@ -730,11 +832,13 @@ impl Gte {
         lm: bool,
     ) {
         for row in 0..3 {
-            let sum = ((translation[row] as i64) << 12)
-                + matrix[row][0] as i64 * vector[0] as i64
-                + matrix[row][1] as i64 * vector[1] as i64
-                + matrix[row][2] as i64 * vector[2] as i64;
-            self.set_mac_and_ir(row + 1, sum, sf, lm);
+            let terms = [
+                matrix[row][0] as i64 * vector[0] as i64,
+                matrix[row][1] as i64 * vector[1] as i64,
+                matrix[row][2] as i64 * vector[2] as i64,
+            ];
+            self.mac_row(row + 1, (translation[row] as i64) << 12, terms, sf);
+            self.set_ir(row + 1, self.mac[row + 1], lm);
         }
     }
 
@@ -746,11 +850,29 @@ impl Gte {
         self.transform(self.lcm, ir, self.bk, sf, lm);
     }
 
-    /// Multiply the vertex colour into IR, the shared tail of NCC and NCD.
-    fn shade_by_rgbc(&mut self, sf: bool, lm: bool) {
+    /// `MAC = [R*IR1, G*IR2, B*IR3] SHL 4`, the colour modulation shared by
+    /// the NCC, NCD, CC and DCPL family.
+    ///
+    /// Deliberately unshifted, and it writes no IR: `sf` belongs to the *next*
+    /// step. For the depth-cued commands that next step is the interpolation
+    /// toward the far colour, which needs the full unshifted product, so
+    /// shifting here throws away twelve bits of the colour term before it is
+    /// used. That is invisible on any channel whose colour byte is zero, which
+    /// is why only the blue channel of one NCDS case exposed it.
+    ///
+    /// It cannot overflow the accumulator: an 8-bit colour times a 16-bit IR
+    /// times sixteen is at most 28 bits, so there is no flag to raise.
+    fn shade_by_rgbc(&mut self) {
         for n in 1..4 {
-            let c = self.rgbc[n - 1] as i64;
-            let v = c * self.ir[n] as i64 * 16;
+            self.mac[n] = self.rgbc[n - 1] as i32 * self.ir[n] as i32 * 16;
+        }
+    }
+
+    /// `MAC = MAC SAR (sf*12)`, then `IR = MAC`. The tail of the commands that
+    /// stop after the colour modulation instead of depth-cueing it.
+    fn shift_mac_to_ir(&mut self, sf: bool, lm: bool) {
+        for n in 1..4 {
+            let v = self.mac[n] as i64;
             self.set_mac_and_ir(n, v, sf, lm);
         }
     }
@@ -762,13 +884,25 @@ impl Gte {
 
     fn ncc(&mut self, n: usize, sf: bool, lm: bool) {
         self.light(n, sf, lm);
-        self.shade_by_rgbc(sf, lm);
+        self.shade_by_rgbc();
+        self.shift_mac_to_ir(sf, lm);
         self.push_colour();
     }
 
     fn ncd(&mut self, n: usize, sf: bool, lm: bool) {
         self.light(n, sf, lm);
-        self.shade_by_rgbc(sf, lm);
+        self.shade_by_rgbc();
+        self.depth_cue(sf, lm);
+        self.push_colour();
+    }
+
+    /// Colour depth cue: the light-colour step, the vertex colour, then the
+    /// fade toward the far colour. `CC` with a depth cue on the end, and not
+    /// the same command as `DCPL` however similar the mnemonics look.
+    fn cdp(&mut self, sf: bool, lm: bool) {
+        let ir = [self.ir[1], self.ir[2], self.ir[3]];
+        self.transform(self.lcm, ir, self.bk, sf, lm);
+        self.shade_by_rgbc();
         self.depth_cue(sf, lm);
         self.push_colour();
     }
@@ -776,26 +910,36 @@ impl Gte {
     fn cc(&mut self, sf: bool, lm: bool) {
         let ir = [self.ir[1], self.ir[2], self.ir[3]];
         self.transform(self.lcm, ir, self.bk, sf, lm);
-        self.shade_by_rgbc(sf, lm);
+        self.shade_by_rgbc();
+        self.shift_mac_to_ir(sf, lm);
         self.push_colour();
     }
 
     fn dcpl(&mut self, sf: bool, lm: bool) {
-        self.shade_by_rgbc(sf, lm);
+        self.shade_by_rgbc();
         self.depth_cue(sf, lm);
         self.push_colour();
     }
 
     /// Blend the current colour toward the far colour by IR0.
     ///
-    /// The intermediate deliberately goes through IR with `lm` cleared: the
-    /// difference from the far colour is signed, and clamping it to
-    /// non-negative here would break the fade.
+    /// The intermediate goes through `IR` with `lm` **cleared**, whatever the
+    /// command word says: the difference from the far colour is signed, and
+    /// clamping it to non-negative here breaks the fade. Measured, not assumed:
+    /// honouring `lm` on this write halves the suite, 400 cases to 200.
     fn depth_cue(&mut self, sf: bool, lm: bool) {
         let mac = [self.mac[1], self.mac[2], self.mac[3]];
         for n in 1..4 {
-            let diff = ((self.fc[n - 1] as i64) << 12) - ((mac[n - 1] as i64) << (12 * sf as i64));
+            let diff = ((self.fc[n - 1] as i64) << 12) - mac[n - 1] as i64;
+            self.check_mac(n, diff);
             let shifted = if sf { diff >> 12 } else { diff };
+            // Narrowed to 32 bits *before* saturating, and that is not a
+            // convenience: `IR` saturates from the 32-bit `MAC` register, not
+            // from the wider accumulator behind it. With `sf` clear there is no
+            // shift, so a far colour near the top of its range gives a
+            // difference past 32 bits, and hardware wraps it to a negative
+            // value rather than clamping to +0x7FFF. Measured: saturating from
+            // the full width instead costs half the suite, 400 cases to 200.
             self.set_ir(n, shifted as i32, false);
 
             let out = self.ir[n] as i64 * self.ir[0] as i64 + mac[n - 1] as i64;
@@ -1205,5 +1349,127 @@ mod tests {
         let mut g = Gte::new();
         g.command(0x0000_0000);
         assert_eq!(g.unknown_commands, 1);
+    }
+
+    // ---- what gte/test-all settled --------------------------------------
+    //
+    // Each of these was a real failure in the suite, and each expected value
+    // below differs from what the previous implementation produced, so none of
+    // them can pass by accident. The distinguishing old value is named.
+
+    #[test]
+    fn sz3_comes_from_the_wrapped_44_bit_accumulator() {
+        let mut g = Gte::new();
+        // RT31 = 1, everything else zero, so only row 3 has a term.
+        g.write_control(3, 1);
+        g.write_control(7, 0x7FFF_FFFF); // TRZ, whose shift lands just under 2^43
+        g.write_data(0, pack_xy(8192, 0)); // V0.x, enough to tip the row over
+        g.write_data(1, 0);
+        g.command(0x0008_0001); // RTPS, sf = 1
+
+        assert_ne!(g.flag & (1 << F_MAC_POS[2]), 0, "MAC3 overflowed positive");
+        // The accumulator wraps to a large negative, so the depth saturates to
+        // the near clip rather than the far one. Without the wrap it is 0xFFFF.
+        assert_eq!(g.read_data(19), 0, "SZ3");
+        assert_ne!(g.flag & (1 << F_SZ3), 0, "and says it saturated");
+    }
+
+    #[test]
+    fn a_row_can_overflow_both_ways_in_one_command() {
+        let mut g = Gte::new();
+        // Row 1 = (1, 1, 0) against V0 = (8192, -8192, 0): the running total
+        // goes over the top on the first term and under the bottom on the
+        // second, and lands back exactly where it started.
+        g.write_control(0, pack_xy(1, 1));
+        g.write_control(5, 0x7FFF_FFFF); // TRX
+        g.write_data(0, pack_xy(8192, -8192));
+        g.write_data(1, 0);
+        g.command(0x0008_0001); // RTPS, sf = 1
+
+        // Summing the row as one expression sees neither: the total is in range.
+        assert_ne!(g.flag & (1 << F_MAC_POS[0]), 0, "MAC1 overflowed positive");
+        assert_ne!(g.flag & (1 << F_MAC_NEG[0]), 0, "and negative, same command");
+    }
+
+    #[test]
+    fn cdp_is_not_dcpl() {
+        // Both end in a depth cue, but CDP runs the light-colour step first, so
+        // the colour it modulates is not the one already in IR.
+        let setup = |g: &mut Gte| {
+            g.write_control(13, 1); // BK1 = 1
+            g.write_control(16, 1); // LR1 = 1, rest of the light matrix zero
+            g.write_data(6, 0x03); // RGBC, R = 3
+            g.write_data(9, 10); // IR1
+        };
+
+        let mut cdp = Gte::new();
+        setup(&mut cdp);
+        cdp.command(0x0000_0014);
+        // BK1 shifts IR1 to 4106 before the colour multiply: 3 * 4106 * 16.
+        assert_eq!(cdp.read_data(25), 197_088, "CDP MAC1");
+
+        let mut dcpl = Gte::new();
+        setup(&mut dcpl);
+        dcpl.command(0x0000_0029);
+        // DCPL modulates IR1 as it stands: 3 * 10 * 16.
+        assert_eq!(dcpl.read_data(25), 480, "DCPL MAC1");
+    }
+
+    #[test]
+    fn otz_comes_from_the_full_precision_product() {
+        let mut g = Gte::new();
+        g.write_control(30, 0xFFFF_8000); // ZSF4 = -32768
+        for r in 16..20 {
+            g.write_data(r, 0xFFFF); // SZ0..SZ3 all at the top
+        }
+        g.command(0x0000_002E); // AVSZ4
+
+        // The product needs 34 bits, so MAC0 keeps a positive remnant of a
+        // negative number. Reading OTZ back out of it gives 32.
+        assert_eq!(g.read_data(24), 131_072, "MAC0, truncated as hardware does");
+        assert_eq!(g.read_data(7), 0, "OTZ, saturated from the wide value");
+    }
+
+    #[test]
+    fn the_far_colour_difference_narrows_before_it_saturates() {
+        let mut g = Gte::new();
+        g.write_control(21, 0x7FFF_FFFF); // FC red, near the top of its range
+        g.write_data(6, 0x01); // RGBC, R = 1
+        g.write_data(8, 1); // IR0
+        g.command(0x0000_0010); // DPCS, sf = 0
+
+        // With no shift the difference is wider than 32 bits, and the narrowing
+        // makes it negative: IR saturates to -0x8000, not +0x7FFF. Saturating
+        // from the full width instead gives 98_303 here.
+        assert_eq!(g.read_data(25), 32_768, "MAC1");
+    }
+
+    #[test]
+    fn the_reserved_matrix_rows_come_from_the_rotation_matrix() {
+        let mut g = Gte::new();
+        g.write_control(1, 3); // RT13 = 3
+        g.write_control(2, 5); // RT22 = 5
+        g.write_data(0, pack_xy(1, 1)); // V0 = (1, 1, 1)
+        g.write_data(1, 1);
+        // MVMVA, mx = 3 (reserved), vx = 0, tx = 3 (none), sf = 0.
+        g.command(0x0006_6012);
+
+        // Row 1 is the colour register and IR0, all zero here. Rows 2 and 3 are
+        // RT13 and RT22 repeated, which used to be IR0 repeated: 0 and 0.
+        assert_eq!(g.read_data(25), 0, "MAC1");
+        assert_eq!(g.read_data(26), 9, "MAC2 = RT13 * (1 + 1 + 1)");
+        assert_eq!(g.read_data(27), 15, "MAC3 = RT22 * (1 + 1 + 1)");
+    }
+
+    #[test]
+    fn the_colour_multiply_is_not_scaled_by_sf() {
+        let mut g = Gte::new();
+        g.write_data(6, 0x01); // RGBC, R = 1
+        g.write_data(9, 4096); // IR1
+        g.command(0x0008_0029); // DCPL, sf = 1
+
+        // 1 * 4096 * 16, shifted once at the end and not twice. Applying sf to
+        // the colour multiply as well leaves 0.
+        assert_eq!(g.read_data(25), 16, "MAC1");
     }
 }

@@ -174,35 +174,58 @@ dithering. The remaining error there is in the texel fetch, not the blend.
 Everything else outside `cpu/`, `timers/` and `gpu/` (CD-ROM, SPU, MDEC, input)
 is untested because none of those subsystems exist.
 
-## GTE, as of 2026-08-15
+## GTE, as of 2026-08-16
 
-**Implemented, not yet conformant.** All 15 command opcodes, the register file
-and the divider are in, and 15 unit tests cover the register quirks and the
-geometry commands.
+**`gte/test-all`: 1150 of 1150.** All 15 command opcodes, the register file and
+the divider, matching the hardware log line for line apart from a `Total tests:`
+line the log predates.
 
-`gte/test-all` is the oracle, and it is an unusually good one: it prints
-per-register diffs and stops at the first failure, so every fix reveals the next
-one. That makes it a walk rather than a search.
+It started at 50. The walk from there is worth recording as a sequence, because
+the shape of it is the point: the suite stops at the first mismatch and prints
+which registers disagree, so each fix reveals exactly one more.
 
-| | |
-|---|---|
-| Passing | 69 of 1150 (all register tests, then 19 opcode cases) |
-| Stops at | test 70, `GTE 0x01 (sf=1, lm=0, tx=1, vx=1, mx=2)` |
-| Symptom | `IR0` reads `0x0000000C`, hardware gives `0x00000000` |
+| Stopped at | The register that disagreed | What was actually wrong |
+|---|---|---|
+| 51 | `SX2`/`SY2` | Screen coordinates read from `MAC0` after truncation |
+| 70 | `SZ3`, while `MAC3` matched | The 44-bit accumulators wrap; nothing 32 bits wide can show it |
+| 203 | `MAC3`, blue channel only | The far-colour difference was scaled by `sf` twice |
+| 206 | `FLAG` alone | That subtraction raises the accumulator flags without storing |
+| 304 | `MAC2`, `MAC3` | `MVMVA` matrix 3 takes its rows from `RT13`/`RT22`, not `IR0` |
+| 353 | `MAC3`, blue channel only | The colour multiply is not scaled by `sf` |
+| 390 | `FLAG` alone, both directions | Rows accumulate one term at a time, so one row can overflow twice |
+| 401 | `MAC1`, `MAC2` | `0x14` is `CDP`, not `DCPL`: two opcodes, one function |
+| 861 | `OTZ`, while `MAC0` matched | `OTZ` saturates from the full-precision product |
 
-It started at 50. The nineteen cases gained came from one fix worth recording:
-**screen coordinates are derived from the full-precision intermediate, not from
-`MAC0` after it has been truncated to 32 bits.** `MAC0` still stores the
-truncated value and still flags the overflow, but `SX2`/`SY2` saturate from the
-untruncated result. Reading them back out of `MAC0` turned a vertex that should
-clamp to +1023 into one at -2, and lost the saturation flag with it.
+All nine are pinned in `crates/psx-core/src/gte.rs`, and each test's expected
+value differs from what the previous implementation produced, so none can pass
+by accident.
 
-The remaining failure is narrow: every other register matches, `FLAG` included,
-so the divider is probably right and the `DQA`/`DQB` depth-cue path is not. Two
-alternatives have already been ruled out by measurement, both recorded in
-`docs/notes/GTE.md`.
+Two of those rows are the same finding in two places, and it is the one worth
+carrying to the other cores: **when a wide value is read at two widths, the
+narrow register cannot tell you which is wrong.** `MAC3` matching while `SZ3`
+disagreed, and `MAC0` matching while `OTZ` disagreed, were both the evidence,
+not the noise.
 
-`gte-fuzz` has not been run; it is the better oracle once `test-all` is green.
+The one that resisted analysis was 401. Hand-computing the expected result from
+the traced operands showed that no integer multiplier could produce it, which
+ruled out every variant of the formula rather than any particular one. That is
+what pointed at the opcode table instead of the arithmetic.
+
+### `RSTA_GTE_TRACE=1`
+
+The suite does not print its own inputs. This dumps the register file around
+every command, and since the run stops at the first mismatch, the failing
+command is always the last one traced. Four of the nine fixes above came from
+reading those operands rather than from guessing at the formula.
+
+### The grader had to be fixed first
+
+`test-all` ends with its own tally, `Passed tests: 1150` / `Failed tests: 0`.
+The harness counted verdict lines by prefix, so the tally itself read as one
+pass and one failure, and a clean run graded **FAIL**. It now reads a tally as
+authoritative where one exists. That direction is the harmless one, but it is
+the same class of bug as the false PASS described at the top of this file: the
+grader agreeing with the run by accident.
 
 ## What `cpu/cop` settled
 

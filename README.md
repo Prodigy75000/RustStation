@@ -63,8 +63,9 @@ Working, and confirmed against real hardware behaviour rather than asserted:
 - **DMA**: channel 2 (block and linked-list) and channel 6 (ordering table),
   which is what makes the GPU reachable at all.
 - **GTE**: all 15 commands, the register file and the hardware divider.
-  Implemented but **not yet conformant**: `gte/test-all` passes its register
-  tests and 19 opcode cases before stopping on a specific known failure.
+  **`gte/test-all` passes 1150 of 1150.** Nine separate hardware behaviours had
+  to be got right to reach that, and each is pinned by a unit test; the walk is
+  in [`docs/TESTS.md`](docs/TESTS.md).
 - **BIOS TTY capture** through the A/B call gates, so a test binary's own verdict
   is readable without a screen.
 - **PSX-EXE sideload** at the BIOS shell hand-over point.
