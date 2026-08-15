@@ -63,9 +63,10 @@ Working, and confirmed against real hardware behaviour rather than asserted:
 - **DMA**: channel 2 (block and linked-list) and channel 6 (ordering table),
   which is what makes the GPU reachable at all.
 - **GTE**: all 15 commands, the register file and the hardware divider.
-  **`gte/test-all` passes 1150 of 1150.** Nine separate hardware behaviours had
-  to be got right to reach that, and each is pinned by a unit test; the walk is
-  in [`docs/TESTS.md`](docs/TESTS.md).
+  **`gte/test-all` passes 1150 of 1150, and `gte-fuzz` matches the hardware log
+  byte for byte across all 150 625 lines** of randomised arguments. Nine
+  separate hardware behaviours had to be got right to reach that, and each is
+  pinned by a unit test; the walk is in [`docs/TESTS.md`](docs/TESTS.md).
 - **Controllers**: SIO0, with a digital pad in each of the two ports. Verified
   end to end against the suite's `input/pad`, which prints the buttons it sees:
   holding three prints those three and nothing else.

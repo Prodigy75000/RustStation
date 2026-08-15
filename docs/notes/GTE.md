@@ -1,7 +1,10 @@
 # GTE (COP2)
 
-**Status: conformant against `gte/test-all`, 1150 of 1150.** All 15 command
-opcodes, the full register file and the divider are in.
+**Status: conformant.** `gte/test-all` passes 1150 of 1150, and `gte-fuzz`
+matches the hardware log **byte for byte across all 150 625 lines**: 50
+randomised argument sets through every valid opcode, with the whole register
+file dumped after each. All 15 command opcodes, the full register file and the
+divider are in.
 
 Getting there took seven distinct fixes, each found the same way: the suite
 stops at the first mismatch and prints a per-register diff, so the register that
@@ -131,6 +134,7 @@ Two habits made that enough to work from:
    instantly, so a game that relies on the stall sees results sooner than it
    should. Harmless in isolation, but it interacts with the cycle-cost work in
    [`TIMING.md`](TIMING.md).
-2. **`gte-fuzz` is not in the local copy of the suite.** It would be the better
-   oracle now that `test-all` is green, because it covers argument combinations
-   a hand-written test does not. Worth fetching.
+2. **`gte-fuzz` needs a controller.** It waits on Start before it will run, so
+   it could not be used until the SIO0 port existed. Now that it can, it is the
+   better of the two oracles: `test-all` is a hand-written list of cases and
+   this is not.

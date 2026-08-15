@@ -211,6 +211,25 @@ the traced operands showed that no integer multiplier could produce it, which
 ruled out every variant of the formula rather than any particular one. That is
 what pointed at the opcode table instead of the arithmetic.
 
+### `gte-fuzz`: byte-identical against the hardware log
+
+The stronger oracle, and it now agrees exactly. `gte-fuzz` runs 50 randomised
+argument sets through every valid opcode from a fixed seed and dumps the whole
+register file after each, then ships the hardware's own dump of the same run.
+
+```
+testrom <bios.bin> tests/test-suite/gte-fuzz/gte-fuzz.exe     --hold start --boot-steps 60000000 --steps 3000000000
+```
+
+**150 625 lines, zero differences.** It waits on Start to begin, which is why it
+could not be run before the controller port existed, and it takes about 1.26
+billion instructions.
+
+This is worth more than `test-all` passing, because `test-all` is a hand-written
+list of cases and this is not: it covers argument combinations nobody chose. The
+two together are what make the GTE section of this file a statement about the
+hardware rather than about the tests.
+
 ### `RSTA_GTE_TRACE=1`
 
 The suite does not print its own inputs. This dumps the register file around
