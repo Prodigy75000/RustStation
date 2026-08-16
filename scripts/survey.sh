@@ -49,7 +49,7 @@ find dumps -name '*.cue' | sort | while read -r cue; do
         echo "   FAILED: $(head -1 "$OUT/$name.log")" | tee -a "$OUT/survey.txt"
         continue
     fi
-    grep -E 'non-black|cdrom|gpu:|gte:|stubs|dma|unmapped' "$OUT/$name.log" \
+    grep -E 'non-black|cdrom|gpu:|gte:|stubs|dma|unmapped|mdec' "$OUT/$name.log" \
         | tee -a "$OUT/survey.txt"
 done
 

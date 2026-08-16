@@ -77,6 +77,11 @@ Working, and confirmed against real hardware behaviour rather than asserted:
   Crash Bandicoot reaches N. Sanity Beach. Dino Crisis 2 reaches its in-game
   menus. See [`docs/TESTS.md`](docs/TESTS.md) for how far each of twenty-one
   discs gets, and for what that does and does not mean.
+- **MDEC**, the macroblock decoder: the quantisation and IDCT tables, the
+  run-length format, the IDCT, colour and monochrome macroblocks, all four
+  output depths, and both DMA channels. **Tomb Raider's intro video decodes**,
+  and the first frame of it is the Eidos logo, rendered from compressed data off
+  the disc. See [`docs/notes/MDEC.md`](docs/notes/MDEC.md).
 - **SPU**: the register file and 512 KB of sound RAM, and **no audio at all**.
   Thin on purpose: a register that always reads zero is a hang, not a missing
   feature, and read-back alone is what took Crash from a spin to its title
@@ -105,9 +110,10 @@ Working, and confirmed against real hardware behaviour rather than asserted:
 Not started:
 
 - **Audio of any kind.** No voices, no ADPCM, no CD-DA, no XA.
-- **MDEC**, the video decoder. This is the single biggest gap: fourteen of the
-  twenty-one discs on hand load fully and then stop with transfers queued on its
-  DMA channels, because their intro is a video.
+- **CD-ROM streaming.** Sectors arrive and games stop taking them: Tomb Raider
+  is delivered 12 463 and asks the drive for 185. That is now what stands
+  between the video decoder and a playing video, and it is very likely the same
+  fault that leaves Resident Evil 3 waiting on a kernel event.
 - Memory cards, CHD images, the CD-ROM's sub-channel.
 - Per-instruction cycle costs. Every instruction is one cycle and
   multiply/divide do not stall.
@@ -119,9 +125,8 @@ correctly, and that disagreement is the lead. Recorded in
 [`docs/TESTS.md`](docs/TESTS.md).
 
 It is still early. Of the twenty-one discs on hand, Tekken 3 renders a fight in
-progress and Crash Bandicoot reaches its first level, a handful more get as far
-as their own menus and logos, and **fourteen stop waiting for MDEC**, the video
-decoder, because their intros are full-motion video. There is no sound anywhere.
+progress and Crash Bandicoot reaches its first level, and a handful more get as
+far as their own menus and logos. There is no sound anywhere.
 No game has been driven with **changing** input, so "playable" is not a claim
 being made. Homebrew and test binaries sideloaded as PSX-EXEs also run, and draw.
 `scripts/survey.sh` runs the whole library and writes the table in

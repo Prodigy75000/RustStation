@@ -25,6 +25,7 @@ use crate::cdrom::Cdrom;
 use crate::spu::Spu;
 use crate::gpu::Gpu;
 use crate::irq::{self, Irq};
+use crate::mdec::Mdec;
 
 pub const CHANNELS: usize = 7;
 
@@ -226,16 +227,31 @@ impl Dma {
     }
 
     /// Run one channel to completion.
+    #[allow(clippy::too_many_arguments)]
     pub fn run(
         dma: &mut Dma,
         ram: &mut [u8],
         gpu: &mut Gpu,
         cdrom: &mut Cdrom,
         spu: &mut Spu,
+        mdec: &mut Mdec,
         irq: &mut Irq,
         channel: usize,
     ) {
         match channel {
+            CH_MDEC_IN => {
+                Self::run_mdec_in(dma, ram, mdec);
+                dma.channels[channel].finish();
+                dma.complete(channel, irq);
+                // Fresh compressed data may be exactly what an output transfer
+                // that starved was waiting for. See `run_mdec_out`.
+                Self::resume_mdec_out(dma, ram, mdec, irq);
+                return;
+            }
+            CH_MDEC_OUT => {
+                Self::resume_mdec_out(dma, ram, mdec, irq);
+                return;
+            }
             CH_GPU => Self::run_gpu(dma, ram, gpu),
             CH_CDROM => Self::run_cdrom(dma, ram, cdrom),
             CH_SPU => Self::run_spu(dma, ram, spu),
@@ -288,6 +304,76 @@ impl Dma {
                 }
                 dma.channels[CH_GPU].madr = addr;
             }
+        }
+    }
+
+    /// Channel 0: hand the decoder a cursor to the compressed block.
+    ///
+    /// Not copied. See `Mdec::queue_input` for why, and for what it costs.
+    fn run_mdec_in(dma: &mut Dma, ram: &mut [u8], mdec: &mut Mdec) {
+        let ch = dma.channels[CH_MDEC_IN];
+        let addr = ch.madr & 0x1F_FFFC;
+        let count = ch.word_count();
+        Self::trace_mdec(CH_MDEC_IN, &ch, addr);
+        mdec.queue_input(addr, count);
+        mdec.pump(ram);
+        dma.channels[CH_MDEC_IN].madr =
+            addr.wrapping_add_signed(ch.step() * count as i32) & 0x1F_FFFC;
+    }
+
+    /// Channel 1: drain decoded pixels, and **stop rather than invent them**
+    /// when the decoder runs dry.
+    ///
+    /// This is the one channel here that can starve, and it has to be allowed
+    /// to. Software feeds compressed data in small blocks and asks for a large
+    /// output block spanning several of them, expecting the DMA controller to
+    /// interleave the two channels as the chip raises and drops its requests.
+    /// This core's DMA is instantaneous and runs one channel at a time, so
+    /// instead the transfer runs as far as the decoder can feed it, records
+    /// what is left in `bcr`, and stays **busy**. Delivering the rest is then
+    /// `run_mdec_in`'s job, which calls back here the moment more data arrives.
+    ///
+    /// Running to completion regardless would write whatever the output buffer
+    /// last held into the tail of the frame, which looks like a decoder bug and
+    /// is not one.
+    fn resume_mdec_out(dma: &mut Dma, ram: &mut [u8], mdec: &mut Mdec, irq: &mut Irq) {
+        let ch = dma.channels[CH_MDEC_OUT];
+        if !ch.busy() {
+            return;
+        }
+        let mut addr = ch.madr & 0x1F_FFFC;
+        let mut left = ch.word_count();
+        Self::trace_mdec(CH_MDEC_OUT, &ch, addr);
+        while left > 0 {
+            if !mdec.has_output() {
+                mdec.pump(ram);
+            }
+            if !mdec.has_output() {
+                break;
+            }
+            let word = mdec.read_word();
+            write_ram(ram, addr, word);
+            addr = addr.wrapping_add_signed(ch.step()) & 0x1F_FFFC;
+            left -= 1;
+        }
+        dma.channels[CH_MDEC_OUT].madr = addr;
+        // The remainder goes back as a plain word count: a block size with no
+        // block count, which `word_count` reads as one block of that size.
+        dma.channels[CH_MDEC_OUT].bcr = left;
+        if left == 0 {
+            dma.channels[CH_MDEC_OUT].finish();
+            dma.complete(CH_MDEC_OUT, irq);
+        }
+    }
+
+    /// `RSTA_MDEC_TRACE=1` logs the decoder's two channels.
+    fn trace_mdec(channel: usize, ch: &Channel, addr: u32) {
+        if std::env::var("RSTA_MDEC_TRACE").is_ok() {
+            eprintln!(
+                "dma: mdec ch{channel} sync{} {} words at {addr:06X}",
+                ch.sync_mode(),
+                ch.word_count()
+            );
         }
     }
 
@@ -382,7 +468,7 @@ mod tests {
         assert!(dma.write(0x64, 4).is_none());
         let ch = dma.write(0x68, 0x1100_0002);
         assert_eq!(ch, Some(CH_OTC));
-        Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut Spu::new(), &mut irq, CH_OTC);
+        Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut Spu::new(), &mut Mdec::new(), &mut irq, CH_OTC);
 
         assert_eq!(read_ram(&ram, 0x1000), 0x0FFC, "should point at the previous");
         assert_eq!(read_ram(&ram, 0x0FFC), 0x0FF8);
@@ -404,7 +490,7 @@ mod tests {
         assert!(dma.write(0x24, 3).is_none()); // three words, manual mode
         let ch = dma.write(0x28, 0x0100_0201); // enable + trigger, from RAM
         assert_eq!(ch, Some(CH_GPU));
-        Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut Spu::new(), &mut irq, CH_GPU);
+        Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut Spu::new(), &mut Mdec::new(), &mut irq, CH_GPU);
 
         assert_ne!(gpu.vram[0], 0, "the fill did not reach the GPU");
     }
@@ -426,7 +512,7 @@ mod tests {
         // Enable (bit 24), sync mode 2 (bits 9-10), from RAM (bit 0).
         let ch = dma.write(0x28, 0x0100_0401);
         assert_eq!(ch, Some(CH_GPU));
-        Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut Spu::new(), &mut irq, CH_GPU);
+        Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut Spu::new(), &mut Mdec::new(), &mut irq, CH_GPU);
 
         assert_ne!(gpu.vram[0], 0, "the list's fill did not run");
     }
@@ -439,7 +525,7 @@ mod tests {
 
         assert!(dma.write(0x20, 0x400).is_none());
         let _ = dma.write(0x28, 0x0100_0401);
-        Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut Spu::new(), &mut irq, CH_GPU);
+        Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut Spu::new(), &mut Mdec::new(), &mut irq, CH_GPU);
         // Reaching here at all is the assertion.
     }
 
@@ -451,7 +537,7 @@ mod tests {
 
         // Masked: no interrupt.
         let _ = dma.write(0x68, 0x1100_0002);
-        Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut Spu::new(), &mut irq, CH_OTC);
+        Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut Spu::new(), &mut Mdec::new(), &mut irq, CH_OTC);
         assert_eq!(irq.stat(), 0);
 
         // Enable channel 6 and the master bit, then run again.
@@ -459,7 +545,7 @@ mod tests {
         assert!(dma.write(0x60, 0x1000).is_none());
         assert!(dma.write(0x64, 2).is_none());
         let _ = dma.write(0x68, 0x1100_0002);
-        Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut Spu::new(), &mut irq, CH_OTC);
+        Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut Spu::new(), &mut Mdec::new(), &mut irq, CH_OTC);
         assert_ne!(irq.stat() & (1 << irq::DMA), 0);
     }
 

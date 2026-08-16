@@ -14,6 +14,7 @@
 use crate::dma::Dma;
 use crate::gpu::Gpu;
 use crate::irq::{self, Irq};
+use crate::mdec::Mdec;
 use crate::cdrom::Cdrom;
 use crate::sio::Sio;
 use crate::spu::Spu;
@@ -137,6 +138,7 @@ pub struct Bus {
     pub sio: Sio,
     pub cdrom: Cdrom,
     pub spu: Spu,
+    pub mdec: Mdec,
 
     /// Counters for ports we decode but do not emulate yet. These exist so the
     /// harnesses can answer "what did the BIOS touch that we ignore?" without a
@@ -183,6 +185,7 @@ impl Bus {
             sio: Sio::new(),
             cdrom: Cdrom::new(),
             spu: Spu::new(),
+            mdec: Mdec::new(),
             stub_reads: 0,
             stub_writes: 0,
             unmapped_reads: 0,
@@ -382,8 +385,10 @@ impl Bus {
         if let Some(off) = SPU.contains(abs) {
             return self.spu.read(off, width);
         }
-        if MDEC.contains(abs).is_some()
-            || SIO1.contains(abs).is_some()
+        if let Some(off) = MDEC.contains(abs) {
+            return self.mdec.read(off);
+        }
+        if SIO1.contains(abs).is_some()
             || EXPANSION_1.contains(abs).is_some()
             || EXPANSION_2.contains(abs).is_some()
         {
@@ -481,6 +486,7 @@ impl Bus {
                     &mut self.gpu,
                     &mut self.cdrom,
                     &mut self.spu,
+                    &mut self.mdec,
                     &mut self.irq,
                     channel,
                 );
@@ -507,8 +513,11 @@ impl Bus {
             self.spu.write(off, width, val);
             return;
         }
-        if MDEC.contains(abs).is_some()
-            || DMA.contains(abs).is_some()
+        if let Some(off) = MDEC.contains(abs) {
+            self.mdec.write(off, val);
+            return;
+        }
+        if DMA.contains(abs).is_some()
             || SIO1.contains(abs).is_some()
             || EXPANSION_1.contains(abs).is_some()
             || EXPANSION_2.contains(abs).is_some()

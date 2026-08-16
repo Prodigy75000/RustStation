@@ -29,7 +29,7 @@
 use crate::bus::{self, Bus};
 use crate::cpu::Cpu;
 use crate::video::Standard;
-use crate::{cdrom, dma, gpu, sio, spu, Psx};
+use crate::{cdrom, dma, gpu, mdec, sio, spu, Psx};
 
 /// Core magic. The trailing digit is a generation marker: it only changes if
 /// the stream stops being a RustStation state at all.
@@ -55,7 +55,7 @@ pub const MAGIC: &[u8; 8] = b"RSTAPSX1";
 /// * 7: adds the SPU's register file and its 512 KB of sound RAM. No audio is
 ///   produced, but the registers are still machine state: software polls what
 ///   it wrote, and a state that loses them resumes into a spin.
-pub const FORMAT_VERSION: u16 = 8;
+pub const FORMAT_VERSION: u16 = 9;
 
 const HEADER_BYTES: usize = 8 + 2;
 const CPU_BYTES: usize = 32 * 4     // regs
@@ -98,7 +98,8 @@ const TIMED_BYTES: usize = 2 + 2                  // irq: stat, mask
     + DMA_BYTES
     + SIO_BYTES
     + CDROM_BYTES
-    + SPU_BYTES;
+    + SPU_BYTES
+    + MDEC_BYTES;
 
 /// The GP0 FIFO is serialized as a fixed-size array so the state stays a
 /// constant length. The longest real command is 12 words (a Gouraud textured
@@ -128,6 +129,17 @@ const SIO_BYTES: usize = 2 * 3      // mode, ctrl, baud
 /// The SPU, added in format version 7: the register file, then sound RAM
 /// behind a length prefix, then the transfer pointer.
 const SPU_BYTES: usize = spu::REG_BYTES + 4 + spu::RAM_BYTES + 4;
+
+/// MDEC, added in format version 9. Everything fixed width: the tables, the
+/// block being assembled, the six decoded blocks and the output buffer.
+const MDEC_BYTES: usize = 9       // phase, depth, output flags, DMA enables, quant state, decoding
+    + 2 * 64                      // luminance and chrominance quant tables
+    + 64 * 2                      // the IDCT scale table
+    + 64 * 2                      // the coefficients of the block in progress
+    + 3 * 2                       // words outstanding, coefficient position, block index
+    + 6 * 4                       // quant and scale load positions, output length and position, input cursor
+    + 6 * 64                      // the six decoded blocks
+    + 192 * 4; // and the output buffer
 
 /// The CD-ROM controller, added in format version 6. Every array is fixed width
 /// so the state stays a constant length whatever is queued.
@@ -380,6 +392,7 @@ fn write_bus(w: &mut Writer, b: &Bus) {
     write_dma(w, &b.dma);
     write_sio(w, &b.sio);
     write_cdrom(w, &b.cdrom);
+    write_mdec(w, &b.mdec);
     write_spu(w, &b.spu);
 }
 
@@ -453,6 +466,31 @@ fn write_cdrom(w: &mut Writer, c: &cdrom::Cdrom) {
     w.u16(data_len);
     w.u16(data_pos);
     w.bytes(sector);
+}
+
+fn write_mdec(w: &mut Writer, m: &mdec::Mdec) {
+    let (flags, quant, scale, coeffs) = m.parts();
+    w.bytes(&flags);
+    w.bytes(&quant);
+    for v in scale {
+        w.u16(v as u16);
+    }
+    for v in coeffs {
+        w.u16(v as u16);
+    }
+    let (counters, positions, blocks, out) = m.progress();
+    for v in counters {
+        w.u16(v);
+    }
+    for v in positions {
+        w.u32(v);
+    }
+    for v in blocks {
+        w.u8(v as u8);
+    }
+    for v in out {
+        w.u32(v);
+    }
 }
 
 fn write_sio(w: &mut Writer, s: &sio::Sio) {
@@ -624,6 +662,7 @@ fn read_bus(r: &mut Reader, b: &mut Bus) -> Option<()> {
     read_dma(r, &mut b.dma)?;
     read_sio(r, &mut b.sio)?;
     read_cdrom(r, &mut b.cdrom)?;
+    read_mdec(r, &mut b.mdec)?;
     read_spu(r, &mut b.spu)?;
 
     Some(())
@@ -683,6 +722,39 @@ fn read_spu(r: &mut Reader, s: &mut spu::Spu) -> Option<()> {
     let ram = r.take(spu::RAM_BYTES)?.to_vec();
     let transfer = r.u32()?;
     s.restore(regs, &ram, transfer);
+    Some(())
+}
+
+fn read_mdec(r: &mut Reader, m: &mut mdec::Mdec) -> Option<()> {
+    let mut flags = [0u8; 9];
+    let mut quant = [0u8; 128];
+    let mut scale = [0i16; 64];
+    let mut coeffs = [0i16; 64];
+    let mut counters = [0u16; 3];
+    let mut positions = [0u32; 6];
+    let mut blocks = [0i8; 6 * 64];
+    let mut out = [0u32; 192];
+    flags.copy_from_slice(r.take(9)?);
+    quant.copy_from_slice(r.take(128)?);
+    for v in scale.iter_mut() {
+        *v = r.u16()? as i16;
+    }
+    for v in coeffs.iter_mut() {
+        *v = r.u16()? as i16;
+    }
+    for v in counters.iter_mut() {
+        *v = r.u16()?;
+    }
+    for v in positions.iter_mut() {
+        *v = r.u32()?;
+    }
+    for v in blocks.iter_mut() {
+        *v = r.u8()? as i8;
+    }
+    for v in out.iter_mut() {
+        *v = r.u32()?;
+    }
+    m.restore(flags, quant, scale, coeffs, counters, positions, blocks, out);
     Some(())
 }
 
@@ -994,6 +1066,45 @@ mod tests {
         }
         psx.bus.store16(0x1F80_1C00, 0x3FFF); // voice 0 volume left
 
+        // MDEC: both quant tables, the scale table, and a decode left partway
+        // through so the coefficient buffer, the block index and the output
+        // buffer all hold something. A chip sitting at its power-on values
+        // serializes as several hundred zero bytes, and zero bytes cannot show
+        // that a field was dropped or reordered.
+        psx.bus.store32(0x1F80_1824, 0x6000_0000); // both DMA requests enabled
+        psx.bus.store32(0x1F80_1820, 0x4000_0001); // load quant tables, colour
+        for i in 0..32u32 {
+            psx.bus.store32(0x1F80_1820, 0x0102_0304u32.wrapping_mul(i + 1));
+        }
+        psx.bus.store32(0x1F80_1820, 0x6000_0000); // load the IDCT scale table
+        for i in 0..32u32 {
+            psx.bus.store32(0x1F80_1820, 0x0040_0020u32.wrapping_add(i * 0x11));
+        }
+        // Decode, 15-bit output, bit 15 set. Two blocks' worth of run-length
+        // data and no end-of-block for the second, so it stops mid-block.
+        psx.bus.store32(0x1F80_1820, 0x3200_0003);
+        psx.bus.store32(0x1F80_1820, 0x0123_4567);
+        psx.bus.store32(0x1F80_1820, 0xFE00_0042);
+        psx.bus.store32(0x1F80_1820, 0x0089_00AB);
+
+        // And a second decode fed the way a game feeds one, through DMA channel
+        // 0, so the input cursor and the flag that says the cursor holds
+        // macroblock data are both something other than zero. Feeding this
+        // through the command port instead leaves both at their power-on
+        // values, and two adjacent fields that are both zero cannot show that
+        // the serializer swapped them.
+        for (i, word) in [0x1234_5678u32, 0x0011_2233, 0x4455_6677, 0x8899_AABB]
+            .iter()
+            .enumerate()
+        {
+            psx.bus.store32(0x2000 + i as u32 * 4, *word);
+        }
+        psx.bus.store32(0x1F80_1820, 0x3200_0004); // decode, four words
+        psx.bus.store32(0x1F80_10F0, 0x8888_8888); // enable every channel
+        psx.bus.store32(0x1F80_1080, 0x0000_2000); // channel 0 MADR
+        psx.bus.store32(0x1F80_1084, 0x0002_0002); // two words, two blocks
+        psx.bus.store32(0x1F80_1088, 0x0100_0201); // from RAM, sync 1, start
+
         psx
     }
 
@@ -1011,15 +1122,15 @@ mod tests {
 
         // Header, byte for byte.
         assert_eq!(&snap[0..8], MAGIC);
-        assert_eq!(&snap[8..10], &[0x08, 0x00]);
+        assert_eq!(&snap[8..10], &[0x09, 0x00]);
 
         // Total length, pinned to a literal, deliberately NOT compared against
         // `Psx::state_size()`, which would only compare the layout to itself.
-        assert_eq!(snap.len(), 3_675_129);
+        assert_eq!(snap.len(), 3_676_704);
 
         // Whole-buffer checksum: any added, removed, reordered or re-widened
         // field moves it.
-        assert_eq!(fnv1a64(&snap), 0xF29D_8F0D_240C_2C48);
+        assert_eq!(fnv1a64(&snap), 0xAD63_67CC_9977_9E4A);
     }
 
     #[test]

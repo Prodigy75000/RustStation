@@ -311,6 +311,7 @@ fn main() -> ExitCode {
             println!("    unmapped {addr:08X} touched {count} times");
         }
     }
+    println!("mdec: {} macroblocks decoded", psx.bus.mdec.macroblocks);
     println!(
         "gte: {} colour channels clamped, {} unknown commands",
         psx.cpu.gte.colour_saturations, psx.cpu.gte.unknown_commands

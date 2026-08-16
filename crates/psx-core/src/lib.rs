@@ -21,6 +21,8 @@
 //! * The GTE, conformant against `gte/test-all`.
 //! * SIO0: the controller port, with a digital pad.
 //! * The CD-ROM controller and BIN/CUE disc images.
+//! * MDEC, the macroblock decoder, which is what full-motion video goes
+//!   through.
 //! * The SPU's register file and sound RAM, but **no audio**.
 //! * BIOS TTY capture, so a conformance binary's own verdict is readable.
 //! * PSX-EXE sideload at the BIOS shell hook.
@@ -28,7 +30,7 @@
 //!
 //! ## What does not exist yet
 //!
-//! Audio of any kind, MDEC, memory cards, CHD images. No per-instruction timing
+//! Audio of any kind, memory cards, CHD images. No per-instruction timing
 //! model: every instruction costs one cycle.
 
 pub mod bus;
@@ -41,6 +43,7 @@ pub mod exe;
 pub mod gpu;
 pub mod gte;
 pub mod irq;
+pub mod mdec;
 pub mod save;
 pub mod sio;
 pub mod spu;
