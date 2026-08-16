@@ -141,6 +141,14 @@ pub struct Gte {
 
     /// Commands with an opcode this core does not recognise.
     pub unknown_commands: u64,
+    /// Colour channels clamped on the way into the colour FIFO.
+    ///
+    /// Host-side observation. Saturation is legal and routine in small
+    /// amounts, so this is not an error count; it is here because "are these
+    /// vertex colours the GTE's doing?" has no other cheap answer, and a
+    /// primitive whose channels are all exactly 0 or 255 either came from
+    /// clamping or did not come from here at all.
+    pub colour_saturations: u64,
 }
 
 impl Gte {
@@ -245,6 +253,7 @@ impl Gte {
     fn saturate_colour(&mut self, value: i32, bit: u32) -> u8 {
         if !(0..=255).contains(&value) {
             self.set_flag(bit);
+            self.colour_saturations += 1;
         }
         value.clamp(0, 255) as u8
     }

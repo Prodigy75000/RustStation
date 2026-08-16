@@ -363,8 +363,8 @@ nothing about timing, and the timing constants here are guesses; `cdrom/timing`
 is the thing that would settle them, and it needs a disc.
 
 It also produced the first evidence about the GPU that did not come from a test
-pattern: the menu draws colour noise where its two icons should be. Recorded in
-`docs/notes/GPU.md`.
+pattern: the menu draws colour noise across the two menu entries. That one has
+its own section below.
 
 ### With a disc: the licence screen
 
@@ -481,6 +481,61 @@ So the failure is after a successful directory read, and the periodic
 volume-descriptor read is most likely a heartbeat while it waits for something
 else. It has drawn nothing at all beyond the BIOS logo. Open, and not yet
 guessed at.
+
+### The BIOS menu's colour noise, narrowed
+
+Four of the five BIOS images draw rainbow noise across the two main-menu
+entries. SCPH-1002 does not. This is the oldest open graphics bug here and it
+had no characterisation at all beyond the screenshot; it now has one, and three
+suspects have been eliminated by measurement rather than by argument.
+
+**The chain, end to end.** The artefact on screen is one 216x70 quad per entry,
+sampling a 108x35 fifteen-bit texture at VRAM page 896,0 at two-times
+magnification. That texture arrives by a CPU-to-VRAM transfer. Sampling the
+middle row of every transfer in the run shows it is byte-identical to an earlier
+**read** of VRAM at 640,0, except that about 44% of its pixels have been zeroed
+by the CPU in between, which is a colour key. And what is at 640,0 to be read
+back is a two-by-two grid of Gouraud quads that the BIOS draws there itself.
+
+So the whole of the defect is upstream of the GPU's texturing: the source
+picture is already wrong when it is captured, and everything after the capture
+is faithful.
+
+**What those quads are drawn with.** Their vertex colours are fully saturated:
+every channel is exactly `00` or `FF`, in six frames of shifting primaries. That
+is the anomaly, and what makes it one is the company it keeps. Every other
+primitive drawn into the same scratch area, before and after, is sensible: the
+background sphere is `8080FF` at its centre and `000020` at its edges, and the
+later glow meshes are `9925FF` over `17052D`, `FFCC01` over `2D1E01`, a bright
+vertex and a dark surround each time. Only the six captured frames saturate.
+
+**Eliminated, each by a counter rather than by reasoning:**
+
+* **The VRAM readback path.** The BIOS also copies a 120x120 sphere from 640,0
+  to 704,0 through the CPU in the same way. Its checksum in and its checksum out
+  are identical, so read-back to RAM and write-back to VRAM are byte-exact.
+* **Transfers cut short.** A read transfer abandoned halfway would leave the
+  tail of the destination buffer holding stale memory, which is a very good
+  imitation of this bug. `Gpu::abandoned_transfers` counts them and the whole
+  boot has none, on any BIOS.
+* **The GTE.** Channels that are all exactly 0 or 255 look exactly like colour
+  clamping, and the GTE is where a PlayStation usually computes vertex colours.
+  `Gte::colour_saturations` counts every channel it clamps, and the whole boot
+  clamps none, on either a working or a failing BIOS. Those colours are not the
+  GTE's.
+
+**Not yet answered:** where the BIOS gets them, then. They arrive in the GP0
+command words, so this core drew what it was told; the question has moved out of
+the GPU and into whatever the BIOS computed them from. Also unsettled is whether
+a rainbow is wrong *at all*: the shape being keyed out of it might be the real
+defect, and the colours a red herring.
+
+Reproduce with:
+
+```
+RSTA_GPU_TRACE=1  shot <bios.bin> --steps 500000000   # transfers, with checksums
+RSTA_GPU_REGION=660,5,730,30 shot <bios.bin> ...      # what drew that corner
+```
 
 ### The PAL BIOS: closed
 

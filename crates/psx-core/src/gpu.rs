@@ -33,6 +33,33 @@ pub const VRAM_WIDTH: usize = 1024;
 pub const VRAM_HEIGHT: usize = 512;
 pub const VRAM_WORDS: usize = VRAM_WIDTH * VRAM_HEIGHT;
 
+/// `RSTA_GPU_TRACE=1` logs VRAM transfers and the texture state each textured
+/// primitive samples with. Both answer the same question: a picture drawn from
+/// the wrong place in VRAM and a picture drawn from garbage that was written to
+/// the right place look identical on screen.
+fn trace_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("RSTA_GPU_TRACE").is_ok_and(|v| v != "0"))
+}
+
+/// `RSTA_GPU_REGION=x0,y0,x1,y1` logs every triangle drawn wholly inside that
+/// VRAM rectangle, with its colours, texture coordinates and texture state.
+///
+/// A whole-run primitive log is thousands of lines of which two matter. The
+/// interesting question is nearly always "what drew *this* corner of VRAM", and
+/// a rectangle is how that question is asked.
+fn trace_region() -> Option<(i32, i32, i32, i32)> {
+    static REGION: std::sync::OnceLock<Option<(i32, i32, i32, i32)>> = std::sync::OnceLock::new();
+    *REGION.get_or_init(|| {
+        let spec = std::env::var("RSTA_GPU_REGION").ok()?;
+        let n: Vec<i32> = spec.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+        match n[..] {
+            [x0, y0, x1, y1] => Some((x0, y0, x1, y1)),
+            _ => None,
+        }
+    })
+}
+
 /// Where the raster is, for the two GPUSTAT bits that report it.
 ///
 /// A parameter rather than GPU state so there is one copy of it, in
@@ -184,6 +211,18 @@ pub struct Gpu {
     pub textured_primitives: u64,
     /// Primitives discarded for exceeding the GPU's maximum extent.
     pub oversized_primitives: u64,
+    /// VRAM transfers started, either direction. Host-side observation, like
+    /// the two above. A harness that dumps VRAM whenever this changes gets a
+    /// frame per transfer, which is the granularity at which a texture is
+    /// built, rather than one per arbitrary number of instructions.
+    pub transfers: u64,
+    /// Transfers a new command cut short before all their halfwords moved.
+    ///
+    /// Not a workload figure: this one is a fault. A read transfer abandoned
+    /// halfway leaves the tail of the destination buffer holding whatever was
+    /// there before, which is the difference between a picture and noise, and
+    /// nothing else in this core would report it.
+    pub abandoned_transfers: u64,
 }
 
 impl Default for Gpu {
@@ -220,6 +259,8 @@ impl Gpu {
             gpuread_latch: 0,
             textured_primitives: 0,
             oversized_primitives: 0,
+            transfers: 0,
+            abandoned_transfers: 0,
         };
         gpu.reset();
         gpu
@@ -347,8 +388,12 @@ impl Gpu {
         let cmd = (word >> 24) & 0xFF;
         let args = word & 0x00FF_FFFF;
         match cmd {
-            0x00 => self.reset(),
+            0x00 => {
+                self.drop_transfer_in_progress();
+                self.reset();
+            }
             0x01 => {
+                self.drop_transfer_in_progress();
                 self.fifo.clear();
                 self.port = Port::Command;
             }
@@ -433,6 +478,10 @@ impl Gpu {
         // does apply.
         let v = if self.mask_set { value | 0x8000 } else { value };
         self.vram[y as usize * VRAM_WIDTH + x as usize] = v;
+        // Cheapest test first: this runs once per halfword of every upload.
+        if self.transfer.finished() && trace_enabled() {
+            self.trace_transfer("cpu->vram");
+        }
     }
 
     fn execute(&mut self) {
@@ -484,6 +533,7 @@ impl Gpu {
         let width = ((words[2] & 0xFFFF).wrapping_sub(1) & 0x3FF) + 1;
         let height = (((words[2] >> 16) & 0xFFFF).wrapping_sub(1) & 0x1FF) + 1;
 
+
         self.transfer = Transfer {
             x,
             y,
@@ -492,6 +542,79 @@ impl Gpu {
             done: 0,
         };
         self.port = port;
+        self.transfers += 1;
+
+        // A checksum of the rectangle, logged on the way in for a read and on
+        // the way out for a write. Copying a picture through the CPU is two
+        // transfers, so the same number appearing twice says the round trip is
+        // intact and the source was already wrong, and two different numbers
+        // say the round trip is where it broke. Neither is visible from a
+        // screenshot, which shows only the end of the chain.
+        if trace_enabled() && port == Port::FromVram {
+            self.trace_transfer("vram->cpu");
+        }
+    }
+
+    /// Note a transfer a GP1 reset is about to throw away.
+    ///
+    /// GP0 cannot do this: while a transfer is running, every word written to
+    /// GP0 is its data, so a command word in the middle of one is consumed as
+    /// two pixels rather than interrupting anything. The two GP1 resets are the
+    /// only way a transfer ends early, which is why this is called from there
+    /// and not from [`Gpu::begin_transfer`].
+    fn drop_transfer_in_progress(&mut self) {
+        if self.port == Port::Command || self.transfer.finished() {
+            return;
+        }
+        self.abandoned_transfers += 1;
+        if trace_enabled() {
+            eprintln!(
+                "gpu: ABANDONED {}x{} at {},{} after {}/{} halfwords",
+                self.transfer.width,
+                self.transfer.height,
+                self.transfer.x,
+                self.transfer.y,
+                self.transfer.done,
+                self.transfer.total()
+            );
+        }
+    }
+
+    /// Log a transfer's rectangle and a checksum of what VRAM holds there.
+    fn trace_transfer(&self, what: &str) {
+        let t = self.transfer;
+        let mut sum: u64 = 0;
+        let mut nonzero = 0u32;
+        for row in 0..t.height {
+            for col in 0..t.width {
+                let x = (t.x + col) & 0x3FF;
+                let y = (t.y + row) & 0x1FF;
+                let v = self.vram[y as usize * VRAM_WIDTH + x as usize];
+                sum = sum.wrapping_mul(0x1000_0001B3).wrapping_add(v as u64);
+                nonzero += (v != 0) as u32;
+            }
+        }
+        // Twelve pixels from the middle of the rectangle, verbatim. Image data
+        // and uninitialised memory both have a checksum; only one of them has
+        // neighbouring pixels that resemble each other. The middle rather than
+        // the corner because a picture with a transparent border starts with a
+        // run of zeros whichever it is.
+        let row = (t.y + t.height / 2) & 0x1FF;
+        let head: Vec<String> = (0..12.min(t.width))
+            .map(|col| {
+                let x = (t.x + t.width / 3 + col) & 0x3FF;
+                format!("{:04X}", self.vram[row as usize * VRAM_WIDTH + x as usize])
+            })
+            .collect();
+        eprintln!(
+            "gpu: {what} {}x{} at {},{} sum {sum:016X} nonzero {nonzero}/{} head {}",
+            t.width,
+            t.height,
+            t.x,
+            t.y,
+            t.total(),
+            head.join(" ")
+        );
     }
 
     fn fill_rectangle(&mut self, words: &[u32]) {
@@ -607,7 +730,14 @@ impl Gpu {
             // A polygon's texpage word also *becomes* the draw mode's, which is
             // why the next primitive can rely on it without resending E1.
             self.draw_mode = (self.draw_mode & !0x1FF) | (texpage & 0x1FF);
-            Some(self.tex_params(texpage, clut, raw))
+            let params = self.tex_params(texpage, clut, raw);
+            if trace_enabled() {
+                eprintln!(
+                    "gpu: textured page {},{} depth {} clut {},{}",
+                    params.page_x, params.page_y, params.depth, params.clut_x, params.clut_y
+                );
+            }
+            Some(params)
         } else {
             None
         };
@@ -835,6 +965,29 @@ impl Gpu {
     ) {
         if self.oversized([a.x, b.x, c.x], [a.y, b.y, c.y]) {
             return;
+        }
+
+        if let Some(region) = trace_region() {
+            let xs = [a.x, b.x, c.x];
+            let ys = [a.y, b.y, c.y];
+            // Overlap, not containment. A primitive that runs off the edge of
+            // the rectangle still drew into it, and requiring every vertex
+            // inside quietly hides exactly the large ones.
+            let overlaps = xs.iter().min().copied().unwrap_or(0) < region.2
+                && xs.iter().max().copied().unwrap_or(0) >= region.0
+                && ys.iter().min().copied().unwrap_or(0) < region.3
+                && ys.iter().max().copied().unwrap_or(0) >= region.1;
+            if overlaps {
+                eprintln!(
+                    "gpu: tri ({},{}) ({},{}) ({},{}) rgb {:02X}{:02X}{:02X} {:02X}{:02X}{:02X} \
+                     {:02X}{:02X}{:02X} uv ({},{}) ({},{}) ({},{}) gouraud {gouraud} semi {semi} \
+                     tex {:?}",
+                    a.x, a.y, b.x, b.y, c.x, c.y,
+                    a.r, a.g, a.b, b.r, b.g, b.b, c.r, c.g, c.b,
+                    a.u, a.v, b.u, b.v, c.u, c.v,
+                    tex.map(|t| (t.page_x, t.page_y, t.depth, t.clut_x, t.clut_y, t.raw)),
+                );
+            }
         }
 
         // Work in a consistent winding so the edge tests share a sign.
@@ -1708,6 +1861,41 @@ mod tests {
             ..beam
         };
         assert_eq!(g.status(other) & (1 << 13), 0, "bit 13 tracks it both ways");
+    }
+
+    /// A transfer a new command cuts short has to be visible.
+    ///
+    /// The reason it earns a counter rather than a comment: a read transfer
+    /// left half-drained means the tail of the destination buffer in RAM still
+    /// holds whatever was there before, and the picture that gets built out of
+    /// it is part image and part stale memory. That is indistinguishable from a
+    /// texturing bug by eye, and nothing else in this core reports it.
+    #[test]
+    fn a_transfer_cut_short_is_counted() {
+        let mut g = gpu();
+        g.gp0(0xA000_0000); // cpu to vram
+        g.gp0(0x0000_0000); // at 0,0
+        g.gp0(0x0004_0004); // 4x4, so eight words
+        g.gp0(0x1234_5678);
+        assert_eq!(g.abandoned_transfers, 0, "not abandoned yet");
+
+        g.gp1(0x0100_0000); // reset the command buffer, seven words still owed
+        assert_eq!(g.abandoned_transfers, 1);
+
+        // A transfer that finishes before the reset is not abandoned.
+        g.gp0(0xA000_0000);
+        g.gp0(0x0000_0000);
+        g.gp0(0x0004_0004);
+        for _ in 0..8 {
+            g.gp0(0x1234_5678);
+        }
+        g.gp1(0x0100_0000);
+        assert_eq!(g.abandoned_transfers, 1, "a completed transfer is not abandoned");
+
+        // And a reset with no transfer at all is not abandoned either, which is
+        // the case that fires constantly if the port check is dropped.
+        g.gp1(0x0100_0000);
+        assert_eq!(g.abandoned_transfers, 1, "no transfer, nothing to abandon");
     }
 
     /// Bit 13 reads 1 with interlace off, whatever the field would have been.

@@ -88,16 +88,15 @@ Three things that each cost a debugging round:
 
 ## Open questions
 
-1. **The BIOS main menu draws colour noise where its icons should be.** Now that
-   the CD-ROM controller lets the BIOS reach its own shell, the menu renders:
-   the background gradient, the spheres and the text are all right, but a block
-   of saturated noise sits behind "MEMORY CARD" and "CD PLAYER" where the icons
-   belong. Noise rather than a wrong picture points at a texture being sampled
-   from the wrong place in VRAM, or a CLUT read before the transfer that fills
-   it has finished, rather than at the rasterizer. It is the first thing this
-   core has drawn that a suite test does not cover, so it is also the first
-   evidence about textures that comes from real software rather than a test
-   pattern. Reproduce with `shot <bios.bin> --steps 300000000` and no `--exe`.
+1. **The BIOS main menu draws colour noise across its two entries**, on four of
+   the five BIOS images here. Not a texturing bug: the chain from the texture to
+   the screen is faithful and the source picture is already wrong when it is
+   captured. Traced end to end in `docs/TESTS.md`, along with the three suspects
+   eliminated by counter (the readback path, transfers cut short, the GTE). What
+   is left is the vertex colours the BIOS hands to a Gouraud mesh it renders
+   offscreen and then grabs as a texture, which are fully saturated when every
+   neighbouring primitive's are not. Reproduce with `shot <bios.bin> --steps
+   500000000` and no `--exe`.
 2. **The residual texture error is in the fetch, not the blend.** `texture-flip`
    still differs on 24.8% of pixels by exactly one 5-bit step. Three separate
    experiments (transposing the dither matrix, not dithering textured polygons,
@@ -127,6 +126,32 @@ Three things that each cost a debugging round:
 7. **Not started**: 24-bit display output, interlaced *rendering*, the texture
    cache, the display range registers (stored but unused), and any notion of
    how long drawing takes.
+
+## Tracing, when a picture is wrong
+
+Three environment variables, all off and free unless set:
+
+* `RSTA_GPU_TRACE=1` logs every VRAM transfer with its rectangle, a checksum of
+  what VRAM holds there, how many of those pixels are non-zero, and twelve
+  pixels from the middle of it. The checksum is the useful part: copying a
+  picture through the CPU is a read transfer and a write transfer, so the same
+  number twice says the round trip is intact and the source was already wrong,
+  and two different numbers say the round trip is where it broke.
+* `RSTA_GPU_REGION=x0,y0,x1,y1` logs every triangle overlapping that rectangle
+  of VRAM, with its vertex colours, texture coordinates and texture state. A
+  whole-run primitive log is thousands of lines of which two matter; the
+  question is nearly always "what drew *this* corner", and a rectangle is how
+  that is asked. Overlap, not containment, or the large primitives are exactly
+  the ones that go missing.
+* `shot --film 0` writes the whole of VRAM out once per transfer, which is the
+  granularity a texture is actually built at.
+
+Two counters are always on because their answers cannot be recovered later.
+`Gpu::abandoned_transfers` counts transfers a GP1 reset threw away part-drained,
+which leaves the tail of a destination buffer holding stale memory and imitates
+a texturing bug convincingly. `Gte::colour_saturations` counts colour channels
+the GTE clamped, which is what separates "these vertex colours are all exactly 0
+or 255 because something overflowed" from "they never came from the GTE".
 
 ## GPUSTAT bit 31 is not a status bit
 

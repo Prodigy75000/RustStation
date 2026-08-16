@@ -93,6 +93,7 @@ fn main() -> ExitCode {
     let mut pchist = false;
     let mut peeks: Vec<(u32, u32)> = Vec::new();
     let mut regs = false;
+    let mut film: Option<u64> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -112,6 +113,10 @@ fn main() -> ExitCode {
             "--vram" => whole_vram = true,
             "--pchist" => pchist = true,
             "--regs" => regs = true,
+            "--film" => {
+                i += 1;
+                film = args.get(i).and_then(|s| s.parse().ok());
+            }
             "--peek" => {
                 i += 1;
                 match args.get(i).and_then(|s| parse_peek(s)) {
@@ -200,6 +205,13 @@ fn main() -> ExitCode {
 
     let history = if pchist {
         Some(run_recording(&mut psx, steps))
+    } else if let Some(every) = film {
+        if every == 0 {
+            run_filmed_by_transfer(&mut psx, steps, &out_path);
+        } else {
+            run_filmed(&mut psx, steps, every, &out_path);
+        }
+        None
     } else {
         psx.run(steps);
         None
@@ -282,6 +294,16 @@ fn main() -> ExitCode {
         "dma: {} transfers on unimplemented channels",
         psx.bus.dma.unimplemented_transfers
     );
+    println!(
+        "gte: {} colour channels clamped, {} unknown commands",
+        psx.cpu.gte.colour_saturations, psx.cpu.gte.unknown_commands
+    );
+    if psx.bus.gpu.abandoned_transfers > 0 {
+        println!(
+            "gpu: {} VRAM transfers cut short by a new command",
+            psx.bus.gpu.abandoned_transfers
+        );
+    }
     if let Some(history) = &history {
         report_pchist(history);
     }
@@ -356,6 +378,50 @@ fn report_peek(psx: &Psx, addr: u32, count: u32) {
         match peek_word(psx, pc) {
             Some(word) => println!("    {pc:08X}  {word:08X}  {}", disasm::disasm(word, pc)),
             None => println!("    {pc:08X}  (not RAM or BIOS)"),
+        }
+    }
+}
+
+/// Run, writing the whole of VRAM out every `every` instructions.
+///
+/// The end of a run says what went wrong; this says *when*, which for anything
+/// the machine builds in stages is the more useful half. A texture that is
+/// garbage in the final dump was either uploaded as garbage or was fine and got
+/// overwritten, and those two need opposite fixes.
+fn run_filmed(psx: &mut Psx, steps: u64, every: u64, out_path: &str) {
+    let stem = out_path.strip_suffix(".png").unwrap_or(out_path);
+    let mut frame = 0;
+    for n in 0..steps {
+        if n % every == 0 {
+            write_vram(psx, &format!("{stem}-{frame:04}.png"));
+            frame += 1;
+        }
+        psx.step();
+    }
+    write_vram(psx, &format!("{stem}-{frame:04}.png"));
+}
+
+/// Run, writing VRAM out once per VRAM transfer instead of once per N
+/// instructions.
+///
+/// Instruction counts are the wrong clock for watching a texture get built: a
+/// texture appears in one transfer, and the interval that catches it is
+/// different in every run. Transfers are the units the work actually happens
+/// in, so one frame each is both the finest useful granularity and a bounded
+/// number of files.
+fn run_filmed_by_transfer(psx: &mut Psx, steps: u64, out_path: &str) {
+    let stem = out_path.strip_suffix(".png").unwrap_or(out_path);
+    let mut seen = psx.bus.gpu.transfers;
+    let mut frame = 0;
+    // A transfer's *last* word is what completes it, so dump after stepping,
+    // not before: dumping on the instruction that started it shows the state
+    // before any of the data arrived.
+    for _ in 0..steps {
+        psx.step();
+        if psx.bus.gpu.transfers != seen {
+            seen = psx.bus.gpu.transfers;
+            write_vram(psx, &format!("{stem}-t{frame:04}.png"));
+            frame += 1;
         }
     }
 }
@@ -494,6 +560,28 @@ fn compare(path: &str, width: usize, height: usize, ours: &[u8]) -> Result<bool,
 /// The suite's reference dumps widen 5-bit channels with a plain shift, so 31
 /// becomes 248 rather than 255. Matching that is what makes a pixel-exact
 /// comparison possible; see the module comment.
+/// Write the whole of VRAM to a PNG. Used by `--film`, which is how a picture
+/// that is wrong by the time the run ends gets watched being built.
+fn write_vram(psx: &Psx, path: &str) {
+    let mut buf = vec![0u8; VRAM_WIDTH * VRAM_HEIGHT * 3];
+    for (i, px) in psx.bus.gpu.vram.iter().enumerate() {
+        let (r, g, b) = rgb555_to_rgb888(*px);
+        buf[i * 3] = r;
+        buf[i * 3 + 1] = g;
+        buf[i * 3 + 2] = b;
+    }
+    let Ok(file) = File::create(path) else {
+        eprintln!("cannot write {path}");
+        return;
+    };
+    let mut encoder = png::Encoder::new(BufWriter::new(file), VRAM_WIDTH as u32, VRAM_HEIGHT as u32);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+    if let Err(e) = encoder.write_header().and_then(|mut w| w.write_image_data(&buf)) {
+        eprintln!("cannot encode {path}: {e}");
+    }
+}
+
 fn rgb555_to_rgb888(p: u16) -> (u8, u8, u8) {
     let expand = |c: u16| (c << 3) as u8;
     (
