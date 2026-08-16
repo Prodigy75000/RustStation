@@ -147,7 +147,18 @@ pub struct Bus {
     /// is usually *our* decode being wrong, not a missing subsystem.
     pub unmapped_reads: u64,
     pub unmapped_writes: u64,
+    /// The distinct addresses those hit, with a count each.
+    ///
+    /// A total says something is wrong; an address says what. Ninety million
+    /// unmapped reads is a machine spinning on one location, and which location
+    /// is the entire diagnosis, so it is worth the eight slots to keep it. Full
+    /// is full: later addresses are still counted in the totals above and are
+    /// simply not named, which is honest and keeps this off the hot path.
+    pub unmapped_sites: [(u32, u64); UNMAPPED_SITES],
 }
+
+/// How many distinct unmapped addresses [`Bus::unmapped_sites`] names.
+pub const UNMAPPED_SITES: usize = 8;
 
 impl Bus {
     pub fn new(bios: Vec<u8>) -> Result<Bus, BiosError> {
@@ -176,6 +187,7 @@ impl Bus {
             stub_writes: 0,
             unmapped_reads: 0,
             unmapped_writes: 0,
+            unmapped_sites: [(0, 0); UNMAPPED_SITES],
         })
     }
 
@@ -386,7 +398,23 @@ impl Bus {
         }
 
         self.unmapped_reads += 1;
+        self.note_unmapped(abs);
         0
+    }
+
+    /// Record which address an unmapped access hit, up to [`UNMAPPED_SITES`]
+    /// distinct ones. Address 0 is inside RAM, so a zero key means empty.
+    fn note_unmapped(&mut self, addr: u32) {
+        for site in self.unmapped_sites.iter_mut() {
+            if site.0 == addr {
+                site.1 += 1;
+                return;
+            }
+            if site.1 == 0 {
+                *site = (addr, 1);
+                return;
+            }
+        }
     }
 
     pub fn store(&mut self, addr: u32, width: u32, val: u32) {
@@ -490,6 +518,7 @@ impl Bus {
         }
 
         self.unmapped_writes += 1;
+        self.note_unmapped(abs);
     }
 
     #[inline(always)]

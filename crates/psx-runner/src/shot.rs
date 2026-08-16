@@ -294,6 +294,11 @@ fn main() -> ExitCode {
         "dma: {} transfers on unimplemented channels",
         psx.bus.dma.unimplemented_transfers
     );
+    for (addr, count) in psx.bus.unmapped_sites {
+        if count > 0 {
+            println!("    unmapped {addr:08X} touched {count} times");
+        }
+    }
     println!(
         "gte: {} colour channels clamped, {} unknown commands",
         psx.cpu.gte.colour_saturations, psx.cpu.gte.unknown_commands

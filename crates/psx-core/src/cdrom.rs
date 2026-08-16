@@ -227,16 +227,27 @@ impl Cdrom {
             // FIFO is loaded here and not when the sector arrives.
             3 if self.index == 0 => {
                 if val & 0x80 != 0 {
-                    self.data_len = self.sector_bytes() as u16;
-                    self.data_pos = 0;
-                    if trace_enabled() {
-                        let skip = usize::from(self.mode & MODE_WHOLE_SECTOR == 0) * 12;
-                        eprintln!(
-                            "cdrom fifo mode={:02x} len={} first={:02x?}",
-                            self.mode,
-                            self.data_len,
-                            &self.sector[skip..skip + 16]
-                        );
+                    // Only when the FIFO has been drained. Software is allowed
+                    // to set this bit again while it is still working through a
+                    // sector, and rewinding to the start there hands it the
+                    // beginning twice. That is how Grand Theft Auto 2 failed:
+                    // it reads the twelve-byte header and subheader of a
+                    // whole-sector read, re-arms, and then expects the 2048
+                    // bytes of user data. Rewinding gave it the header again,
+                    // so every file it opened was twelve bytes out of step, and
+                    // it retried the volume descriptor forever.
+                    if self.data_pos >= self.data_len {
+                        if trace_enabled() {
+                            let skip = usize::from(self.mode & MODE_WHOLE_SECTOR == 0) * 12;
+                            eprintln!(
+                                "cdrom fifo mode={:02x} len={} first={:02x?}",
+                                self.mode,
+                                self.sector_bytes(),
+                                &self.sector[skip..skip + 16]
+                            );
+                        }
+                        self.data_len = self.sector_bytes() as u16;
+                        self.data_pos = 0;
                     }
                 } else {
                     self.data_len = 0;
@@ -1116,6 +1127,49 @@ mod tests {
             c.write(3, 0x00);
         }
         assert_eq!(c.sectors_read, 4);
+    }
+
+    /// Re-arming the request register partway through a sector must not rewind
+    /// it.
+    ///
+    /// This is worth a test of its own because the failure is invisible at the
+    /// register level and catastrophic above it. Grand Theft Auto 2 reads the
+    /// twelve-byte header and subheader of a whole-sector read, sets the bit
+    /// again, and expects the user data to follow. Rewinding handed it the
+    /// header a second time, so every file it read was twelve bytes out of
+    /// step; it rejected the volume descriptor and retried it 256 times rather
+    /// than opening anything.
+    #[test]
+    fn re_arming_the_request_register_does_not_rewind() {
+        let mut c = with_disc();
+        let mut irq = Irq::new();
+        issue(&mut c, 0x0E, &[MODE_WHOLE_SECTOR]);
+        let _ = take(&mut c, &mut irq);
+        seek_and_read(&mut c, &mut irq, 5);
+        let _ = take(&mut c, &mut irq);
+
+        c.write(0, 0);
+        c.write(3, 0x80);
+        let header: Vec<u8> = (0..12).map(|_| c.pop_data()).collect();
+        assert_eq!(header[0], disc::lba_to_msf_bcd(5)[0], "started at the header");
+
+        // Software may set the bit again while it is still working through the
+        // sector. Hardware ignores that; only an empty FIFO reloads.
+        c.write(3, 0x80);
+        let next = c.pop_data();
+        assert_ne!(
+            next, header[0],
+            "re-arming rewound the FIFO to the start of the sector"
+        );
+        assert_eq!(next, 5, "the thirteenth byte is the user data's first");
+
+        // Draining it fully and then re-arming *does* reload, because that is
+        // how software reads the same sector twice.
+        while c.data_pos < c.data_len {
+            c.pop_data();
+        }
+        c.write(3, 0x80);
+        assert_eq!(c.pop_data(), disc::lba_to_msf_bcd(5)[0], "back at the header");
     }
 
     #[test]

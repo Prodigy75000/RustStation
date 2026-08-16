@@ -137,6 +137,21 @@ asked for.
 2340 bytes from the sector header onwards. The 12-byte sync pattern is never
 part of it.
 
+**Setting bit 7 again partway through a sector does nothing.** Only an empty
+FIFO reloads. This matters more than it sounds: software is entitled to re-arm
+the bit while it is still working through a sector, and rewinding to the start
+there hands it the beginning a second time. Grand Theft Auto 2 reads the twelve
+bytes of header and subheader from a whole-sector read, sets the bit again, and
+expects the 2048 bytes of user data to follow. With a rewind it got the header
+instead, so every file it read was twelve bytes out of step, and it rejected the
+ISO volume descriptor and re-read it 256 times rather than opening anything.
+
+Nothing about that failure pointed here. The sector bytes we served were
+byte-identical to the disc image, every command was recognised, no port was
+stubbed and no read was unmapped. What found it was tracing the read *position*
+at the moment of each reload rather than the data: 255 of 606 reloads happened
+at position 12, and a reload at a non-zero position is the bug stated outright.
+
 ## Traps
 
 * **The index register changes what an address means**, including for reads. A

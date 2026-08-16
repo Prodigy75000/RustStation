@@ -416,9 +416,9 @@ this core has been pointed at software it was not written against.
 |---|---|---|
 | **Crash Bandicoot (USA)** | SCPH-1001 | **Into gameplay.** Title screen, opening cutscene, then N. Sanity Beach with its level geometry rendering |
 | Tomb Raider (USA) Rev 6 | SCPH-1001 | The BIOS licence screen with its 3D logo, then hangs at 27 sectors |
-| Grand Theft Auto 2 | SCPH-1001 | Reads its filesystem, then loops. See below |
+| Grand Theft Auto 2 | SCPH-1001 | Loads, uploads its samples, then waits on MDEC for its intro video |
 | Silent Hill (USA) | SCPH-1001 | 424 sectors, then noise on screen. Its intro is an MDEC video, and there is no MDEC |
-| Ace Combat 2 (SCES) | SCPH-1002 | Untried since the PAL BIOS started booting |
+| Ace Combat 2 (SCES) | SCPH-1002 | The BIOS licence screen, then stops at 63 sectors |
 
 **What "into gameplay" does and does not mean.** With Start held from boot,
 Crash goes title screen, then the opening cutscene (Tawna and Cortex's machine,
@@ -452,35 +452,37 @@ The diagnostic that found it is worth keeping: a histogram of reads to
 decoded-but-unemulated ports. "The game is stuck" and "the game is stuck reading
 this one address" are very different starting points.
 
-### Grand Theft Auto 2 reads its filesystem and then waits
+### Grand Theft Auto 2: closed
 
-Worth writing down carefully, because the obvious diagnosis is wrong twice over.
+**Was:** 2 177 CD-ROM commands for 351 sectors, a retry loop re-reading LBA 16,
+the ISO 9660 primary volume descriptor, 256 times. It read the licence area, the
+volume descriptor, the path table and the root directory successfully and then
+never opened a file.
 
-It issues 2 177 CD-ROM commands and reads only 351 sectors: a retry loop. The
-loop is `Setloc(00:02:16)`, `Setmode(A0)`, `ReadN`, one sector, `Pause`, over and
-over, 256 times on that one sector. LBA 16 is the ISO 9660 primary volume
-descriptor.
+**Was not,** and both of these were checked before anything was changed: not bad
+sector data, because the bytes our FIFO served were byte-identical to the disc
+image, and not a stubbed port, because the whole run made two stub reads and no
+unmapped access at all.
 
-Two things it is **not**:
+**Is:** re-arming the CD-ROM's request register partway through a sector rewound
+the data FIFO to the start of it. The game reads the twelve bytes of header and
+subheader from a whole-sector read, sets the bit again, and expects the user data
+to follow; it got the header again, so every file it read was twelve bytes out of
+step. See `docs/notes/CDROM.md`.
 
-* **Not bad sector data.** `Setmode(A0)` selects whole-sector reads, 2340 bytes
-  from the header rather than 2048 of user data, which no other game here uses.
-  The bytes our FIFO serves for that sector are byte-identical to the image:
-  `00 02 16 02 | 00 00 09 00 00 00 09 00 | 01 43 44 30`, the header, the
-  subheader, and the start of `CD001`.
-* **Not a stubbed port.** Two stub reads in the entire run, both to the
-  expansion region. It is not spinning on an unemulated register the way Crash
-  was spinning on `SPUCNT`.
+Afterwards: **135 commands** rather than 2 177, and 1 121 sectors rather than
+351. The game loads, uploads 227 KB of its own samples to the SPU, switches to
+512x240, and then stops with the display off and four DMA transfers on
+unimplemented channels. Those channels are MDEC's, and its intro is a full-motion
+video, so the next blocker is a different and much better understood one.
 
-And it gets **further than the loop suggests**: the sectors actually delivered
-are 4 to 11, then 16, 18, 22, 23, 24, 25. That is the licence area, the volume
-descriptor, the path table and the root directory. Its filesystem reader works.
-It then goes back to re-reading the volume descriptor and never opens a file.
-
-So the failure is after a successful directory read, and the periodic
-volume-descriptor read is most likely a heartbeat while it waits for something
-else. It has drawn nothing at all beyond the BIOS logo. Open, and not yet
-guessed at.
+**What actually found it** is worth keeping, because none of the counters could
+have. Every one of them said the CD-ROM was fine. The trace was changed to print
+the FIFO's read *position* at the moment of each reload rather than the data it
+was serving: 255 of 606 reloads happened at position 12, and a reload at a
+non-zero position states the bug outright. The general form of that is to
+instrument the thing that is *supposed* to be invariant, not the thing that looks
+wrong.
 
 ### The BIOS menu's colour noise, narrowed
 
