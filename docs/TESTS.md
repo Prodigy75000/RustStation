@@ -463,8 +463,24 @@ them apart.
   shows them walking consecutive addresses past the end of RAM. A runaway
   pointer, not a missing device.
 * **Resident Evil 3** reads 6 429 sectors, queues nothing, refuses no command,
-  and draws nothing at all. No instrument here has anything to say about it yet,
-  which makes it the most interesting one on the list.
+  and draws nothing at all. Every counter says the machine is healthy, so it was
+  worth asking the other question. It is spinning in the BIOS kernel: the hot
+  loop is the B-table dispatch at `0x5E0` into `0x1EC8`, which indexes the event
+  control block at `0xA0000120` by a handle and compares a field against `0x4000`
+  and `0x2000`, the event status values. `t1` holds `0x2C` there, which is the
+  function number already shifted left by two, so the function is **B(0Bh),
+  `TestEvent`**. The game is waiting on a kernel event that never fires, after
+  6 429 sectors have arrived.
+
+  Ruled out on the way: it is not the memory card. It selects `0x81` exactly
+  twice at boot, gets no device, and moves on. Its controller polling is
+  ordinary, including the DualShock-only `0x43` and `0x45` commands, which a
+  digital pad is right to answer as it does.
+
+  Which event, and which interrupt was supposed to deliver it, is the open
+  question. The kernel delivers a CD event on the drive's interrupts, so the
+  first thing to check is whether every response this core queues raises the
+  interrupt the kernel is counting on.
 
 ### What "gameplay" does and does not mean
 
