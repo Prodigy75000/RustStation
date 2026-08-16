@@ -32,6 +32,13 @@ path = "src/fingerprint.rs"
 name = "shot"
 path = "src/shot.rs"
 
+# A minimal libretro frontend that dlopens the built core and drives the C ABI.
+# Everything else here links psx-core directly, which leaves the layer that
+# actually ships as the one nothing exercises.
+[[bin]]
+name = "retrohost"
+path = "src/retrohost.rs"
+
 [dependencies]
 psx-core = { path = "../psx-core" }
 # Dev-harness only. The core and the shipped libretro cdylib pull in nothing.

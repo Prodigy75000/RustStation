@@ -107,7 +107,12 @@ Working, and confirmed against real hardware behaviour rather than asserted:
 - **Save states** meeting the in-house contract: golden-bytes, round-trip,
   cross-instance determinism and reject tests, with the golden test's
   sensitivity proven rather than assumed.
-- **libretro shim** with the state and RetroAchievements memory surfaces wired.
+- **libretro core.** A disc image or a PSX-EXE as content, both pads read from
+  the frontend's RetroPad with input descriptors published, save states, and the
+  RetroAchievements memory surface. It cross-compiles to an Android arm64
+  `.so` with `scripts/deploy-android-debug.sh so`. `retrohost` drives the built
+  library through the real C ABI and gets the same picture, pixel for pixel, as
+  the direct harness does.
 
 Not started:
 
@@ -137,7 +142,7 @@ being made. Homebrew and test binaries sideloaded as PSX-EXEs also run, and draw
 ```
 crates/psx-core/       the emulator: cpu, gte, gpu, sio, cdrom, disc, bus, save
 crates/psx-libretro/   the C ABI shim (cdylib)
-crates/psx-runner/     dev harnesses: psx, testrom, fingerprint
+crates/psx-runner/     dev harnesses: psx, testrom, shot, fingerprint, retrohost
 bios/                  your BIOS dumps (gitignored)
 dumps/                 your disc images and loose binaries (gitignored)
 tests/                 vendored third-party test suites (gitignored)
@@ -170,6 +175,15 @@ cargo run --release --bin fingerprint -- bios/scph5501.bin --steps 1000000
 
 # Boot a disc.
 cargo run --release --bin shot -- bios/scph5501.bin --disc game.cue --steps 400000000
+
+# Build the libretro core and drive it the way a frontend would. The system
+# directory must hold a BIOS under a name the core looks for (scph1001.bin and
+# friends): a dump named after its release is invisible to it.
+cargo build --release -p psx-libretro
+cargo run --release --bin retrohost -- target/release/psxcore_libretro.dll system/     --content game.cue --frames 3600 --hold start --out frame.png
+
+# The same core for an Android device, arm64.
+scripts/deploy-android-debug.sh so
 
 cargo test --workspace
 ```

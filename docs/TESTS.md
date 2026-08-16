@@ -407,6 +407,82 @@ this repository.
 no filesystem, no `SYSTEM.CNF` and no executable, so everything past "the BIOS
 likes this disc" is untested. The timing constants remain approximate.
 
+## The libretro core, as of 2026-08-16
+
+Everything else here links `psx_core` directly, which left **the layer that
+actually ships as the one nothing exercised**. `retrohost` closes that: it
+`dlopen`s the built library and drives the C ABI the way a frontend does, so a
+run proves the shipped artefact rather than the code it was built from.
+
+```
+cargo run --release --bin retrohost -- target/release/psxcore_libretro.dll system/ \
+    --content "Tomb Raider (USA) (Rev 6).cue" --frames 3600 --hold start --out frame.png
+```
+
+```
+core: RustStation (PlayStation) 0.1.0
+      extensions cue|bin|img|iso|exe|psexe, need_fullpath true
+      declared 640x480 max 640x480, 60.00 fps, 44100 Hz, state 3676704 bytes
+      16 input descriptors; holding Start
+ran 3600 frames: 3600 video callbacks, 2646000 audio frames, last 512x240,
+110428 non-black pixels
+```
+
+**110 428 is the same figure `shot` reports for the same disc**, so the two
+paths agree pixel for pixel. Also confirmed by that run: content loaded from a
+path, `XRGB8888` negotiated, a frame never larger than the geometry declared,
+and audio emitted every frame even though it is silence, which a frontend needs
+or it stalls its own pacing. Booting with no content draws the BIOS main menu,
+and a PSX-EXE by path draws too.
+
+### Three things this found
+
+**The RetroPad ids are not in the order their names suggest.** `B` is 0, `Y` is
+1 and `SELECT` is 2, so a table written from the names puts Select on the south
+face button and Square on Select. Ours did, on four of the sixteen. The table is
+now indexed by id, and three tests pin it: the conventional face mapping, that
+every pad bit is driven exactly once, and that the labels the frontend shows
+agree with what the buttons do. Each was checked against the old table and
+fails on it.
+
+**Disc loading was implemented and unreachable.** `valid_extensions` said
+`exe|psexe`, so no frontend would ever offer the core a cue sheet. And
+`need_fullpath` was false, which for a cue sheet is worse than useless: the
+frontend reads the sheet's *text* into a buffer and nothing it points at. Both
+are fixed, and a PSX-EXE now loads from a path as well as from a buffer.
+
+**A BIOS has to be named the way the core looks for it.** The system directory
+is searched for `scph1001.bin` and its siblings, so a dump named after its
+release, which is how they arrive, is invisible. The failure is a core that
+loads happily and then refuses content, which reads as a broken core. It is
+worth knowing before wondering why a device shows nothing.
+
+### Input, and what is still not proven
+
+Holding a face button changes what the BIOS main menu draws, 305 999 lit pixels
+against 305 996, so the frontend's button does reach the emulated pad. That is
+the plumbing, not the mapping: the mapping is pinned by the unit tests above,
+not by a game.
+
+Still not proven, and unchanged by any of this: **nothing has been driven with
+input that changes.** Every run holds one button from boot. Crash Bandicoot's
+counters are identical with Start held and with nothing held at all.
+
+### Android
+
+`scripts/deploy-android-debug.sh so` cross-compiles the core to
+`aarch64-linux-android`: a 580 KB `ELF64 DYN AArch64` shared object with all
+twenty-five libretro entry points exported, `ruststation_state_token` beside
+them, and 16 KB-aligned `LOAD` segments, which Play requires. The umbrella's
+`.cargo/config.toml` supplies the NDK linker and the alignment flag; cargo finds
+it by walking up from the working directory.
+
+**A pushed `.so` will not be picked up.** TrophyHubAndroid resolves cores by
+bare filename through `dlopen`, so the linker finds them in the APK's own
+native library directory and the APK has to be rebuilt and reinstalled. And
+until RustStation has a `CoreSlot` entry there, nothing in the app asks for this
+library at all, so `so` mode is the honest one to be running.
+
 ## Real games, as of 2026-08-16
 
 Every disc on hand, thirty-one of them, run for the same two billion instructions
