@@ -47,9 +47,21 @@ const STAT_READING: u8 = 1 << 5;
 const STAT_SEEKING: u8 = 1 << 6;
 const STAT_PLAYING: u8 = 1 << 7;
 
-/// Mode bits, from `Setmode`.
+/// Mode bits, from `Setmode`. Bit 3 is the XA filter, which is read through
+/// `Setfilter` rather than here; see `sector_is_for_the_audio_decoder`.
 const MODE_WHOLE_SECTOR: u8 = 1 << 5;
+const MODE_XA_ADPCM: u8 = 1 << 6;
 const MODE_DOUBLE_SPEED: u8 = 1 << 7;
+
+/// Submode bits, from a Mode 2 sector's subheader. Bit 1 is video, bit 3 data,
+/// bit 0 end-of-record and bit 7 end-of-file; none of those change what the
+/// drive does with the sector, so only the three that do are named.
+const SUBMODE_AUDIO: u8 = 1 << 2;
+const SUBMODE_FORM2: u8 = 1 << 5;
+const SUBMODE_REALTIME: u8 = 1 << 6;
+
+/// A Mode 2 sector, which is the only kind that carries a subheader.
+const SECTOR_MODE2: u8 = 2;
 
 /// Bytes a sector yields: the user data alone, or everything from the header on.
 const DATA_2048: usize = 2048;
@@ -104,9 +116,10 @@ pub struct Cdrom {
     /// register at `0x1F801800`.
     stat: u8,
     mode: u8,
-    /// The XA file and channel from `Setfilter`. Nothing filters on them yet,
-    /// because there is no XA audio, but `Getparam` reports them back and
-    /// software is entitled to check that what it set is what it gets.
+    /// The XA file and channel from `Setfilter`. Nothing filters on them,
+    /// because the filter only chooses which audio stream reaches a decoder
+    /// this core does not have, but `Getparam` reports them back and software
+    /// is entitled to check that what it set is what it gets.
     filter: [u8; 2],
     /// The seek target from `Setloc`, as minute, second and frame in BCD.
     seek_loc: [u8; 3],
@@ -152,6 +165,11 @@ pub struct Cdrom {
     /// Sectors delivered. The figure that says whether a game is actually
     /// loading or just asking politely.
     pub sectors_read: u64,
+    /// Sectors the drive took off the disc and routed to the audio decoder
+    /// rather than to software. Counted separately because they are read and
+    /// then deliberately not reported, which from software's side is
+    /// indistinguishable from a sector that was never read at all.
+    pub xa_sectors: u64,
 }
 
 impl Default for Cdrom {
@@ -192,6 +210,7 @@ impl Cdrom {
             commands: 0,
             unknown_commands: 0,
             sectors_read: 0,
+            xa_sectors: 0,
         }
     }
 
@@ -409,9 +428,11 @@ impl Cdrom {
                 self.queue(INT3_ACK, &[s], ACK_DELAY);
             }
             0x0D => {
-                // Setfilter: which XA file and channel to let through. Recorded
-                // rather than acted on, because there is no XA audio, but it
-                // has to read back through `Getparam`.
+                // Setfilter: which XA audio stream to let through to the ADPCM
+                // decoder. Recorded rather than acted on: a rejected sector is
+                // dropped rather than handed to software, so with no decoder to
+                // route the accepted ones to, both outcomes are the same. It
+                // still has to read back through `Getparam`.
                 self.filter = [self.param(0), self.param(1)];
                 let s = self.take_stat();
                 self.queue(INT3_ACK, &[s], ACK_DELAY);
@@ -569,6 +590,37 @@ impl Cdrom {
         // drive hands over.
         self.sector.copy_from_slice(&raw[12..12 + DATA_2340]);
         true
+    }
+
+    /// Does the sector in the buffer belong to the audio decoder rather than to
+    /// software?
+    ///
+    /// This is the demultiplexer, and it lives in the drive because software
+    /// cannot do it. Full-motion video on this console is one CD-XA stream
+    /// carrying video and audio sectors interleaved, and it is read with the
+    /// 2048-byte sector size, which hands software the user data and **not the
+    /// subheader that says which kind it is**. So a drive that reports every
+    /// sector gives the video player audio it has no way to recognise.
+    ///
+    /// The rule: with XA-ADPCM enabled, a real-time Form 2 audio sector is
+    /// consumed by the drive. Everything else is reported. With XA-ADPCM
+    /// disabled the same sector is ordinary data, which is how a program that
+    /// wants to look at the audio itself gets to.
+    ///
+    /// `Setfilter` and its mode bit deliberately do not appear here. The filter
+    /// chooses which of several interleaved audio streams reaches the decoder,
+    /// and a sector it rejects is dropped rather than handed to software. So
+    /// filtered and unfiltered audio are both withheld, and the filter cannot
+    /// change what this answers. It will matter the day there is a decoder to
+    /// route the accepted ones to.
+    ///
+    /// There is no ADPCM decoder here, so "routed to audio" means "dropped".
+    /// The difference is silence, and it is recorded in `docs/notes/CDROM.md`.
+    fn sector_is_for_the_audio_decoder(&self) -> bool {
+        const AUDIO: u8 = SUBMODE_REALTIME | SUBMODE_AUDIO | SUBMODE_FORM2;
+        self.mode & MODE_XA_ADPCM != 0
+            && self.sector[3] == SECTOR_MODE2
+            && self.sector[6] & AUDIO == AUDIO
     }
 
     /// `GetlocL`: the header and subheader of the sector under the head.
@@ -783,12 +835,22 @@ impl Cdrom {
         }
         self.read_lba = lba.wrapping_add(1);
         self.sectors_read += 1;
+        self.sector_countdown = self.sector_cycles();
+
+        if self.sector_is_for_the_audio_decoder() {
+            // The drive keeps it. No interrupt, no data FIFO, and the head
+            // carries on: from software's side this sector never existed.
+            self.xa_sectors += 1;
+            if trace_enabled() {
+                eprintln!("cdrom xa sector {lba}");
+            }
+            return;
+        }
 
         self.response[0] = self.stat;
         self.response_len = 1;
         self.response_pos = 0;
         self.irq_flags = INT1_DATA;
-        self.sector_countdown = self.sector_cycles();
 
         if trace_enabled() {
             eprintln!("cdrom int1 sector {lba}");
@@ -1471,4 +1533,77 @@ mod tests {
         assert_eq!(code, INT5_ERROR);
         assert_eq!(c.unknown_commands, 1);
     }
+    /// A disc whose sectors alternate: every `audio_every`th one is a real-time
+    /// Form 2 XA audio sector, the rest are ordinary real-time video.
+    fn with_xa_disc(audio_every: usize) -> Cdrom {
+        let cue = "FILE \"x.bin\" BINARY\n TRACK 01 MODE2/2352\n INDEX 01 00:00:00\n";
+        let mut image = vec![0u8; RAW_SECTOR * 32];
+        for lba in 0..32 {
+            let base = lba * RAW_SECTOR;
+            let msf = disc::lba_to_msf_bcd(lba as u32);
+            image[base + 12..base + 15].copy_from_slice(&msf);
+            image[base + 15] = SECTOR_MODE2;
+            image[base + 16] = 0x11; // file
+            image[base + 17] = 0x22; // channel
+            image[base + 18] = if lba % audio_every == audio_every - 1 {
+                SUBMODE_REALTIME | SUBMODE_AUDIO | SUBMODE_FORM2
+            } else {
+                SUBMODE_REALTIME | 0x02 // real-time video
+            };
+            image[base + 24] = lba as u8;
+        }
+        let mut c = enabled();
+        c.disc = Disc::from_memory(cue, vec![image]).ok();
+        assert!(c.disc.is_some());
+        c
+    }
+
+    /// With XA-ADPCM armed, an audio sector is kept by the drive: no interrupt,
+    /// nothing in the FIFO, and the next `INT1` is the sector after it.
+    ///
+    /// This cannot be left to software. The stream is read with the 2048-byte
+    /// sector size, which hands over the user data and not the subheader that
+    /// says which kind of sector it is, so a drive that reports every sector
+    /// gives a video player audio it has no way to recognise.
+    #[test]
+    fn an_xa_audio_sector_never_reaches_software() {
+        let mut c = with_xa_disc(4);
+        let mut irq = Irq::new();
+        issue(&mut c, 0x0E, &[MODE_XA_ADPCM]); // Setmode: XA-ADPCM, 2048 bytes
+        let _ = take(&mut c, &mut irq);
+        seek_and_read(&mut c, &mut irq, 0);
+
+        // Sectors 3, 7 and 11 are audio and must not appear.
+        for expected in [0u8, 1, 2, 4, 5, 6, 8] {
+            let (code, _) = take(&mut c, &mut irq);
+            assert_eq!(code, INT1_DATA);
+            c.write(0, 0);
+            c.write(3, 0x80);
+            assert_eq!(c.pop_data(), expected, "the audio sectors were skipped");
+            c.write(3, 0x00);
+        }
+        assert_eq!(c.xa_sectors, 2, "sectors 3 and 7 went to the audio decoder");
+    }
+
+    /// The same sector with XA-ADPCM disabled is ordinary data. The mode bit
+    /// decides, not the sector.
+    #[test]
+    fn without_xa_adpcm_an_audio_sector_is_just_data() {
+        let mut c = with_xa_disc(4);
+        let mut irq = Irq::new();
+        issue(&mut c, 0x0E, &[0]); // Setmode: no XA-ADPCM
+        let _ = take(&mut c, &mut irq);
+        seek_and_read(&mut c, &mut irq, 0);
+
+        for expected in 0u8..5 {
+            let (code, _) = take(&mut c, &mut irq);
+            assert_eq!(code, INT1_DATA);
+            c.write(0, 0);
+            c.write(3, 0x80);
+            assert_eq!(c.pop_data(), expected, "every sector is delivered");
+            c.write(3, 0x00);
+        }
+        assert_eq!(c.xa_sectors, 0);
+    }
+
 }

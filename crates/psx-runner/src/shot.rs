@@ -282,8 +282,11 @@ fn main() -> ExitCode {
         psx.bus.spu.bytes_written
     );
     println!(
-        "cdrom: {} commands ({} unknown), {} sectors read",
-        psx.bus.cdrom.commands, psx.bus.cdrom.unknown_commands, psx.bus.cdrom.sectors_read
+        "cdrom: {} commands ({} unknown), {} sectors read ({} XA audio kept by the drive)",
+        psx.bus.cdrom.commands,
+        psx.bus.cdrom.unknown_commands,
+        psx.bus.cdrom.sectors_read,
+        psx.bus.cdrom.xa_sectors
     );
     println!(
         "sio: {} bytes exchanged, {} answered by a device",
@@ -561,6 +564,40 @@ fn report_pchist(history: &[u32]) {
     for (pc, count) in ranked.iter().take(16) {
         let share = *count as f64 * 100.0 / history.len() as f64;
         println!("    {pc:08X}  {count:>9}  {share:5.1}%");
+    }
+
+    // The same data grouped into contiguous stretches of code. One hot spin
+    // loop fills the ranking above and hides everything else, and "everything
+    // else" is the interesting half when the question is what a waiting program
+    // still has running: an interrupt handler that fires ten thousand times is
+    // a hundred addresses with a hundred counts each, and it never places.
+    let mut addresses: Vec<(u32, u64)> = ranked.clone();
+    addresses.sort_unstable_by_key(|a| a.0);
+    let mut regions: Vec<(u32, u32, u64)> = Vec::new();
+    for (pc, count) in addresses {
+        match regions.last_mut() {
+            // A gap of one instruction is a delay slot or a short forward
+            // branch over one; anything wider is a different piece of code.
+            Some(last) if pc <= last.1 + 32 => {
+                last.1 = pc;
+                last.2 += count;
+            }
+            _ => regions.push((pc, pc, count)),
+        }
+    }
+    regions.sort_unstable_by(|a, b| b.2.cmp(&a.2).then(a.0.cmp(&b.0)));
+    println!("    {} contiguous regions, the busiest:", regions.len());
+    for (low, high, count) in regions.iter().take(24) {
+        // The cut has to be very low. A device interrupt handler in a program
+        // that is otherwise spinning fires a handful of times per million
+        // instructions, so it is a few hundredths of a percent, and it is
+        // exactly the thing worth seeing: whether it runs at all answers most
+        // of the question.
+        if *count * 10_000 < history.len() as u64 {
+            break;
+        }
+        let share = *count as f64 * 100.0 / history.len() as f64;
+        println!("    {low:08X}..{high:08X}  {count:>9}  {share:5.2}%");
     }
 }
 

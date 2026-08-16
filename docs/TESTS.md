@@ -409,7 +409,7 @@ likes this disc" is untested. The timing constants remain approximate.
 
 ## Real games, as of 2026-08-16
 
-Every disc on hand, twenty-one of them, run for the same two billion instructions
+Every disc on hand, thirty-one of them, run for the same two billion instructions
 with Start held from boot. `scripts/survey.sh` does this and writes a screenshot
 and the counters for each; it asserts nothing and cannot fail. The point is to
 sort the library by how close each game is, not to grade anything.
@@ -418,84 +418,62 @@ The same number of instructions for every disc is deliberate. It makes the rows
 comparable to each other. It also means a slow loader and a game that has stopped
 dead look alike from the counters alone, which is what the screenshots are for.
 
-### Drawing their own content
+**Every one of the thirty-one now draws its own content, and twenty-four decode
+video.** Across the whole library there are now **zero unmapped accesses, zero
+transfers on unimplemented DMA channels and zero refused CD-ROM commands**. The
+survey before this one had nineteen of twenty-one discs decoding nothing at all.
 
-| Game | What is on screen | Textured primitives |
-|---|---|---|
-| **Tekken 3** | **A fight in progress.** Two textured, lit characters with cast shadows on the stone floor of a temple stage, mountains and sky behind | 449 376 |
-| **Crash Bandicoot** | **Gameplay.** Title, opening cutscene, then N. Sanity Beach | 1 073 262 |
-| **Metal Slug X** | Its attract-mode high score table over the animated background | 763 283 |
-| **Dino Crisis 2** | An in-game menu: the save-data warning with Yes/No over a moving grid | 282 219 |
-| **Dino Crisis** | The content warning, over a lit 3D corridor | 600 |
-| Dragon Ball GT | Its "LOADING..." card | 17 223 |
-| Yu-Gi-Oh! Forbidden Memories | The Konami logo | 1 288 |
-| Mega Man X6, Mortal Kombat 4, Crash Bash, CTR, Mega Man X5 | Something, but only hundreds to low thousands of pixels lit | 600 to 1 181 |
+| Game | What is on screen | Non-black | Textured | Macroblocks |
+|---|---|---|---|---|
+| **Tekken 3** | A fight in progress, on the temple stage | 162 508 | 1 172 835 | 224 |
+| **Ace Combat 2** (PAL) | **Its main menu**, over the cloud backdrop | 153 301 | 145 483 | 800 |
+| Digimon World 2 | Its intro video | 130 445 | 600 | 390 000 |
+| **Harry Potter** | **The language-select screen**, three flags over cloud | 122 368 | 563 012 | 37 500 |
+| Spider-Man | Its intro video | 120 616 | 880 | 60 900 |
+| Tony Hawk's Pro Skater 2 | A loading or logo screen | 116 520 | 23 659 | 0 |
+| **Spyro the Dragon** | **Its title screen**, Spyro on the plinth, "press start" | 114 680 | 674 341 | 0 |
+| **Tomb Raider** | **Its title screen**, Lara posed, after the whole intro video | 110 428 | 17 610 | 46 860 |
+| **Crash Bandicoot** | **Its main menu** | 106 415 | 1 073 262 | 0 |
+| Legacy of Kain: Soul Reaver | Its intro video | 103 059 | 6 920 | 95 700 |
+| **Need for Speed III** | **The "game setup" menu**, fully laid out | 100 952 | 558 571 | 480 |
+| Mega Man X6 | Its intro video | 76 800 | 3 068 | 219 600 |
+| Tenchu 2 | Its intro video | 76 800 | 819 | 265 200 |
+| Yu-Gi-Oh! Forbidden Memories | The Konami logo | 76 800 | 1 288 | 0 |
+| Medal of Honor | Its intro video | 76 636 | 4 506 | 133 800 |
+| **Mortal Kombat 4** | Its attract sequence | 76 333 | 313 713 | 1 220 |
+| Beyblade | Its intro video | 76 306 | 1 376 | 193 800 |
+| Mega Man X5 | Its intro video | 76 292 | 600 | 228 900 |
+| **Disney's Hercules** | Its intro, with 3D drawing alongside | 75 235 | 76 833 | 117 300 |
+| Medal of Honor: Underground | Its intro video | 66 777 | 3 881 | 137 700 |
+| Silent Hill | Its intro video | 64 845 | 3 812 | 160 160 |
+| **Dino Crisis 2** | An in-game menu over a moving grid | 60 905 | 282 219 | 0 |
+| **Grand Theft Auto 2** | Its intro | 58 117 | 95 275 | 300 |
+| Disney's Tarzan | Its intro video | 54 439 | 632 | 217 500 |
+| Dino Crisis | The content warning, over a lit 3D corridor | 42 116 | 600 | 0 |
+| **Metal Slug X** | Its attract-mode high score table | 31 727 | 763 283 | 0 |
+| Resident Evil 3 | Its intro video, the "NEMESIS" card mid-fade | 4 489 | 4 412 | 46 200 |
+| Crash Bash | Something, barely | 4 135 | 600 | 0 |
+| CTR: Crash Team Racing | Something, barely | 3 791 | 600 | 0 |
+| Dragon Ball GT | Black at the sampling instant, 4 800 macroblocks decoded | 0 | 22 728 | 4 800 |
+| Suikoden II | Black at the sampling instant, 84 560 macroblocks decoded | 0 | 2 478 | 84 560 |
 
-### Stopped, and what they are waiting for
+The last two are not stalls. Both are decoding video and both landed on a black
+frame at the instruction the screenshot was taken, which is the survey's fixed
+clock doing what it is supposed to do rather than a fault.
 
-**Was MDEC. Is now the stream that feeds it.** Fourteen of the twenty-one used
-to stop with transfers queued on DMA channels 0 and 1, the video decoder's,
-because their intro is full-motion video and there was no decoder. There is one
-now, and it works: Tomb Raider decodes 480 macroblocks, exactly one frame, and
-the frame is the Eidos logo.
-
-Every other disc decodes **zero** macroblocks, and not for want of trying. They
-set the decoder up, queue its channels, and hand it an empty buffer, because the
-compressed data never reaches them. That is the streaming fault below, and it
-sits upstream of everything: the decoder is no longer the thing in the way.
-
-| Game | Sectors read | Macroblocks decoded |
-|---|---|---|
-| **Tomb Raider (USA) Rev 6** | 8 034 | **480**, one whole frame |
-| Tekken 3 | 6 418 | 21 |
-| Digimon World 2 | 8 040 | 0 |
-| Ace Combat 2 (SCES, PAL BIOS) | 7 421 | 0 |
-| Legacy of Kain: Soul Reaver | 7 046 | 0 |
-| Mortal Kombat 4 | 7 824 | 0 |
-| Beyblade | 6 952 | 0 |
-| Resident Evil 3 | 6 429 | 0 |
-| Medal of Honor | 5 178 | 0 |
-| Silent Hill | 1 334 | 0 |
-| Grand Theft Auto 2 | 1 121 | 0 |
-
-Nothing regressed on the way: every game that drew its own content before still
-draws it, at the same figures.
-
-**Two others, neither MDEC:**
-
-* **Medal of Honor** makes 125 million unmapped reads, and the site histogram
-  shows them walking consecutive addresses past the end of RAM. A runaway
-  pointer, not a missing device.
-* **Resident Evil 3** reads 6 429 sectors, queues nothing, refuses no command,
-  and draws nothing at all. Every counter says the machine is healthy, so it was
-  worth asking the other question. It is spinning in the BIOS kernel: the hot
-  loop is the B-table dispatch at `0x5E0` into `0x1EC8`, which indexes the event
-  control block at `0xA0000120` by a handle and compares a field against `0x4000`
-  and `0x2000`, the event status values. `t1` holds `0x2C` there, which is the
-  function number already shifted left by two, so the function is **B(0Bh),
-  `TestEvent`**. The game is waiting on a kernel event that never fires, after
-  6 429 sectors have arrived.
-
-  Ruled out on the way: it is not the memory card. It selects `0x81` exactly
-  twice at boot, gets no device, and moves on. Its controller polling is
-  ordinary, including the DualShock-only `0x43` and `0x45` commands, which a
-  digital pad is right to answer as it does.
-
-  Which event, and which interrupt was supposed to deliver it, is the open
-  question. The kernel delivers a CD event on the drive's interrupts, so the
-  first thing to check is whether every response this core queues raises the
-  interrupt the kernel is counting on.
+**Nothing regressed.** Crash Bandicoot's counters are identical to the previous
+survey to the pixel and the primitive, and so are Metal Slug X's and Dino
+Crisis 2's.
 
 ### What "gameplay" does and does not mean
 
-Crash goes title screen, opening cutscene, then N. Sanity Beach with its sand,
-palm trees and structures rendering under the level title card. Tekken 3 renders
-a round in progress. Both look right.
-
-Neither is a claim that either game is *playable*. Every run here holds a single
-button from boot, so nothing has tested that anything responds to **changing**
-input, and there is no sound anywhere in this core. The next honest step is a
-scripted input sequence rather than another screenshot.
+Tekken 3 renders a round in progress and Crash reaches its main menu. Neither is
+a claim that either game is *playable*. Every run here holds a single button from
+boot, and Crash's counters are identical with Start held and with nothing held at
+all, so **nothing here has tested that anything responds to input**, only that
+games get far enough to ask for it. There is no sound anywhere in this core
+either. The next honest step is a scripted input sequence rather than another
+screenshot.
 
 Tomb Raider's 57-track, one-file-per-track cue sheet parsed correctly, which is
 the multi-file case `docs/notes/DISC.md` listed as implemented but untested.
@@ -518,12 +496,6 @@ subheader from a whole-sector read, sets the bit again, and expects the user dat
 to follow; it got the header again, so every file it read was twelve bytes out of
 step. See `docs/notes/CDROM.md`.
 
-Afterwards: **135 commands** rather than 2 177, and 1 121 sectors rather than
-351. The game loads, uploads 227 KB of its own samples to the SPU, switches to
-512x240, and then stops with the display off and four DMA transfers on
-unimplemented channels. Those channels are MDEC's, and its intro is a full-motion
-video, so the next blocker is a different and much better understood one.
-
 **What actually found it** is worth keeping, because none of the counters could
 have. Every one of them said the CD-ROM was fine. The trace was changed to print
 the FIFO's read *position* at the moment of each reload rather than the data it
@@ -532,35 +504,84 @@ non-zero position states the bug outright. The general form of that is to
 instrument the thing that is *supposed* to be invariant, not the thing that looks
 wrong.
 
-### CD-ROM streaming: the new blocker, and it is not the decoder
+### The DMA controller's byte lanes: closed, and it was most of the library
 
-With MDEC in, Tomb Raider decodes the first frame of its intro video, the Eidos
-logo, correctly: 480 macroblocks, 32 output transfers of 1 920 words each, which
-is exactly the frame. Then it stops, and the reason is upstream of the decoder.
+**Was:** the largest single blocker this core has had. Nineteen of twenty-one
+discs decoded zero macroblocks. Tomb Raider decoded exactly one frame of its
+intro and then waited forever on a flag nothing wrote. Resident Evil 3 read 6 429
+sectors, drew nothing at all, and sat in the BIOS kernel's `TestEvent` waiting on
+an event that never fired. Medal of Honor made 125 million unmapped reads walking
+consecutive addresses past the end of RAM. Those looked like four unrelated bugs.
 
-**The drive delivers 12 463 sectors and the game asks for 185.** Everything that
-would explain that by fault is ruled out:
+**Was not:** the decoder, which was finished and correct; the drive, which was
+delivering everything asked of it; or the interrupt controller. Every instrument
+said the machine was healthy. For Tomb Raider the interrupt histogram read
+`vblank 5201/5252, cdrom 12600/12601, dma 719/719`, delivered over raised, so
+handlers were running and acknowledging; no command was refused, no port stubbed,
+no access unmapped.
 
-* The interrupts arrive and are unmasked. The histogram reads `vblank
-  5201/5252, cdrom 12600/12601, dma 719/719`, delivered over raised, so the
-  game's handlers are running and acknowledging.
-* No command is refused, no port is stubbed, no access is unmapped.
+**Is:** `DICR`, the DMA controller's interrupt register, is laid out so that one
+byte holds all seven per-channel interrupt enables plus the master enable. A game
+arms a channel with a single `sb` to `DICR+2`. This core ignored access width
+entirely: it answered the byte read with the *low* byte of the word, a different
+field, and then stored the byte the game wrote back as the whole register. The
+enables and the master enable were wiped in the same instruction, and no DMA
+completion interrupt was ever delivered again.
 
-The game is spinning in its own streaming layer at `0x8003097C`, on a two-part
-test: a stream-open flag at `+0x88` of a context at `0x801D5580`, and a
-frame-ready flag at `+0x30`. `--watch` says the first is set once, at
-`0x80030D90`, and **the second is never written at all**. So the stream opens
-and the callback that would announce a frame never runs.
+Everything downstream followed from that. Tomb Raider's CD sector handler marks a
+ring slot "transfer started" and relies on the channel-3 completion interrupt to
+promote it to "ready"; with no interrupt the slot never advanced, its `StGetNext`
+equivalent spun two million times, timed out, and handed the decoder an empty
+buffer. See `docs/notes/DMA.md`.
 
-That is almost certainly the same fault as Resident Evil 3's, which sits in the
-kernel's `TestEvent` waiting on an event that never fires. Two games, two
-different waits, one missing delivery. Whatever it is, it is between the
-interrupt arriving, which is confirmed, and the kernel handing the program its
-callback or event.
+Afterwards, from the same two billion instructions: Tomb Raider **46 860**
+macroblocks rather than 480, and its title screen; Resident Evil 3 **46 200**
+rather than nothing at all; Digimon World 2 **390 000**; and Medal of Honor's 125
+million unmapped reads gone entirely, along with every other unmapped access in
+the library.
 
-The instrument that would settle it next is a trace of the kernel's own event
-and callback tables, which this core can already reach: they live at a known
-address in RAM and `--peek` reads them without perturbing anything.
+**How it was found**, because the counters could not:
+
+1. `--pchist` gave the spin loop and `--peek` disassembled it into a two-part
+   test on a stream context: open at `+0x88`, frame-ready at `+0x30`.
+2. `--watch` on the frame-ready flag said **nothing ever wrote it**, and a scan
+   of every non-stack store to `+0x30` in RAM found its one setter, which runs
+   from the decoder's output-DMA completion.
+3. The region view added to `--pchist` for this showed the game's CD interrupt
+   handler *was* running during the stall, at 0.04% of a million instructions.
+   That ruled out "the interrupt is not arriving" by measurement rather than by
+   argument. It needed a cut at a few hundredths of a percent to see, which is
+   why the cut is there now.
+4. `RSTA_DMA_TRACE=1` on every channel, not just the decoder's, showed the game
+   reading nine chunks of a frame into its ring and then handing the decoder a
+   different buffer that was still empty.
+5. `--watch` on the ring slot's state word gave `0 -> 0x0160 -> 3`, and its
+   `StGetNext` only accepts 2. Nothing in the whole run ever wrote 2, and what
+   writes 2 is the DMA completion path.
+
+The generalisable form is in `docs/notes/DMA.md`: **a register block that is 32
+bits wide is not accessed 32 bits at a time**, and a handler that ignores width
+destroys the fields around whichever one software was poking at. The other
+register blocks here have not been audited for it yet.
+
+### The drive has to demultiplex the video stream
+
+Found on the way and fixed separately, because it is right whether or not
+anything currently depends on it. Full-motion video is one CD-XA stream with
+video and audio sectors interleaved: Tomb Raider's is seven video then one audio,
+over and over. The two are told apart only by the subheader, and the stream is
+read with the 2048-byte sector size, which does not include the subheader. So
+software cannot do it and the drive must.
+
+`Setmode` bit 6 arms it: a real-time Form 2 audio sector is consumed by the drive
+and never raises `INT1`. See `docs/notes/CDROM.md`.
+
+**Honest accounting: this was not what unblocked anything.** Disabling it again,
+with the DMA fix in place, leaves Tomb Raider's figures identical to the pixel.
+It is in because it is what the hardware does, and because a game reading with
+the small sector size has no other defence. CTR is the one disc where it shows in
+the counters: 6 945 of its 8 035 sectors are XA audio, which is its streamed
+music.
 
 ### The BIOS menu's colour noise, narrowed
 
@@ -645,10 +666,21 @@ gave a six-instruction loop, `--peek` disassembled it, `--regs` said the address
 it was polling was `1F801814` and the mask was `0x80000000`, and that was the
 whole diagnosis.
 
-Both are in `shot` now, and cost nothing when unused:
+All of these are in `shot` now, and cost nothing when unused:
 
 ```
-shot bios.bin --pchist              # where the last million instructions went
+shot bios.bin --pchist              # where the last million instructions went,
+                                    #   ranked, and grouped into code regions
 shot bios.bin --peek 800592F4:12    # disassemble twelve instructions there
 shot bios.bin --regs                # the register file at the end of the run
+shot bios.bin --watch 801D55B0      # who writes this word, and from where
+RSTA_DMA_TRACE=1   shot ...         # every DMA transfer: channel, size, address
+RSTA_CDROM_TRACE=1 shot ...         # every command, response and sector
 ```
+
+The **region grouping** on `--pchist` was added for the DMA fault above and is
+the half that earned its place. One hot spin loop takes 97% of a million
+instructions and fills the ranking, and the interesting question is what *else*
+is still running: an interrupt handler firing four times in that window is four
+hundred instructions, which never places in a top-16 list and settles the
+question the moment you can see it.

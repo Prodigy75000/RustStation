@@ -72,16 +72,18 @@ Working, and confirmed against real hardware behaviour rather than asserted:
   controller existed. `cargo run --release --bin shot -- <bios.bin>
   --steps 300000000`. One rendering fault is visible and recorded in
   [`docs/notes/GPU.md`](docs/notes/GPU.md).
-- **Commercial games render their own content.** Tekken 3 draws a fight in
-  progress, two textured and lit characters with cast shadows on a temple stage.
-  Crash Bandicoot reaches N. Sanity Beach. Dino Crisis 2 reaches its in-game
-  menus. See [`docs/TESTS.md`](docs/TESTS.md) for how far each of twenty-one
-  discs gets, and for what that does and does not mean.
+- **Commercial games render their own content, all thirty-one on hand.** Tekken 3
+  draws a fight in progress, two textured and lit characters with cast shadows on
+  a temple stage. Spyro, Tomb Raider, Ace Combat 2, Crash Bandicoot, Harry Potter
+  and Need for Speed III reach their title screens and menus. Across the whole
+  library there is not one unmapped access, one transfer on an unimplemented DMA
+  channel, or one refused CD-ROM command. See [`docs/TESTS.md`](docs/TESTS.md)
+  for how far each disc gets, and for what that does and does not mean.
 - **MDEC**, the macroblock decoder: the quantisation and IDCT tables, the
   run-length format, the IDCT, colour and monochrome macroblocks, all four
-  output depths, and both DMA channels. **Tomb Raider's intro video decodes**,
-  and the first frame of it is the Eidos logo, rendered from compressed data off
-  the disc. See [`docs/notes/MDEC.md`](docs/notes/MDEC.md).
+  output depths, and both DMA channels. **Full-motion video plays**: twenty-four
+  of the thirty-one discs decode their intro, Tomb Raider's through to its title
+  screen. See [`docs/notes/MDEC.md`](docs/notes/MDEC.md).
 - **SPU**: the register file and 512 KB of sound RAM, and **no audio at all**.
   Thin on purpose: a register that always reads zero is a hang, not a missing
   feature, and read-back alone is what took Crash from a spin to its title
@@ -109,11 +111,9 @@ Working, and confirmed against real hardware behaviour rather than asserted:
 
 Not started:
 
-- **Audio of any kind.** No voices, no ADPCM, no CD-DA, no XA.
-- **CD-ROM streaming.** Sectors arrive and games stop taking them: Tomb Raider
-  is delivered 12 463 and asks the drive for 185. That is now what stands
-  between the video decoder and a playing video, and it is very likely the same
-  fault that leaves Resident Evil 3 waiting on a kernel event.
+- **Audio of any kind.** No voices, no ADPCM, no CD-DA, no XA. The drive
+  demultiplexes XA audio sectors out of a video stream correctly and then drops
+  them, so a video plays silently.
 - Memory cards, CHD images, the CD-ROM's sub-channel.
 - Per-instruction cycle costs. Every instruction is one cycle and
   multiply/divide do not stall.
@@ -124,9 +124,9 @@ which is the oldest open graphics bug here; the fifth, SCPH-1002, draws them
 correctly, and that disagreement is the lead. Recorded in
 [`docs/TESTS.md`](docs/TESTS.md).
 
-It is still early. Of the twenty-one discs on hand, Tekken 3 renders a fight in
-progress and Crash Bandicoot reaches its first level, and a handful more get as
-far as their own menus and logos. There is no sound anywhere.
+It is still early. Every one of the thirty-one discs on hand draws its own
+content and most play their intro video, but that means title screens and menus,
+not gameplay. There is no sound anywhere.
 No game has been driven with **changing** input, so "playable" is not a claim
 being made. Homebrew and test binaries sideloaded as PSX-EXEs also run, and draw.
 `scripts/survey.sh` runs the whole library and writes the table in

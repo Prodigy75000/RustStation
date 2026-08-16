@@ -13,13 +13,18 @@
 //! word. Channel 6 then exists purely to *build* that table, which is why the
 //! two landed together.
 //!
-//! Channels 2 (GPU) and 6 (OTC) are implemented. The rest are decoded and
-//! counted: an MDEC or CD-ROM transfer completes instantly and moves nothing,
-//! which is wrong but visible, rather than hanging.
+//! Every channel with a device behind it is implemented: 0 and 1 for the
+//! decoder, 2 for the GPU, 3 for the drive, 4 for sound RAM, 6 for the ordering
+//! table. Channel 5 is the expansion port, which has nothing behind it, so
+//! transfers on it are counted rather than performed.
 //!
 //! Transfers here are **instantaneous**: the whole block moves in the cycle it
 //! is started. Real DMA steals bus cycles from the CPU, and chopping mode exists
 //! to hand some back. `docs/notes/TIMING.md` carries that as an open question.
+//!
+//! See `docs/notes/DMA.md`, and in particular its first section: **these
+//! registers are 32 bits wide and software does not have to treat them that
+//! way**, which is the trap that cost the most here.
 
 use crate::cdrom::Cdrom;
 use crate::spu::Spu;
@@ -39,6 +44,13 @@ pub const CH_OTC: usize = 6;
 
 /// The marker that ends a linked list.
 const LIST_END: u32 = 0x00FF_FFFF;
+
+/// What each channel talks to, for the trace.
+const NAMES: [&str; CHANNELS] = ["mdec", "mdec", "gpu", "cdrom", "spu", "pio", "otc"];
+
+/// Read once: a `var` lookup per transfer would cost more than the transfer.
+static MDEC_TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+static DMA_TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
 #[derive(Clone, Copy, Default)]
 pub struct Channel {
@@ -153,12 +165,38 @@ impl Dma {
         (self.interrupt & 0x7FFF_FFFF) | ((master as u32) << 31)
     }
 
-    pub fn read(&self, offset: u32) -> u32 {
-        match offset {
+    /// Which bits of a register a sub-word access touches, and how far the
+    /// value has to move to line up with them.
+    ///
+    /// **Every register here is 32 bits wide and software does not have to
+    /// treat them that way.** A program that wants one field writes the byte
+    /// that holds it, and reading the whole word for a byte access hands it a
+    /// different field entirely. `DICR` is where that stops being academic: its
+    /// per-channel interrupt enables live in bits 16 to 22, so arming one is a
+    /// single `sb` to `DICR+2`, and a controller that answers with the low byte
+    /// and then stores the reply as a whole word wipes the enables and the
+    /// master enable together. No DMA interrupt is delivered afterwards, which
+    /// looks like a missing interrupt and is a missing byte lane.
+    fn lane(offset: u32, width: u32) -> (u32, u32) {
+        let shift = (offset & 3) * 8;
+        let bits: u32 = match width {
+            1 => 0xFF,
+            2 => 0xFFFF,
+            _ => 0xFFFF_FFFF,
+        };
+        (bits << shift, shift)
+    }
+
+    pub fn read(&self, offset: u32, width: u32) -> u32 {
+        let (mask, shift) = Self::lane(offset, width);
+        (self.read_word(offset & !3) & mask) >> shift
+    }
+
+    fn read_word(&self, reg: u32) -> u32 {
+        match reg {
             0x00..=0x6F => {
-                let channel = (offset / 0x10) as usize;
-                let reg = offset & 0x0F;
-                match reg {
+                let channel = (reg / 0x10) as usize;
+                match reg & 0x0F {
                     0x0 => self.channels[channel].madr,
                     0x4 => self.channels[channel].bcr,
                     0x8 => self.channels[channel].chcr,
@@ -173,11 +211,23 @@ impl Dma {
 
     /// Returns the channel that should now run, if any.
     #[must_use]
-    pub fn write(&mut self, offset: u32, value: u32) -> Option<usize> {
-        match offset {
+    pub fn write(&mut self, offset: u32, width: u32, value: u32) -> Option<usize> {
+        let (mask, shift) = Self::lane(offset, width);
+        let reg = offset & !3;
+        // A sub-word write leaves the rest of the register alone, so the bits
+        // outside the lane come from what is stored. `interrupt` rather than
+        // `interrupt_word` for `DICR`: bit 31 is computed and must not be fed
+        // back in.
+        let stored = match reg {
+            0x74..=0x77 => self.interrupt,
+            _ => self.read_word(reg),
+        };
+        let value = (stored & !mask) | ((value << shift) & mask);
+
+        match reg {
             0x00..=0x6F => {
-                let channel = (offset / 0x10) as usize;
-                match offset & 0x0F {
+                let channel = (reg / 0x10) as usize;
+                match reg & 0x0F {
                     0x0 => self.channels[channel].madr = value & 0x00FF_FFFF,
                     0x4 => self.channels[channel].bcr = value,
                     0x8 => {
@@ -206,7 +256,11 @@ impl Dma {
             }
             0x74..=0x77 => {
                 // Bits 24..30 are write-1-to-acknowledge; the rest are stored.
-                let ack = (value >> 24) & 0x7F;
+                // The acknowledgement is confined to the lane written, because
+                // the merge above put the *current* flags back into the bits
+                // outside it and acting on those would clear interrupts nobody
+                // claimed to have seen.
+                let ack = ((value >> 24) & 0x7F) & ((mask >> 24) & 0x7F);
                 let flags = ((self.interrupt >> 24) & 0x7F) & !ack;
                 self.interrupt = (value & 0x00FF_803F) | (flags << 24);
             }
@@ -314,7 +368,7 @@ impl Dma {
         let ch = dma.channels[CH_MDEC_IN];
         let addr = ch.madr & 0x1F_FFFC;
         let count = ch.word_count();
-        Self::trace_mdec(CH_MDEC_IN, &ch, addr);
+        Self::trace_channel(CH_MDEC_IN, &ch, addr);
         mdec.queue_input(addr, count);
         mdec.pump(ram);
         dma.channels[CH_MDEC_IN].madr =
@@ -343,7 +397,7 @@ impl Dma {
         }
         let mut addr = ch.madr & 0x1F_FFFC;
         let mut left = ch.word_count();
-        Self::trace_mdec(CH_MDEC_OUT, &ch, addr);
+        Self::trace_channel(CH_MDEC_OUT, &ch, addr);
         while left > 0 {
             if !mdec.has_output() {
                 mdec.pump(ram);
@@ -366,15 +420,25 @@ impl Dma {
         }
     }
 
-    /// `RSTA_MDEC_TRACE=1` logs the decoder's two channels.
-    fn trace_mdec(channel: usize, ch: &Channel, addr: u32) {
-        if std::env::var("RSTA_MDEC_TRACE").is_ok() {
-            eprintln!(
-                "dma: mdec ch{channel} sync{} {} words at {addr:06X}",
-                ch.sync_mode(),
-                ch.word_count()
-            );
+    /// `RSTA_DMA_TRACE=1` logs every transfer; `RSTA_MDEC_TRACE=1` logs the
+    /// decoder's two channels alone.
+    ///
+    /// Where a transfer *goes* is worth as much as that it happened. A game
+    /// that reads the disc and then hands the decoder an empty buffer has
+    /// either not read what it thinks it read or written it somewhere else,
+    /// and the two destinations side by side say which.
+    fn trace_channel(channel: usize, ch: &Channel, addr: u32) {
+        let mdec_only = *MDEC_TRACE.get_or_init(|| std::env::var("RSTA_MDEC_TRACE").is_ok());
+        let all = *DMA_TRACE.get_or_init(|| std::env::var("RSTA_DMA_TRACE").is_ok());
+        if !all && !(mdec_only && matches!(channel, CH_MDEC_IN | CH_MDEC_OUT)) {
+            return;
         }
+        eprintln!(
+            "dma: {} ch{channel} sync{} {} words at {addr:06X}",
+            NAMES[channel],
+            ch.sync_mode(),
+            ch.word_count()
+        );
     }
 
     /// Channel 3 drains the CD-ROM's data FIFO into RAM. One direction only:
@@ -383,6 +447,7 @@ impl Dma {
     fn run_cdrom(dma: &mut Dma, ram: &mut [u8], cdrom: &mut Cdrom) {
         let ch = dma.channels[CH_CDROM];
         let mut addr = ch.madr & 0x1F_FFFC;
+        Self::trace_channel(CH_CDROM, &ch, addr);
         for _ in 0..ch.word_count() {
             let word = cdrom.read_word();
             write_ram(ram, addr, word);
@@ -397,6 +462,7 @@ impl Dma {
     fn run_spu(dma: &mut Dma, ram: &mut [u8], spu: &mut Spu) {
         let ch = dma.channels[CH_SPU];
         let mut addr = ch.madr & 0x1F_FFFC;
+        Self::trace_channel(CH_SPU, &ch, addr);
         for _ in 0..ch.word_count() {
             if ch.reads_ram() {
                 spu.write_word(read_ram(ram, addr));
@@ -464,9 +530,9 @@ mod tests {
         let (mut dma, mut ram, mut gpu, mut irq) = rig();
 
         // Four entries ending at 0x1000, counting downward.
-        assert!(dma.write(0x60, 0x1000).is_none());
-        assert!(dma.write(0x64, 4).is_none());
-        let ch = dma.write(0x68, 0x1100_0002);
+        assert!(dma.write(0x60, 4, 0x1000).is_none());
+        assert!(dma.write(0x64, 4, 4).is_none());
+        let ch = dma.write(0x68, 4, 0x1100_0002);
         assert_eq!(ch, Some(CH_OTC));
         Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut Spu::new(), &mut Mdec::new(), &mut irq, CH_OTC);
 
@@ -486,9 +552,9 @@ mod tests {
         write_ram(&mut ram, 0x104, 0);
         write_ram(&mut ram, 0x108, (16 << 16) | 32);
 
-        assert!(dma.write(0x20, 0x100).is_none());
-        assert!(dma.write(0x24, 3).is_none()); // three words, manual mode
-        let ch = dma.write(0x28, 0x0100_0201); // enable + trigger, from RAM
+        assert!(dma.write(0x20, 4, 0x100).is_none());
+        assert!(dma.write(0x24, 4, 3).is_none()); // three words, manual mode
+        let ch = dma.write(0x28, 4, 0x0100_0201); // enable + trigger, from RAM
         assert_eq!(ch, Some(CH_GPU));
         Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut Spu::new(), &mut Mdec::new(), &mut irq, CH_GPU);
 
@@ -508,9 +574,9 @@ mod tests {
         write_ram(&mut ram, 0x308, 0);
         write_ram(&mut ram, 0x30C, (16 << 16) | 32);
 
-        assert!(dma.write(0x20, 0x200).is_none());
+        assert!(dma.write(0x20, 4, 0x200).is_none());
         // Enable (bit 24), sync mode 2 (bits 9-10), from RAM (bit 0).
-        let ch = dma.write(0x28, 0x0100_0401);
+        let ch = dma.write(0x28, 4, 0x0100_0401);
         assert_eq!(ch, Some(CH_GPU));
         Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut Spu::new(), &mut Mdec::new(), &mut irq, CH_GPU);
 
@@ -523,8 +589,8 @@ mod tests {
         let (mut dma, mut ram, mut gpu, mut irq) = rig();
         write_ram(&mut ram, 0x400, 0x400); // zero words, points at itself
 
-        assert!(dma.write(0x20, 0x400).is_none());
-        let _ = dma.write(0x28, 0x0100_0401);
+        assert!(dma.write(0x20, 4, 0x400).is_none());
+        let _ = dma.write(0x28, 4, 0x0100_0401);
         Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut Spu::new(), &mut Mdec::new(), &mut irq, CH_GPU);
         // Reaching here at all is the assertion.
     }
@@ -532,19 +598,19 @@ mod tests {
     #[test]
     fn completion_raises_the_interrupt_only_when_unmasked() {
         let (mut dma, mut ram, mut gpu, mut irq) = rig();
-        assert!(dma.write(0x60, 0x1000).is_none());
-        assert!(dma.write(0x64, 2).is_none());
+        assert!(dma.write(0x60, 4, 0x1000).is_none());
+        assert!(dma.write(0x64, 4, 2).is_none());
 
         // Masked: no interrupt.
-        let _ = dma.write(0x68, 0x1100_0002);
+        let _ = dma.write(0x68, 4, 0x1100_0002);
         Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut Spu::new(), &mut Mdec::new(), &mut irq, CH_OTC);
         assert_eq!(irq.stat(), 0);
 
         // Enable channel 6 and the master bit, then run again.
-        assert!(dma.write(0x74, (1 << 23) | (1 << (16 + CH_OTC))).is_none());
-        assert!(dma.write(0x60, 0x1000).is_none());
-        assert!(dma.write(0x64, 2).is_none());
-        let _ = dma.write(0x68, 0x1100_0002);
+        assert!(dma.write(0x74, 4, (1 << 23) | (1 << (16 + CH_OTC))).is_none());
+        assert!(dma.write(0x60, 4, 0x1000).is_none());
+        assert!(dma.write(0x64, 4, 2).is_none());
+        let _ = dma.write(0x68, 4, 0x1100_0002);
         Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut Spu::new(), &mut Mdec::new(), &mut irq, CH_OTC);
         assert_ne!(irq.stat() & (1 << irq::DMA), 0);
     }
@@ -552,19 +618,75 @@ mod tests {
     #[test]
     fn dicr_bit_31_is_computed_and_flags_acknowledge() {
         let mut dma = Dma::new();
-        assert!(dma.write(0x74, 1 << 15).is_none()); // force IRQ
-        assert_ne!(dma.read(0x74) & (1 << 31), 0);
+        assert!(dma.write(0x74, 4, 1 << 15).is_none()); // force IRQ
+        assert_ne!(dma.read(0x74, 4) & (1 << 31), 0);
 
-        assert!(dma.write(0x74, 0).is_none());
-        assert_eq!(dma.read(0x74) & (1 << 31), 0);
+        assert!(dma.write(0x74, 4, 0).is_none());
+        assert_eq!(dma.read(0x74, 4) & (1 << 31), 0);
     }
 
     #[test]
     fn a_disabled_channel_does_not_start() {
         let (mut dma, _, _, _) = rig();
         dma.control = 0; // nothing enabled
-        assert!(dma.write(0x60, 0x1000).is_none());
-        assert!(dma.write(0x64, 4).is_none());
-        assert_eq!(dma.write(0x68, 0x1100_0002), None, "started while disabled");
+        assert!(dma.write(0x60, 4, 0x1000).is_none());
+        assert!(dma.write(0x64, 4, 4).is_none());
+        assert_eq!(dma.write(0x68, 4, 0x1100_0002), None, "started while disabled");
     }
+    /// `DICR`'s interrupt enables are arranged so that one byte holds all seven
+    /// of them plus the master enable, and software arms a channel by writing
+    /// that byte alone.
+    ///
+    /// A controller that ignores the access width answers the byte read with
+    /// the bottom of the word, which is a different field, and then stores the
+    /// reply as the whole register: the enables and the master enable are wiped
+    /// in the same instruction, and no DMA interrupt is ever delivered again.
+    /// That is what left Tomb Raider's video player waiting for a frame the
+    /// disc had already delivered.
+    #[test]
+    fn a_byte_write_to_dicr_arms_one_channel_and_leaves_the_rest() {
+        let mut dma = Dma::new();
+        let armed = (1 << 23) | (1 << (16 + CH_GPU));
+        assert!(dma.write(0x74, 4, armed).is_none());
+
+        // Read the byte holding the enables, add channel 3, write it back.
+        let byte = dma.read(0x76, 1);
+        assert_eq!(byte, 0x80 | (1 << CH_GPU), "the enables, not the low byte");
+        assert!(dma.write(0x76, 1, byte | (1 << CH_CDROM)).is_none());
+
+        let after = dma.read(0x74, 4);
+        assert_ne!(after & (1 << 23), 0, "the master enable survived");
+        assert_ne!(after & (1 << (16 + CH_GPU)), 0, "so did the other channel");
+        assert_ne!(after & (1 << (16 + CH_CDROM)), 0, "and the new one is armed");
+    }
+
+    /// A byte write cannot acknowledge flags outside the byte it wrote.
+    ///
+    /// The bits outside the lane are filled in from the register's current
+    /// contents, so a naive merge hands the acknowledge logic the live flags
+    /// and clears every pending interrupt on any write at all.
+    #[test]
+    fn a_byte_write_does_not_acknowledge_flags_it_did_not_touch() {
+        let (mut dma, mut ram, mut gpu, mut irq) = rig();
+        dma.control = 0x0888_8888;
+        assert!(dma
+            .write(0x74, 4, (1 << 23) | (1 << (16 + CH_OTC)))
+            .is_none());
+
+        assert!(dma.write(0x60, 4, 0x1000).is_none());
+        assert!(dma.write(0x64, 4, 2).is_none());
+        let ch = dma.write(0x68, 4, 0x1100_0002);
+        Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut Spu::new(),
+                 &mut Mdec::new(), &mut irq, ch.expect("channel 6 runs"));
+        assert_ne!(dma.read(0x74, 4) & (1 << (24 + CH_OTC)), 0, "the flag is set");
+
+        // Arming another channel touches bits 16..23 only.
+        assert!(dma.write(0x76, 1, 0x80 | (1 << CH_GPU)).is_none());
+        assert_ne!(
+            dma.read(0x74, 4) & (1 << (24 + CH_OTC)),
+            0,
+            "and the flag is still set"
+        );
+    }
+
 }

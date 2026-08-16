@@ -370,7 +370,7 @@ impl Bus {
             };
         }
         if let Some(off) = DMA.contains(abs) {
-            return self.dma.read(off);
+            return self.dma.read(off, width);
         }
         if let Some(off) = SIO0.contains(abs) {
             // The acknowledge is a scheduled event, so a status read has to see
@@ -479,7 +479,7 @@ impl Bus {
             return;
         }
         if let Some(off) = DMA.contains(abs) {
-            if let Some(channel) = self.dma.write(off, val) {
+            if let Some(channel) = self.dma.write(off, width, val) {
                 Dma::run(
                     &mut self.dma,
                     &mut self.ram,

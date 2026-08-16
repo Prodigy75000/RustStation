@@ -152,6 +152,35 @@ stubbed and no read was unmapped. What found it was tracing the read *position*
 at the moment of each reload rather than the data: 255 of 606 reloads happened
 at position 12, and a reload at a non-zero position is the bug stated outright.
 
+## The drive demultiplexes the stream, because software cannot
+
+Full-motion video is one CD-XA stream carrying video and audio sectors
+interleaved. Tomb Raider's is seven video sectors then one audio sector, over
+and over, and the two are told apart only by the **subheader**, eight bytes
+sitting between the sector header and the user data.
+
+A game reads that stream with the 2048-byte sector size, which hands it the user
+data and *not* the subheader. So it has no way at all to recognise an audio
+sector, and the drive has to keep them.
+
+`Setmode` bit 6 arms this. With it set, a sector that is Mode 2, and whose
+submode says real-time (bit 6) and audio (bit 2) and Form 2 (bit 5), is consumed
+by the drive: it goes to the ADPCM decoder, raises no `INT1`, and never reaches
+the data FIFO. From software's side that sector did not exist. With bit 6 clear
+the same sector is ordinary data, which is how a program that wants to look at
+the audio itself gets to.
+
+`Setfilter` and its mode bit are the second half on hardware and change nothing
+here. The filter chooses *which* of several interleaved audio streams reaches the
+decoder, and a sector it rejects is dropped rather than handed over, so filtered
+and unfiltered audio are both withheld either way. It will matter the day there
+is a decoder to route the accepted ones to.
+
+There is none, so "routed to audio" means "dropped", and the difference is
+silence. The count is reported separately from sectors read, because a sector
+that was fetched and then deliberately not reported is, from software's side,
+indistinguishable from one that was never read at all.
+
 ## CD audio: accepted, not produced
 
 `Play` (0x03) sets the drive's playing bit and does nothing else. There is no
