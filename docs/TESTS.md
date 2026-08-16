@@ -433,29 +433,33 @@ dead look alike from the counters alone, which is what the screenshots are for.
 
 ### Stopped, and what they are waiting for
 
-**MDEC, overwhelmingly.** Fourteen of the twenty-one queue transfers on DMA
-channels 0 and 1, which are the video decoder's, and stop there. Their intros are
-full-motion video and there is no MDEC.
+**Was MDEC. Is now the stream that feeds it.** Fourteen of the twenty-one used
+to stop with transfers queued on DMA channels 0 and 1, the video decoder's,
+because their intro is full-motion video and there was no decoder. There is one
+now, and it works: Tomb Raider decodes 480 macroblocks, exactly one frame, and
+the frame is the Eidos logo.
 
-| Game | Sectors read | Channels queued |
+Every other disc decodes **zero** macroblocks, and not for want of trying. They
+set the decoder up, queue its channels, and hand it an empty buffer, because the
+compressed data never reaches them. That is the streaming fault below, and it
+sits upstream of everything: the decoder is no longer the thing in the way.
+
+| Game | Sectors read | Macroblocks decoded |
 |---|---|---|
-| Tomb Raider (USA) Rev 6 | 8 034 | 0 and 1 |
-| Digimon World 2 | 8 040 | 0 and 1 |
-| Tekken 3 | 6 418 | 0 and 1 |
+| **Tomb Raider (USA) Rev 6** | 8 034 | **480**, one whole frame |
+| Tekken 3 | 6 418 | 21 |
+| Digimon World 2 | 8 040 | 0 |
 | Ace Combat 2 (SCES, PAL BIOS) | 7 421 | 0 |
 | Legacy of Kain: Soul Reaver | 7 046 | 0 |
-| Medal of Honor | 5 178 | 0 |
-| Beyblade | 6 952 | 0 |
 | Mortal Kombat 4 | 7 824 | 0 |
-| Grand Theft Auto 2 | 1 121 | 0 |
+| Beyblade | 6 952 | 0 |
+| Resident Evil 3 | 6 429 | 0 |
+| Medal of Honor | 5 178 | 0 |
 | Silent Hill | 1 334 | 0 |
-| Mega Man X5, Mega Man X6, Dragon Ball GT | 1 183 to 1 918 | 0 |
+| Grand Theft Auto 2 | 1 121 | 0 |
 
-That is the clearest single result in the survey, and it did not exist as a
-question this morning: the counter that produced it now names the channels
-rather than totalling them, because "this game wants video decoding" and "this
-game wants something else" are different searches and a bare total cannot tell
-them apart.
+Nothing regressed on the way: every game that drew its own content before still
+draws it, at the same figures.
 
 **Two others, neither MDEC:**
 
