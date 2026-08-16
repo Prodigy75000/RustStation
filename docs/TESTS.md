@@ -414,10 +414,18 @@ this core has been pointed at software it was not written against.
 
 | Game | BIOS | How far it gets |
 |---|---|---|
-| **Crash Bandicoot (USA)** | SCPH-1001 | **Title screen.** Logo, Crash's 3D model, textured background, working menu |
+| **Crash Bandicoot (USA)** | SCPH-1001 | **Title screen, then the opening cutscene** with Start held. Textured 3D characters, lighting, working menu |
 | Tomb Raider (USA) Rev 6 | SCPH-1001 | The BIOS licence screen with its 3D logo, then hangs at 27 sectors |
+| Grand Theft Auto 2 | SCPH-1001 | Reads its filesystem, then loops. See below |
 | Silent Hill (USA) | SCPH-1001 | 424 sectors, then noise on screen. Its intro is an MDEC video, and there is no MDEC |
 | Ace Combat 2 (SCES) | SCPH-1002 | Nothing: the **PAL BIOS itself** does not boot, disc or no disc |
+
+**What "title screen" does and does not mean.** Crash renders its menu and, with
+Start held from boot, goes on to load and render the opening cutscene: Tawna and
+Cortex's machine, textured 3D characters with lighting, at 512x240. That is real
+in-game rendering rather than a static screen. It is *not* a claim that the game
+is playable: nothing here has driven it with changing input, and there is no
+sound at all.
 
 Crash reads 1 647 sectors, draws 1.33 million textured primitives and pushes
 619 KB of samples into sound RAM. Tomb Raider's 57-track, one-file-per-track cue
@@ -437,6 +445,36 @@ it to the title screen. No audio was implemented and none is produced.
 The diagnostic that found it is worth keeping: a histogram of reads to
 decoded-but-unemulated ports. "The game is stuck" and "the game is stuck reading
 this one address" are very different starting points.
+
+### Grand Theft Auto 2 reads its filesystem and then waits
+
+Worth writing down carefully, because the obvious diagnosis is wrong twice over.
+
+It issues 2 177 CD-ROM commands and reads only 351 sectors: a retry loop. The
+loop is `Setloc(00:02:16)`, `Setmode(A0)`, `ReadN`, one sector, `Pause`, over and
+over, 256 times on that one sector. LBA 16 is the ISO 9660 primary volume
+descriptor.
+
+Two things it is **not**:
+
+* **Not bad sector data.** `Setmode(A0)` selects whole-sector reads, 2340 bytes
+  from the header rather than 2048 of user data, which no other game here uses.
+  The bytes our FIFO serves for that sector are byte-identical to the image:
+  `00 02 16 02 | 00 00 09 00 00 00 09 00 | 01 43 44 30`, the header, the
+  subheader, and the start of `CD001`.
+* **Not a stubbed port.** Two stub reads in the entire run, both to the
+  expansion region. It is not spinning on an unemulated register the way Crash
+  was spinning on `SPUCNT`.
+
+And it gets **further than the loop suggests**: the sectors actually delivered
+are 4 to 11, then 16, 18, 22, 23, 24, 25. That is the licence area, the volume
+descriptor, the path table and the root directory. Its filesystem reader works.
+It then goes back to re-reading the volume descriptor and never opens a file.
+
+So the failure is after a successful directory read, and the periodic
+volume-descriptor read is most likely a heartbeat while it waits for something
+else. It has drawn nothing at all beyond the BIOS logo. Open, and not yet
+guessed at.
 
 ### The PAL BIOS is a separate bug
 

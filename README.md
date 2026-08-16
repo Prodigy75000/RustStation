@@ -72,10 +72,11 @@ Working, and confirmed against real hardware behaviour rather than asserted:
   controller existed. `cargo run --release --bin shot -- <bios.bin>
   --steps 300000000`. One rendering fault is visible and recorded in
   [`docs/notes/GPU.md`](docs/notes/GPU.md).
-- **Commercial games boot.** Crash Bandicoot reaches its title screen: logo,
-  Crash's GTE-transformed 3D model, textured background and a working menu.
-  Tomb Raider renders the BIOS licence screen with its 3D logo. See
-  [`docs/TESTS.md`](docs/TESTS.md) for how far each of four discs gets.
+- **Commercial games boot.** Crash Bandicoot reaches its title screen and then
+  its opening cutscene, with textured 3D characters and lighting. Tomb Raider
+  renders the BIOS licence screen with its 3D logo. See
+  [`docs/TESTS.md`](docs/TESTS.md) for how far each of five discs gets, and for
+  what "boots" does and does not mean.
 - **SPU**: the register file and 512 KB of sound RAM, and **no audio at all**.
   Thin on purpose: a register that always reads zero is a hang, not a missing
   feature, and read-back alone is what took Crash from a spin to its title
@@ -110,8 +111,9 @@ Not started:
 - Per-instruction cycle costs. Every instruction is one cycle and
   multiply/divide do not stall.
 
-It is still early: one game of four reaches a title screen, there is no sound,
-and anything using full-motion video shows noise. Homebrew and test binaries
+It is still early: one game of five gets past its title screen, there is no
+sound at all, and anything using full-motion video shows noise. No game has been
+driven with changing input, so "playable" is not a claim being made. Homebrew and test binaries
 sideloaded as PSX-EXEs also run, and draw.
 
 ## Layout

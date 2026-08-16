@@ -229,6 +229,15 @@ impl Cdrom {
                 if val & 0x80 != 0 {
                     self.data_len = self.sector_bytes() as u16;
                     self.data_pos = 0;
+                    if trace_enabled() {
+                        let skip = usize::from(self.mode & MODE_WHOLE_SECTOR == 0) * 12;
+                        eprintln!(
+                            "cdrom fifo mode={:02x} len={} first={:02x?}",
+                            self.mode,
+                            self.data_len,
+                            &self.sector[skip..skip + 16]
+                        );
+                    }
                 } else {
                     self.data_len = 0;
                     self.data_pos = 0;
