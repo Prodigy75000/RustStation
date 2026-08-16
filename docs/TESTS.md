@@ -418,7 +418,7 @@ this core has been pointed at software it was not written against.
 | Tomb Raider (USA) Rev 6 | SCPH-1001 | The BIOS licence screen with its 3D logo, then hangs at 27 sectors |
 | Grand Theft Auto 2 | SCPH-1001 | Reads its filesystem, then loops. See below |
 | Silent Hill (USA) | SCPH-1001 | 424 sectors, then noise on screen. Its intro is an MDEC video, and there is no MDEC |
-| Ace Combat 2 (SCES) | SCPH-1002 | Nothing: the **PAL BIOS itself** does not boot, disc or no disc |
+| Ace Combat 2 (SCES) | SCPH-1002 | Untried since the PAL BIOS started booting |
 
 **What "into gameplay" does and does not mean.** With Start held from boot,
 Crash goes title screen, then the opening cutscene (Tawna and Cortex's machine,
@@ -482,13 +482,38 @@ volume-descriptor read is most likely a heartbeat while it waits for something
 else. It has drawn nothing at all beyond the BIOS logo. Open, and not yet
 guessed at.
 
-### The PAL BIOS is a separate bug
+### The PAL BIOS: closed
 
-Both European BIOS images fail and both American ones work, with or without a
-disc. SCPH-1002 gets as far as clearing sound RAM and stops: **one** stub read,
-nine stub writes, zero GPU primitives, zero unmapped accesses. It never reaches
-the display.
+**Was:** both European BIOS images failed and both American ones worked, with or
+without a disc. SCPH-1002 got as far as clearing sound RAM and stopped, with one
+stub read, nine stub writes, zero GPU primitives and zero unmapped accesses. It
+never reached the display.
 
-PAL video timing is implemented (3 406 cycles per line, 314 lines), so that is
-not it, and the failure is too early for it to be. Untouched for now, and named
-here so it does not get mistaken for a disc or region problem.
+**Was not:** PAL video timing, which is implemented, and which the failure was
+far too early to have depended on. Nor a disc problem, nor a region check.
+
+**Is:** GPUSTAT bit 31, the parity of the line being drawn, which this core
+returned as a constant 0. The PAL BIOS latches GPUSTAT and spins until bit 31
+differs from the latched copy. See `docs/notes/GPU.md`. SCPH-1002 now boots to
+its main menu, and draws its two menu icons correctly, which is more than the
+American BIOS manages: SCPH-1001 still draws colour noise in their place. Two
+BIOS versions disagreeing about the same two icons is a better lead on that bug
+than either one alone.
+
+The instructive part is how little the symptom said about the cause. Every
+counter pointed away from the GPU: nothing was drawn, so the rasterizer was
+never suspect, and no port was unmapped or stubbed, so the "software polls what
+it writes" rule had nothing to bite on. What found it in one step was asking a
+different question, not a better version of the same one: **not what is missing,
+but what is it executing.** A histogram of the last million program counters
+gave a six-instruction loop, `--peek` disassembled it, `--regs` said the address
+it was polling was `1F801814` and the mask was `0x80000000`, and that was the
+whole diagnosis.
+
+Both are in `shot` now, and cost nothing when unused:
+
+```
+shot bios.bin --pchist              # where the last million instructions went
+shot bios.bin --peek 800592F4:12    # disassemble twelve instructions there
+shot bios.bin --regs                # the register file at the end of the run
+```

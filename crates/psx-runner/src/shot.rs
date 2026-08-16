@@ -40,6 +40,8 @@ use std::process::ExitCode;
 use psx_core::gpu::{VRAM_HEIGHT, VRAM_WIDTH};
 use psx_core::{exe::Exe, Psx};
 
+mod disasm;
+
 /// `--hold cross,start` into a pad button mask. Duplicated from `testrom`
 /// rather than shared: these two binaries have no common module, and a
 /// sixteen-line table is cheaper than inventing one for it.
@@ -75,7 +77,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         eprintln!(
-            "usage: shot <bios.bin> [--exe file.exe] [--steps N] [--out shot.png] [--vram] \n             [--hold BUTTON,BUTTON]"
+            "usage: shot <bios.bin> [--exe file.exe] [--disc game.cue] [--steps N]\n             [--out shot.png] [--vram] [--pchist] [--hold BUTTON,BUTTON]"
         );
         return ExitCode::FAILURE;
     }
@@ -88,6 +90,9 @@ fn main() -> ExitCode {
     let mut compare_path: Option<String> = None;
     let mut hold = 0u16;
     let mut disc_path: Option<String> = None;
+    let mut pchist = false;
+    let mut peeks: Vec<(u32, u32)> = Vec::new();
+    let mut regs = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -105,6 +110,18 @@ fn main() -> ExitCode {
                 steps = args.get(i).and_then(|s| s.parse().ok()).unwrap_or(steps);
             }
             "--vram" => whole_vram = true,
+            "--pchist" => pchist = true,
+            "--regs" => regs = true,
+            "--peek" => {
+                i += 1;
+                match args.get(i).and_then(|s| parse_peek(s)) {
+                    Some(peek) => peeks.push(peek),
+                    None => {
+                        eprintln!("--peek wants ADDR[:COUNT] in hex, e.g. 800592F4:8");
+                        return ExitCode::FAILURE;
+                    }
+                }
+            }
             "--disc" => {
                 i += 1;
                 disc_path = args.get(i).cloned();
@@ -181,7 +198,12 @@ fn main() -> ExitCode {
         }
     }
 
-    psx.run(steps);
+    let history = if pchist {
+        Some(run_recording(&mut psx, steps))
+    } else {
+        psx.run(steps);
+        None
+    };
 
     let (width, height, pixels) = if whole_vram {
         let mut buf = vec![0u8; VRAM_WIDTH * VRAM_HEIGHT * 3];
@@ -260,6 +282,22 @@ fn main() -> ExitCode {
         "dma: {} transfers on unimplemented channels",
         psx.bus.dma.unimplemented_transfers
     );
+    if let Some(history) = &history {
+        report_pchist(history);
+    }
+    if regs {
+        println!("pc {:08X}", psx.cpu.pc);
+        for (n, value) in psx.cpu.regs().iter().enumerate() {
+            print!("    {:>4} {value:08X}", disasm::reg_name(n as u32));
+            if n % 4 == 3 {
+                println!();
+            }
+        }
+    }
+    for (addr, count) in peeks {
+        println!("peek {addr:08X}:");
+        report_peek(&psx, addr, count);
+    }
 
     if let Some(reference) = compare_path {
         return match compare(&reference, width, height, &pixels) {
@@ -278,6 +316,110 @@ fn main() -> ExitCode {
     }
 
     ExitCode::SUCCESS
+}
+
+/// `800592F4:8` into an address and an instruction count. Hex without a `0x`,
+/// because every address in this program's own output is printed that way and
+/// pasting one back in should just work.
+fn parse_peek(spec: &str) -> Option<(u32, u32)> {
+    let (addr, count) = match spec.split_once(':') {
+        Some((a, c)) => (a, c.parse().ok()?),
+        None => (spec, 8),
+    };
+    Some((u32::from_str_radix(addr.trim_start_matches("0x"), 16).ok()?, count))
+}
+
+/// Fetch a word the way an observer would, not the way the CPU does.
+///
+/// Straight out of the RAM and BIOS arrays, never through [`psx_core::bus::Bus`]
+/// `load`, so that reading memory to find out why something hung can never
+/// itself advance the clock, drain a FIFO or acknowledge an interrupt.
+fn peek_word(psx: &Psx, addr: u32) -> Option<u32> {
+    let phys = psx_core::bus::mask_region(addr) as usize;
+    let bytes = if phys < psx_core::bus::RAM_SIZE {
+        &psx.bus.ram[phys..]
+    } else if (0x1FC0_0000..0x1FC0_0000 + psx_core::bus::BIOS_SIZE).contains(&phys) {
+        &psx.bus.bios()[phys - 0x1FC0_0000..]
+    } else {
+        return None;
+    };
+    if bytes.len() < 4 {
+        return None;
+    }
+    Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
+/// Disassemble `count` instructions from `addr`.
+fn report_peek(psx: &Psx, addr: u32, count: u32) {
+    for i in 0..count {
+        let pc = addr.wrapping_add(i * 4);
+        match peek_word(psx, pc) {
+            Some(word) => println!("    {pc:08X}  {word:08X}  {}", disasm::disasm(word, pc)),
+            None => println!("    {pc:08X}  (not RAM or BIOS)"),
+        }
+    }
+}
+
+/// How many of the most recent instruction addresses `--pchist` keeps. A power
+/// of two so the ring index is a mask, and large enough that a loop with a slow
+/// outer iteration still shows its whole body.
+const HISTORY: usize = 1 << 20;
+
+/// Run, remembering the last [`HISTORY`] program counters.
+///
+/// A ring buffer rather than a live histogram on purpose: a hash lookup per
+/// instruction is affordable for a million steps and not for sixty million, and
+/// the question this answers is always "what was it doing *at the end*". The
+/// beginning of a run that hangs is not interesting; the last few thousand
+/// instructions are the whole of it.
+fn run_recording(psx: &mut Psx, steps: u64) -> Vec<u32> {
+    let mut ring = vec![0u32; HISTORY];
+    let mut n: usize = 0;
+    for _ in 0..steps {
+        ring[n & (HISTORY - 1)] = psx.cpu.pc;
+        n += 1;
+        psx.step();
+    }
+    if n < HISTORY {
+        ring.truncate(n);
+        return ring;
+    }
+    // Put it back in execution order, oldest first.
+    ring.rotate_left(n & (HISTORY - 1));
+    ring
+}
+
+/// Report where a run spent its final instructions.
+///
+/// Two numbers matter more than the ranking. **How many distinct addresses**
+/// separates a tight spin (a handful) from a machine that is still doing work
+/// but never finishing (thousands). And the **extent**, low to high, says
+/// whether the loop lives in one function or is a real call graph.
+fn report_pchist(history: &[u32]) {
+    if history.is_empty() {
+        return;
+    }
+    let mut counts: std::collections::HashMap<u32, u64> = std::collections::HashMap::new();
+    for pc in history {
+        *counts.entry(*pc).or_insert(0) += 1;
+    }
+    let mut ranked: Vec<(u32, u64)> = counts.into_iter().collect();
+    // Count first, then address, so equal counts print in address order and two
+    // runs of the same hang produce the same listing.
+    ranked.sort_unstable_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+
+    let low = history.iter().min().expect("non-empty");
+    let high = history.iter().max().expect("non-empty");
+    println!(
+        "pc: {} instructions, {} distinct addresses, {low:08X}..{high:08X}",
+        history.len(),
+        ranked.len()
+    );
+    println!("    last executed {:08X}", history[history.len() - 1]);
+    for (pc, count) in ranked.iter().take(16) {
+        let share = *count as f64 * 100.0 / history.len() as f64;
+        println!("    {pc:08X}  {count:>9}  {share:5.1}%");
+    }
 }
 
 /// Diff our VRAM against a reference dump and report a number.

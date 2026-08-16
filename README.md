@@ -105,10 +105,14 @@ Not started:
 - **Audio of any kind.** No voices, no ADPCM, no CD-DA, no XA.
 - MDEC, so games with full-motion video show noise where it should be.
 - Memory cards, CHD images, the CD-ROM's sub-channel.
-- **The PAL BIOS does not boot**, with or without a disc. American BIOS images
-  work. Recorded in [`docs/TESTS.md`](docs/TESTS.md).
 - Per-instruction cycle costs. Every instruction is one cycle and
   multiply/divide do not stall.
+
+All five BIOS images on hand, American, European and Japanese, boot to their
+main menu. Four of the five draw colour noise where the menu's two icons belong,
+which is the oldest open graphics bug here; the fifth, SCPH-1002, draws them
+correctly, and that disagreement is the lead. Recorded in
+[`docs/TESTS.md`](docs/TESTS.md).
 
 It is still early: one game of five gets past its title screen, there is no
 sound at all, and anything using full-motion video shows noise. No game has been

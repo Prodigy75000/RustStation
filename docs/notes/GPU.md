@@ -124,6 +124,38 @@ Three things that each cost a debugging round:
 6. **GPUSTAT's busy bits are always ready.** Commands execute the instant their
    last word arrives, so the core is never busy. That is a lie in the forgiving
    direction, but code that polls for *busy* before proceeding would spin.
-7. **Not started**: 24-bit display output, interlace, the texture cache, the
-   display range registers (stored but unused), and any notion of how long
-   drawing takes.
+7. **Not started**: 24-bit display output, interlaced *rendering*, the texture
+   cache, the display range registers (stored but unused), and any notion of
+   how long drawing takes.
+
+## GPUSTAT bit 31 is not a status bit
+
+Bit 31 reports the parity of the line currently being drawn, and reads 0
+throughout vertical blank whichever parity the beam happens to be sitting on.
+With interlace on it reports the field instead, a field being one parity of
+lines by definition.
+
+It is worth its own heading because it is not really a *status* bit at all: it
+is the beam position, sampled. That has two consequences the rest of GPUSTAT
+does not have.
+
+* **The read has to be synchronised.** Every other bit is register state that
+  only the CPU changes, so reading it against a stale clock gives the same
+  answer. This one changes on its own. Reading it without first advancing the
+  timed devices returns whatever parity was current when the scheduler last
+  stopped, which for a poll loop is a constant, and the loop never ends.
+* **It is a boot requirement, not a refinement.** The PAL BIOS latches GPUSTAT
+  and then spins waiting for bit 31 to differ from the latched copy, before it
+  will bring the display up at all. SCPH-1002 with this bit stuck at 0 clears
+  sound RAM and stops there with the screen off: no primitives, no CD-ROM, no
+  unmapped accesses, nothing that looks like a graphics fault. With it, the
+  same image boots to its main menu.
+
+For that reason [`Gpu::status`] takes the beam position as a parameter rather
+than reading a cached copy. There is exactly one place the raster lives, in
+`video`, and a caller cannot forget to refresh what it has to pass in.
+
+The field itself, while interlace is off, is taken as the frame count's parity.
+That is a derivation and not a measurement: it guarantees only that consecutive
+frames report different fields, which is enough for software waiting for a
+change and not enough for software that cares which field it got.

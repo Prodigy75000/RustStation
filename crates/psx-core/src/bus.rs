@@ -247,6 +247,22 @@ impl Bus {
         self.next_event = self.cycle + next.max(1);
     }
 
+    /// Where the raster is, for [`crate::gpu::Gpu::status`].
+    ///
+    /// The field is taken as the frame count's parity. That is a derivation
+    /// rather than a measurement: nothing here has yet been shown a real
+    /// console alternating fields, and interlaced rendering is not implemented,
+    /// so the claim is only that consecutive frames report different fields.
+    /// Enough for software that waits for the field to change; not enough for
+    /// software that cares which field it got.
+    pub fn beam(&self) -> crate::gpu::Beam {
+        crate::gpu::Beam {
+            line: self.video.line(),
+            in_vblank: self.video.in_vblank(),
+            field: self.video.frames & 1 == 1,
+        }
+    }
+
     /// Push the GPU's display settings into the video timing.
     ///
     /// The dot clock divider and the video standard both come from GP1(0x08),
@@ -329,7 +345,13 @@ impl Bus {
             return if off < 4 {
                 self.gpu.read()
             } else {
-                self.gpu.status()
+                // GPUSTAT carries the beam's line parity, so it has to be read
+                // against the present rather than against whenever the
+                // scheduler last stopped. Without this the parity is constant
+                // for the whole of a poll loop and the loop never ends, which
+                // is a hang that looks nothing like a missing sync.
+                self.sync();
+                self.gpu.status(self.beam())
             };
         }
         if let Some(off) = DMA.contains(abs) {

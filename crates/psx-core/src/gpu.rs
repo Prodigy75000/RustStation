@@ -33,6 +33,21 @@ pub const VRAM_WIDTH: usize = 1024;
 pub const VRAM_HEIGHT: usize = 512;
 pub const VRAM_WORDS: usize = VRAM_WIDTH * VRAM_HEIGHT;
 
+/// Where the raster is, for the two GPUSTAT bits that report it.
+///
+/// A parameter rather than GPU state so there is one copy of it, in
+/// [`crate::video`], and so the compiler asks for it at every call site instead
+/// of letting a caller silently read yesterday's beam position.
+#[derive(Clone, Copy, Default, Debug)]
+pub struct Beam {
+    /// Scanline within the frame, counting from the top of the raster.
+    pub line: u32,
+    pub in_vblank: bool,
+    /// Which field an interlaced frame is drawing. Ignored when interlace is
+    /// off, where the line parity is what matters.
+    pub field: bool,
+}
+
 /// A vertex as the rasterizer wants it: signed VRAM coordinates, a colour, and
 /// a texture coordinate.
 #[derive(Clone, Copy, Default, Debug)]
@@ -239,14 +254,24 @@ impl Gpu {
     // -- registers --------------------------------------------------------
 
     /// GPUSTAT (`0x1F801814` read).
-    pub fn status(&self) -> u32 {
+    ///
+    /// Takes the beam position because two of its bits are not GPU register
+    /// state at all: they are where the raster currently is. Passing it in,
+    /// rather than caching a copy here that [`crate::video`] has to remember to
+    /// refresh, means the answer cannot go stale, and means a save state has
+    /// exactly one place the field parity lives.
+    pub fn status(&self, beam: Beam) -> u32 {
         let mut s = 0u32;
         s |= self.draw_mode & 0x7FF;
         s |= ((self.draw_mode >> 11) & 1) << 15; // texture disable
         s |= (self.mask_set as u32) << 11;
         s |= (self.mask_check as u32) << 12;
-        // Bit 13 is the interlace field. Always "odd" while interlace is off.
-        s |= 1 << 13;
+        // Bit 13 is the interlace field, and reads 1 whenever interlace is off.
+        s |= if self.interlaced() {
+            beam.field as u32
+        } else {
+            1
+        } << 13;
         s |= (self.display_mode & 0x3F) << 16;
         s |= ((self.display_mode >> 6) & 1) << 14; // reverse flag
         s |= (self.display_disabled as u32) << 23;
@@ -268,7 +293,29 @@ impl Gpu {
             _ => (self.port == Port::FromVram) as u32, // GPUREAD to CPU
         };
         s |= dma_request << 25;
+
+        // Bit 31: the parity of the line being drawn, and 0 throughout vertical
+        // blank whichever parity the beam is sitting on. In interlace this is
+        // the field instead, because a field *is* one parity of lines.
+        //
+        // Not cosmetic, and not optional. The PAL BIOS waits for this bit to
+        // change before it will bring the display up, so a GPUSTAT that always
+        // reads 0 here is not a slightly wrong status word, it is a machine
+        // that never boots.
+        let odd = if beam.in_vblank {
+            false
+        } else if self.interlaced() {
+            beam.field
+        } else {
+            beam.line & 1 == 1
+        };
+        s |= (odd as u32) << 31;
         s
+    }
+
+    /// Vertical interlace, GP1(08h) bit 5.
+    pub fn interlaced(&self) -> bool {
+        self.display_mode & (1 << 5) != 0
     }
 
     /// GPUREAD (`0x1F801810` read).
@@ -1613,9 +1660,67 @@ mod tests {
     #[test]
     fn status_reports_the_ready_flags_the_bios_spins_on() {
         let g = Gpu::new();
-        let s = g.status();
+        let s = g.status(Beam::default());
         assert_ne!(s & (1 << 26), 0, "ready to receive a command");
         assert_ne!(s & (1 << 28), 0, "ready to receive a DMA block");
+    }
+
+    /// The bit the PAL BIOS waits on before it will bring the display up.
+    ///
+    /// Written as three separate claims because only one of them was the bug:
+    /// the parity has to follow the line, *and* it has to read 0 in vertical
+    /// blank. A version that only did the first is still a machine that boots,
+    /// so the vblank half needs its own assertion or it can rot unnoticed.
+    #[test]
+    fn status_bit_31_follows_the_beam() {
+        let g = Gpu::new();
+        let odd = Beam {
+            line: 41,
+            in_vblank: false,
+            field: false,
+        };
+        let even = Beam { line: 40, ..odd };
+        let blanking = Beam {
+            in_vblank: true,
+            ..odd
+        };
+        assert_ne!(g.status(odd) & (1 << 31), 0, "odd line");
+        assert_eq!(g.status(even) & (1 << 31), 0, "even line");
+        assert_eq!(g.status(blanking) & (1 << 31), 0, "0 throughout vblank");
+    }
+
+    /// With interlace on it is the field that drives both bits, not the line.
+    #[test]
+    fn interlace_reports_the_field_not_the_line() {
+        let mut g = Gpu::new();
+        g.gp1(0x0800_0000 | (1 << 5)); // vertical interlace on
+        assert!(g.interlaced());
+        // An even line, so a version still keying off the line would say 0.
+        let beam = Beam {
+            line: 40,
+            in_vblank: false,
+            field: true,
+        };
+        assert_ne!(g.status(beam) & (1 << 31), 0, "bit 31 is the field");
+        assert_ne!(g.status(beam) & (1 << 13), 0, "and so is bit 13");
+        let other = Beam {
+            field: false,
+            ..beam
+        };
+        assert_eq!(g.status(other) & (1 << 13), 0, "bit 13 tracks it both ways");
+    }
+
+    /// Bit 13 reads 1 with interlace off, whatever the field would have been.
+    #[test]
+    fn bit_13_is_stuck_high_without_interlace() {
+        let g = Gpu::new();
+        assert!(!g.interlaced());
+        let beam = Beam {
+            line: 40,
+            in_vblank: false,
+            field: false,
+        };
+        assert_ne!(g.status(beam) & (1 << 13), 0);
     }
 
     #[test]
