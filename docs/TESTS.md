@@ -409,48 +409,76 @@ likes this disc" is untested. The timing constants remain approximate.
 
 ## Real games, as of 2026-08-16
 
-Four commercial discs, BIN/CUE, run with `shot --disc`. This is the first time
-this core has been pointed at software it was not written against.
+Every disc on hand, twenty-one of them, run for the same two billion instructions
+with Start held from boot. `scripts/survey.sh` does this and writes a screenshot
+and the counters for each; it asserts nothing and cannot fail. The point is to
+sort the library by how close each game is, not to grade anything.
 
-| Game | BIOS | How far it gets |
+The same number of instructions for every disc is deliberate. It makes the rows
+comparable to each other. It also means a slow loader and a game that has stopped
+dead look alike from the counters alone, which is what the screenshots are for.
+
+### Drawing their own content
+
+| Game | What is on screen | Textured primitives |
 |---|---|---|
-| **Crash Bandicoot (USA)** | SCPH-1001 | **Into gameplay.** Title screen, opening cutscene, then N. Sanity Beach with its level geometry rendering |
-| Tomb Raider (USA) Rev 6 | SCPH-1001 | The BIOS licence screen with its 3D logo, then hangs at 27 sectors |
-| Grand Theft Auto 2 | SCPH-1001 | Loads, uploads its samples, then waits on MDEC for its intro video |
-| Silent Hill (USA) | SCPH-1001 | 424 sectors, then noise on screen. Its intro is an MDEC video, and there is no MDEC |
-| Ace Combat 2 (SCES) | SCPH-1002 | The BIOS licence screen, then stops at 63 sectors |
+| **Tekken 3** | **A fight in progress.** Two textured, lit characters with cast shadows on the stone floor of a temple stage, mountains and sky behind | 449 376 |
+| **Crash Bandicoot** | **Gameplay.** Title, opening cutscene, then N. Sanity Beach | 1 073 262 |
+| **Metal Slug X** | Its attract-mode high score table over the animated background | 763 283 |
+| **Dino Crisis 2** | An in-game menu: the save-data warning with Yes/No over a moving grid | 282 219 |
+| **Dino Crisis** | The content warning, over a lit 3D corridor | 600 |
+| Dragon Ball GT | Its "LOADING..." card | 17 223 |
+| Yu-Gi-Oh! Forbidden Memories | The Konami logo | 1 288 |
+| Mega Man X6, Mortal Kombat 4, Crash Bash, CTR, Mega Man X5 | Something, but only hundreds to low thousands of pixels lit | 600 to 1 181 |
 
-**What "into gameplay" does and does not mean.** With Start held from boot,
-Crash goes title screen, then the opening cutscene (Tawna and Cortex's machine,
-textured 3D characters with lighting), then the first level, N. Sanity Beach,
-with its sand, palm trees and structures rendering under the level title card.
-5 483 sectors and 5.2 million textured primitives at 512x240.
+### Stopped, and what they are waiting for
 
-It is *not* a claim that the game is playable. Every run so far has held a
-single button from boot, so nothing has tested that it responds to **changing**
-input, and there is no sound at all. The next honest step is a scripted input
-sequence rather than another screenshot.
+**MDEC, overwhelmingly.** Fourteen of the twenty-one queue transfers on DMA
+channels 0 and 1, which are the video decoder's, and stop there. Their intros are
+full-motion video and there is no MDEC.
 
-Twenty-one discs are now available locally; five have been tried.
+| Game | Sectors read | Channels queued |
+|---|---|---|
+| Tomb Raider (USA) Rev 6 | 8 034 | 0 and 1 |
+| Digimon World 2 | 8 040 | 0 and 1 |
+| Tekken 3 | 6 418 | 0 and 1 |
+| Ace Combat 2 (SCES, PAL BIOS) | 7 421 | 0 |
+| Legacy of Kain: Soul Reaver | 7 046 | 0 |
+| Medal of Honor | 5 178 | 0 |
+| Beyblade | 6 952 | 0 |
+| Mortal Kombat 4 | 7 824 | 0 |
+| Grand Theft Auto 2 | 1 121 | 0 |
+| Silent Hill | 1 334 | 0 |
+| Mega Man X5, Mega Man X6, Dragon Ball GT | 1 183 to 1 918 | 0 |
 
-Crash reads 1 647 sectors, draws 1.33 million textured primitives and pushes
-619 KB of samples into sound RAM. Tomb Raider's 57-track, one-file-per-track cue
-sheet parsed correctly, which is the multi-file case `docs/notes/DISC.md` listed
-as implemented but untested.
+That is the clearest single result in the survey, and it did not exist as a
+question this morning: the counter that produced it now names the channels
+rather than totalling them, because "this game wants video decoding" and "this
+game wants something else" are different searches and a bare total cannot tell
+them apart.
 
-### What Crash cost, and it was one register
+**Two others, neither MDEC:**
 
-It stopped at 473 sectors and 600 primitives, spinning on `0x1F801DAA`,
-**`SPUCNT`**, 3 841 times in the last four thousand reads before the stall. The
-game writes that register and polls it until its own value comes back; a stub
-returning zero forever is not a missing feature, it is a hang.
+* **Medal of Honor** makes 125 million unmapped reads, and the site histogram
+  shows them walking consecutive addresses past the end of RAM. A runaway
+  pointer, not a missing device.
+* **Resident Evil 3** reads 6 429 sectors, queues nothing, refuses no command,
+  and draws nothing at all. No instrument here has anything to say about it yet,
+  which makes it the most interesting one on the list.
 
-Making the SPU register file read back what was written, and nothing else, took
-it to the title screen. No audio was implemented and none is produced.
+### What "gameplay" does and does not mean
 
-The diagnostic that found it is worth keeping: a histogram of reads to
-decoded-but-unemulated ports. "The game is stuck" and "the game is stuck reading
-this one address" are very different starting points.
+Crash goes title screen, opening cutscene, then N. Sanity Beach with its sand,
+palm trees and structures rendering under the level title card. Tekken 3 renders
+a round in progress. Both look right.
+
+Neither is a claim that either game is *playable*. Every run here holds a single
+button from boot, so nothing has tested that anything responds to **changing**
+input, and there is no sound anywhere in this core. The next honest step is a
+scripted input sequence rather than another screenshot.
+
+Tomb Raider's 57-track, one-file-per-track cue sheet parsed correctly, which is
+the multi-file case `docs/notes/DISC.md` listed as implemented but untested.
 
 ### Grand Theft Auto 2: closed
 

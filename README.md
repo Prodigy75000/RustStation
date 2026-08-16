@@ -72,19 +72,21 @@ Working, and confirmed against real hardware behaviour rather than asserted:
   controller existed. `cargo run --release --bin shot -- <bios.bin>
   --steps 300000000`. One rendering fault is visible and recorded in
   [`docs/notes/GPU.md`](docs/notes/GPU.md).
-- **Crash Bandicoot reaches gameplay**: title screen, opening cutscene, then
-  N. Sanity Beach with its level geometry rendering. Tomb Raider renders the
-  BIOS licence screen with its 3D logo. See [`docs/TESTS.md`](docs/TESTS.md) for
-  how far each of five discs gets, and for what that does and does not mean.
+- **Commercial games render their own content.** Tekken 3 draws a fight in
+  progress, two textured and lit characters with cast shadows on a temple stage.
+  Crash Bandicoot reaches N. Sanity Beach. Dino Crisis 2 reaches its in-game
+  menus. See [`docs/TESTS.md`](docs/TESTS.md) for how far each of twenty-one
+  discs gets, and for what that does and does not mean.
 - **SPU**: the register file and 512 KB of sound RAM, and **no audio at all**.
   Thin on purpose: a register that always reads zero is a hang, not a missing
   feature, and read-back alone is what took Crash from a spin to its title
   screen.
 - **CD-ROM**: the controller, seeking, and reads that deliver a sector at a time
-  through the data FIFO and DMA channel 3. **With a synthetic disc the BIOS runs
-  its whole recognition sequence and draws the PlayStation licence screen, with
-  the text on it read off the disc.** Reproduce it with `python
-  tools/fakedisc.py out/fakedisc`. Not yet tried against a real game.
+  through the data FIFO and DMA channel 3. Real games load through it: several
+  read eight thousand sectors in the survey. **With a synthetic disc the BIOS
+  also runs its whole recognition sequence and draws the PlayStation licence
+  screen**, with the text on it read off the disc. Reproduce that with `python
+  tools/fakedisc.py out/fakedisc`.
 - **Disc images**: BIN/CUE, with the cue sheet's tracks, pregaps and indices.
   Raw 2352-byte sectors throughout, because a 2048-byte image has no sector
   header for `GetlocL` to report and no room for CD-DA. CHD would be a second
@@ -103,7 +105,9 @@ Working, and confirmed against real hardware behaviour rather than asserted:
 Not started:
 
 - **Audio of any kind.** No voices, no ADPCM, no CD-DA, no XA.
-- MDEC, so games with full-motion video show noise where it should be.
+- **MDEC**, the video decoder. This is the single biggest gap: fourteen of the
+  twenty-one discs on hand load fully and then stop with transfers queued on its
+  DMA channels, because their intro is a video.
 - Memory cards, CHD images, the CD-ROM's sub-channel.
 - Per-instruction cycle costs. Every instruction is one cycle and
   multiply/divide do not stall.
@@ -114,10 +118,14 @@ which is the oldest open graphics bug here; the fifth, SCPH-1002, draws them
 correctly, and that disagreement is the lead. Recorded in
 [`docs/TESTS.md`](docs/TESTS.md).
 
-It is still early: one game of five gets past its title screen, there is no
-sound at all, and anything using full-motion video shows noise. No game has been
-driven with **changing** input, so "playable" is not a claim being made. Homebrew and test binaries
-sideloaded as PSX-EXEs also run, and draw.
+It is still early. Of the twenty-one discs on hand, Tekken 3 renders a fight in
+progress and Crash Bandicoot reaches its first level, a handful more get as far
+as their own menus and logos, and **fourteen stop waiting for MDEC**, the video
+decoder, because their intros are full-motion video. There is no sound anywhere.
+No game has been driven with **changing** input, so "playable" is not a claim
+being made. Homebrew and test binaries sideloaded as PSX-EXEs also run, and draw.
+`scripts/survey.sh` runs the whole library and writes the table in
+[`docs/TESTS.md`](docs/TESTS.md).
 
 ## Layout
 
