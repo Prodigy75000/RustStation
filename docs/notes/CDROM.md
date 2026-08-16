@@ -152,6 +152,26 @@ stubbed and no read was unmapped. What found it was tracing the read *position*
 at the moment of each reload rather than the data: 255 of 606 reloads happened
 at position 12, and a reload at a non-zero position is the bug stated outright.
 
+## CD audio: accepted, not produced
+
+`Play` (0x03) sets the drive's playing bit and does nothing else. There is no
+CD-DA output anywhere in this core yet.
+
+The bit is not decoration. Software polls for "playing", and a drive that
+accepts the command and then reports itself idle is a spin: it is the same
+mistake as a stubbed register that reads back zero. What is deliberately not
+pretended is *progress*, so the position `GetlocP` reports does not advance and
+anything that waits for a track to finish will wait forever. That trade is
+recorded here rather than hidden, because it is the sort of half-implementation
+that later looks like a timing bug.
+
+`ReadTOC` (0x1E) acknowledges and completes with nothing to do: the table of
+contents here is parsed from the cue sheet once and cannot go stale.
+
+Both were found by a game, not by a test. Crash Bash issued 1 117 commands this
+core refused as unknown, all of them these two, and a refusal is answered with
+an INT5 error, which tells the game its drive is broken.
+
 ## Traps
 
 * **The index register changes what an address means**, including for reads. A

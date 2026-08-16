@@ -1,4 +1,7 @@
 /target
+# A second build directory, for building while a long run holds the first
+# one's binaries open. Windows will not let cargo replace a running exe.
+/target-alt
 
 # Console BIOS images. SCPH-xxxx BIOS dumps are copyrighted Sony code and can
 # never be committed, in any region or revision. Bring your own dump; the

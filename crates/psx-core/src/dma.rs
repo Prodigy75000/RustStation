@@ -111,6 +111,11 @@ pub struct Dma {
     interrupt: u32,
     /// Transfers requested on a channel that is decoded but does nothing.
     pub unimplemented_transfers: u64,
+    /// Which channels those were, as a bit per channel. Channels 0 and 1 are
+    /// MDEC's, so this is the difference between "a game wants video decoding"
+    /// and "a game wants something else entirely", and a bare total cannot say
+    /// which.
+    pub unimplemented_channels: u8,
 }
 
 impl Default for Dma {
@@ -128,6 +133,7 @@ impl Dma {
             control: 0x0765_4321,
             interrupt: 0,
             unimplemented_transfers: 0,
+            unimplemented_channels: 0,
         }
     }
 
@@ -236,6 +242,7 @@ impl Dma {
             CH_OTC => Self::run_otc(dma, ram),
             _ => {
                 dma.unimplemented_transfers += 1;
+                dma.unimplemented_channels |= 1 << channel;
             }
         }
         dma.channels[channel].finish();

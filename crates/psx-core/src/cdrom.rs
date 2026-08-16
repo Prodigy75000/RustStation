@@ -45,6 +45,7 @@ const STAT_MOTOR: u8 = 1 << 1;
 const STAT_SHELL_OPEN: u8 = 1 << 4;
 const STAT_READING: u8 = 1 << 5;
 const STAT_SEEKING: u8 = 1 << 6;
+const STAT_PLAYING: u8 = 1 << 7;
 
 /// Mode bits, from `Setmode`.
 const MODE_WHOLE_SECTOR: u8 = 1 << 5;
@@ -422,7 +423,7 @@ impl Cdrom {
                 let s = self.take_stat();
                 self.queue(INT3_ACK, &[s], ACK_DELAY);
                 self.reading = false;
-                self.stat &= !(STAT_READING | STAT_SEEKING);
+                self.stat &= !(STAT_READING | STAT_SEEKING | STAT_PLAYING);
                 if cmd == 0x08 {
                     self.stat &= !STAT_MOTOR;
                 }
@@ -442,6 +443,31 @@ impl Cdrom {
                     }
                     None => self.queue(INT5_ERROR, &NO_DISC_ID, COMPLETE_DELAY),
                 }
+            }
+            0x03 => {
+                // Play. Starts CD-DA playback from the last `Setloc`, or from
+                // the track in the first parameter when there is one.
+                //
+                // There is no audio here, so nothing is heard. The status bit
+                // still has to be set: software polls for "playing" and a drive
+                // that accepts the command and then reports itself idle is a
+                // spin, which is worse than a drive that refuses. What is
+                // deliberately *not* pretended is progress, so the position
+                // `GetlocP` reports does not advance and anything waiting for a
+                // track to finish will wait forever. Recorded in
+                // `docs/notes/CDROM.md` rather than papered over.
+                self.reading = false;
+                self.stat = (self.stat & !STAT_READING) | STAT_MOTOR | STAT_PLAYING;
+                let s = self.stat;
+                self.queue(INT3_ACK, &[s], ACK_DELAY);
+            }
+            0x1E => {
+                // ReadTOC: re-read the table of contents from the disc's lead-in.
+                // Ours is parsed from the cue sheet once and cannot go stale, so
+                // there is nothing to do but take the time and answer.
+                let s = self.take_stat();
+                self.queue(INT3_ACK, &[s], ACK_DELAY);
+                self.queue(INT2_COMPLETE, &[s], COMPLETE_DELAY);
             }
             0x15 | 0x16 => self.seek(),
             0x06 | 0x1B => self.start_read(),
@@ -1139,6 +1165,45 @@ mod tests {
     /// header a second time, so every file it read was twelve bytes out of
     /// step; it rejected the volume descriptor and retried it 256 times rather
     /// than opening anything.
+    /// `Play` has to report the drive as playing, and `Pause` has to stop it.
+    ///
+    /// The first half is the one that matters: there is no CD audio here, so
+    /// the temptation is to accept the command and change nothing. Software
+    /// polls for the playing bit, and a drive that says it is idle immediately
+    /// after being told to play is a spin. Refusing the command outright would
+    /// at least fail fast; silently agreeing and then denying it is the worst
+    /// of the three.
+    #[test]
+    fn play_reports_the_drive_as_playing_until_it_is_paused() {
+        let mut c = with_disc();
+        let mut irq = Irq::new();
+        issue(&mut c, 0x0A, &[]); // Init, to spin up
+        let _ = take(&mut c, &mut irq);
+        let _ = take(&mut c, &mut irq);
+
+        issue(&mut c, 0x03, &[]);
+        let (code, reply) = take(&mut c, &mut irq);
+        assert_eq!(code, INT3_ACK, "Play is acknowledged, not refused");
+        assert_ne!(reply[0] & STAT_PLAYING, 0, "and the drive says it is playing");
+        assert_eq!(c.unknown_commands, 0);
+
+        issue(&mut c, 0x09, &[]); // Pause
+        let _ = take(&mut c, &mut irq);
+        let (_, done) = take(&mut c, &mut irq);
+        assert_eq!(done[0] & STAT_PLAYING, 0, "and stops when paused");
+    }
+
+    /// `ReadTOC` answers twice, like every other two-stage command.
+    #[test]
+    fn read_toc_acknowledges_then_completes() {
+        let mut c = with_disc();
+        let mut irq = Irq::new();
+        issue(&mut c, 0x1E, &[]);
+        assert_eq!(take(&mut c, &mut irq).0, INT3_ACK);
+        assert_eq!(take(&mut c, &mut irq).0, INT2_COMPLETE);
+        assert_eq!(c.unknown_commands, 0, "not refused as unknown");
+    }
+
     #[test]
     fn re_arming_the_request_register_does_not_rewind() {
         let mut c = with_disc();

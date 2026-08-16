@@ -77,7 +77,10 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         eprintln!(
-            "usage: shot <bios.bin> [--exe file.exe] [--disc game.cue] [--steps N]\n             [--out shot.png] [--vram] [--pchist] [--hold BUTTON,BUTTON]"
+            "usage: shot <bios.bin> [--exe file.exe] [--disc game.cue] [--steps N]\n\
+             \x20            [--out shot.png] [--vram] [--compare ref.png] [--hold BUTTON,..]\n\
+             diagnostics: [--pchist] [--peek ADDR[:N]] [--regs] [--film N]\n\
+             \x20            --film 0 writes VRAM once per transfer, not every N steps"
         );
         return ExitCode::FAILURE;
     }
@@ -290,9 +293,18 @@ fn main() -> ExitCode {
         "gpu: {} textured primitives, {} oversized discarded",
         psx.bus.gpu.textured_primitives, psx.bus.gpu.oversized_primitives
     );
+    let waiting: Vec<String> = (0..7u8)
+        .filter(|n| psx.bus.dma.unimplemented_channels & (1 << n) != 0)
+        .map(|n| n.to_string())
+        .collect();
     println!(
-        "dma: {} transfers on unimplemented channels",
-        psx.bus.dma.unimplemented_transfers
+        "dma: {} transfers on unimplemented channels{}",
+        psx.bus.dma.unimplemented_transfers,
+        if waiting.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", waiting.join(", "))
+        }
     );
     for (addr, count) in psx.bus.unmapped_sites {
         if count > 0 {
