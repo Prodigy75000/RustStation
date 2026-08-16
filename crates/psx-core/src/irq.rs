@@ -32,10 +32,29 @@ pub const LIGHTPEN: u32 = 10;
 /// Only 11 bits are implemented; the rest read back as zero.
 const IMPLEMENTED: u16 = 0x07FF;
 
+/// How many sources there are, for the counters below.
+pub const SOURCES: usize = 11;
+
+/// Names for the eleven sources, so a harness can print a histogram without
+/// keeping its own copy of the numbering.
+pub const NAMES: [&str; SOURCES] = [
+    "vblank", "gpu", "cdrom", "dma", "timer0", "timer1", "timer2", "pad", "sio", "spu", "lightpen",
+];
+
 #[derive(Clone, Default)]
 pub struct Irq {
     stat: u16,
     mask: u16,
+
+    /// Requests latched, and requests latched while unmasked, per source.
+    ///
+    /// Host-side observation, never serialized. The difference between the two
+    /// is the whole point: a device that is firing correctly into a mask the
+    /// program never opened looks identical, from the device's side, to one
+    /// that is not firing at all. This is the cheapest instrument that tells
+    /// "nothing raised it" from "nobody was listening".
+    pub raised: [u64; SOURCES],
+    pub delivered: [u64; SOURCES],
 }
 
 impl Irq {
@@ -47,6 +66,14 @@ impl Irq {
     #[inline]
     pub fn raise(&mut self, bit: u32) {
         self.stat |= (1 << bit) & IMPLEMENTED;
+        if let Some(n) = self.raised.get_mut(bit as usize) {
+            *n += 1;
+        }
+        if self.mask & (1 << bit) != 0 {
+            if let Some(n) = self.delivered.get_mut(bit as usize) {
+                *n += 1;
+            }
+        }
     }
 
     /// Is any unmasked request outstanding? This drives Cause bit 10.

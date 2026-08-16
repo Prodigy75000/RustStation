@@ -97,6 +97,7 @@ fn main() -> ExitCode {
     let mut peeks: Vec<(u32, u32)> = Vec::new();
     let mut regs = false;
     let mut film: Option<u64> = None;
+    let mut watch: Option<u32> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -116,6 +117,12 @@ fn main() -> ExitCode {
             "--vram" => whole_vram = true,
             "--pchist" => pchist = true,
             "--regs" => regs = true,
+            "--watch" => {
+                i += 1;
+                watch = args
+                    .get(i)
+                    .and_then(|s| u32::from_str_radix(s.trim_start_matches("0x"), 16).ok());
+            }
             "--film" => {
                 i += 1;
                 film = args.get(i).and_then(|s| s.parse().ok());
@@ -206,7 +213,10 @@ fn main() -> ExitCode {
         }
     }
 
-    let history = if pchist {
+    let history = if let Some(addr) = watch {
+        run_watching(&mut psx, steps, addr);
+        None
+    } else if pchist {
         Some(run_recording(&mut psx, steps))
     } else if let Some(every) = film {
         if every == 0 {
@@ -312,6 +322,18 @@ fn main() -> ExitCode {
         }
     }
     println!("mdec: {} macroblocks decoded", psx.bus.mdec.macroblocks);
+    let irqs: Vec<String> = (0..psx_core::irq::SOURCES)
+        .filter(|n| psx.bus.irq.raised[*n] > 0)
+        .map(|n| {
+            format!(
+                "{} {}/{}",
+                psx_core::irq::NAMES[n],
+                psx.bus.irq.delivered[n],
+                psx.bus.irq.raised[n]
+            )
+        })
+        .collect();
+    println!("irq (delivered/raised): {}", irqs.join(", "));
     println!(
         "gte: {} colour channels clamped, {} unknown commands",
         psx.cpu.gte.colour_saturations, psx.cpu.gte.unknown_commands
@@ -398,6 +420,42 @@ fn report_peek(psx: &Psx, addr: u32, count: u32) {
             None => println!("    {pc:08X}  (not RAM or BIOS)"),
         }
     }
+}
+
+/// How many changes `--watch` reports before it stops printing.
+const WATCH_REPORTS: usize = 24;
+
+/// Run, reporting which instruction changed the word at `addr`.
+///
+/// The complement of `--pchist`. That one answers "what is it executing"; this
+/// one answers "who wrote this", which is the question left when a program is
+/// spinning on a flag in its own memory and the interesting party is whatever
+/// was supposed to set it. Sampling the word once per instruction rather than
+/// hooking the store path keeps the core free of a debugging concern and costs
+/// one load per step.
+///
+/// The program counter reported is the instruction *before* the change was
+/// observed, which is the store itself unless the write came from DMA, in which
+/// case it is whatever instruction triggered the transfer. Both are the answer
+/// to the question being asked.
+fn run_watching(psx: &mut Psx, steps: u64, addr: u32) {
+    let mut last = peek_word(psx, addr).unwrap_or(0);
+    let mut reports = 0;
+    let mut changes: u64 = 0;
+    for _ in 0..steps {
+        let pc = psx.cpu.pc;
+        psx.step();
+        let now = peek_word(psx, addr).unwrap_or(0);
+        if now != last {
+            changes += 1;
+            if reports < WATCH_REPORTS {
+                println!("watch {addr:08X}: {last:08X} -> {now:08X} at pc {pc:08X}");
+                reports += 1;
+            }
+            last = now;
+        }
+    }
+    println!("watch {addr:08X}: {changes} changes, now {last:08X}");
 }
 
 /// Run, writing the whole of VRAM out every `every` instructions.

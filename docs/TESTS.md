@@ -528,6 +528,36 @@ non-zero position states the bug outright. The general form of that is to
 instrument the thing that is *supposed* to be invariant, not the thing that looks
 wrong.
 
+### CD-ROM streaming: the new blocker, and it is not the decoder
+
+With MDEC in, Tomb Raider decodes the first frame of its intro video, the Eidos
+logo, correctly: 480 macroblocks, 32 output transfers of 1 920 words each, which
+is exactly the frame. Then it stops, and the reason is upstream of the decoder.
+
+**The drive delivers 12 463 sectors and the game asks for 185.** Everything that
+would explain that by fault is ruled out:
+
+* The interrupts arrive and are unmasked. The histogram reads `vblank
+  5201/5252, cdrom 12600/12601, dma 719/719`, delivered over raised, so the
+  game's handlers are running and acknowledging.
+* No command is refused, no port is stubbed, no access is unmapped.
+
+The game is spinning in its own streaming layer at `0x8003097C`, on a two-part
+test: a stream-open flag at `+0x88` of a context at `0x801D5580`, and a
+frame-ready flag at `+0x30`. `--watch` says the first is set once, at
+`0x80030D90`, and **the second is never written at all**. So the stream opens
+and the callback that would announce a frame never runs.
+
+That is almost certainly the same fault as Resident Evil 3's, which sits in the
+kernel's `TestEvent` waiting on an event that never fires. Two games, two
+different waits, one missing delivery. Whatever it is, it is between the
+interrupt arriving, which is confirmed, and the kernel handing the program its
+callback or event.
+
+The instrument that would settle it next is a trace of the kernel's own event
+and callback tables, which this core can already reach: they live at a known
+address in RAM and `--peek` reads them without perturbing anything.
+
 ### The BIOS menu's colour noise, narrowed
 
 Four of the five BIOS images draw rainbow noise across the two main-menu
