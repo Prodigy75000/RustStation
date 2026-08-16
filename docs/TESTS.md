@@ -414,18 +414,24 @@ this core has been pointed at software it was not written against.
 
 | Game | BIOS | How far it gets |
 |---|---|---|
-| **Crash Bandicoot (USA)** | SCPH-1001 | **Title screen, then the opening cutscene** with Start held. Textured 3D characters, lighting, working menu |
+| **Crash Bandicoot (USA)** | SCPH-1001 | **Into gameplay.** Title screen, opening cutscene, then N. Sanity Beach with its level geometry rendering |
 | Tomb Raider (USA) Rev 6 | SCPH-1001 | The BIOS licence screen with its 3D logo, then hangs at 27 sectors |
 | Grand Theft Auto 2 | SCPH-1001 | Reads its filesystem, then loops. See below |
 | Silent Hill (USA) | SCPH-1001 | 424 sectors, then noise on screen. Its intro is an MDEC video, and there is no MDEC |
 | Ace Combat 2 (SCES) | SCPH-1002 | Nothing: the **PAL BIOS itself** does not boot, disc or no disc |
 
-**What "title screen" does and does not mean.** Crash renders its menu and, with
-Start held from boot, goes on to load and render the opening cutscene: Tawna and
-Cortex's machine, textured 3D characters with lighting, at 512x240. That is real
-in-game rendering rather than a static screen. It is *not* a claim that the game
-is playable: nothing here has driven it with changing input, and there is no
-sound at all.
+**What "into gameplay" does and does not mean.** With Start held from boot,
+Crash goes title screen, then the opening cutscene (Tawna and Cortex's machine,
+textured 3D characters with lighting), then the first level, N. Sanity Beach,
+with its sand, palm trees and structures rendering under the level title card.
+5 483 sectors and 5.2 million textured primitives at 512x240.
+
+It is *not* a claim that the game is playable. Every run so far has held a
+single button from boot, so nothing has tested that it responds to **changing**
+input, and there is no sound at all. The next honest step is a scripted input
+sequence rather than another screenshot.
+
+Twenty-one discs are now available locally; five have been tried.
 
 Crash reads 1 647 sectors, draws 1.33 million textured primitives and pushes
 619 KB of samples into sound RAM. Tomb Raider's 57-track, one-file-per-track cue
