@@ -104,6 +104,10 @@ pub struct Cdrom {
     /// register at `0x1F801800`.
     stat: u8,
     mode: u8,
+    /// The XA file and channel from `Setfilter`. Nothing filters on them yet,
+    /// because there is no XA audio, but `Getparam` reports them back and
+    /// software is entitled to check that what it set is what it gets.
+    filter: [u8; 2],
     /// The seek target from `Setloc`, as minute, second and frame in BCD.
     seek_loc: [u8; 3],
 
@@ -167,6 +171,7 @@ impl Cdrom {
             // "the disc may have changed since you last looked".
             stat: STAT_SHELL_OPEN,
             mode: 0,
+            filter: [0; 2],
             seek_loc: [0; 3],
             params: [0; PARAM_MAX],
             params_len: 0,
@@ -403,15 +408,30 @@ impl Cdrom {
                 let s = self.take_stat();
                 self.queue(INT3_ACK, &[s], ACK_DELAY);
             }
-            0x0B..=0x0D => {
-                // Mute, Demute, Setfilter: accepted, nothing to do without audio
+            0x0D => {
+                // Setfilter: which XA file and channel to let through. Recorded
+                // rather than acted on, because there is no XA audio, but it
+                // has to read back through `Getparam`.
+                self.filter = [self.param(0), self.param(1)];
                 let s = self.take_stat();
                 self.queue(INT3_ACK, &[s], ACK_DELAY);
+            }
+            0x0B | 0x0C => {
+                // Mute, Demute: accepted, nothing to do without audio.
+                let s = self.take_stat();
+                self.queue(INT3_ACK, &[s], ACK_DELAY);
+            }
+            0x0F => {
+                // Getparam: the mode and filter back, with a pad byte between.
+                let s = self.take_stat();
+                let out = [s, self.mode, 0, self.filter[0], self.filter[1]];
+                self.queue(INT3_ACK, &out, ACK_DELAY);
             }
             0x0A => {
                 // Init: acknowledge, then complete. The motor spins up whether
                 // or not there is anything on it.
                 self.mode = 0;
+                self.filter = [0; 2];
                 self.stat = (self.stat & !STAT_SHELL_OPEN) | STAT_MOTOR;
                 let s = self.stat;
                 self.queue(INT3_ACK, &[s], ACK_DELAY);
@@ -798,7 +818,7 @@ impl Cdrom {
     // ---- save state ------------------------------------------------------
 
     #[allow(clippy::type_complexity)]
-    pub(crate) fn parts(&self) -> ([u8; 8], [u8; 3], [u8; PARAM_MAX], [u8; RESPONSE_MAX], u64) {
+    pub(crate) fn parts(&self) -> ([u8; 10], [u8; 3], [u8; PARAM_MAX], [u8; RESPONSE_MAX], u64) {
         (
             [
                 self.index,
@@ -809,6 +829,8 @@ impl Cdrom {
                 self.params_len,
                 self.response_len,
                 self.response_pos,
+                self.filter[0],
+                self.filter[1],
             ],
             self.seek_loc,
             self.params,
@@ -870,7 +892,7 @@ impl Cdrom {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn restore(
         &mut self,
-        regs: [u8; 8],
+        regs: [u8; 10],
         seek_loc: [u8; 3],
         params: [u8; PARAM_MAX],
         response: [u8; RESPONSE_MAX],
@@ -887,6 +909,7 @@ impl Cdrom {
         self.params_len = regs[5].min(PARAM_MAX as u8);
         self.response_len = regs[6].min(RESPONSE_MAX as u8);
         self.response_pos = regs[7].min(RESPONSE_MAX as u8);
+        self.filter = [regs[8], regs[9]];
         self.seek_loc = seek_loc;
         self.params = params;
         self.response = response;
@@ -1191,6 +1214,41 @@ mod tests {
         let _ = take(&mut c, &mut irq);
         let (_, done) = take(&mut c, &mut irq);
         assert_eq!(done[0] & STAT_PLAYING, 0, "and stops when paused");
+    }
+
+    /// `Getparam` hands back what `Setfilter` was given.
+    ///
+    /// The filter has no effect on anything here, because there is no XA audio
+    /// to filter. It is stored and reported anyway, for the same reason a
+    /// stubbed register has to read back what was written to it: software is
+    /// entitled to check that what it set is what it gets, and a drive that
+    /// answers zero to that is a spin.
+    #[test]
+    fn getparam_reports_the_mode_and_the_filter_it_was_given() {
+        let mut c = with_disc();
+        let mut irq = Irq::new();
+        issue(&mut c, 0x0E, &[MODE_DOUBLE_SPEED | MODE_WHOLE_SECTOR]);
+        let _ = take(&mut c, &mut irq);
+        issue(&mut c, 0x0D, &[3, 5]); // Setfilter: file 3, channel 5
+        let _ = take(&mut c, &mut irq);
+
+        issue(&mut c, 0x0F, &[]);
+        let (code, reply) = take(&mut c, &mut irq);
+        assert_eq!(code, INT3_ACK);
+        assert_eq!(reply[1], MODE_DOUBLE_SPEED | MODE_WHOLE_SECTOR, "the mode");
+        assert_eq!(reply[3], 3, "the filter's file");
+        assert_eq!(reply[4], 5, "the filter's channel");
+        assert_eq!(c.unknown_commands, 0);
+
+        // Init resets both, so a game that reinitialises the drive and then
+        // asks is not told about the settings it just threw away.
+        issue(&mut c, 0x0A, &[]);
+        let _ = take(&mut c, &mut irq);
+        let _ = take(&mut c, &mut irq);
+        issue(&mut c, 0x0F, &[]);
+        let (_, after) = take(&mut c, &mut irq);
+        assert_eq!(after[1], 0, "Init clears the mode");
+        assert_eq!((after[3], after[4]), (0, 0), "and the filter with it");
     }
 
     /// `ReadTOC` answers twice, like every other two-stage command.

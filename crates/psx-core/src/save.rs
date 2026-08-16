@@ -55,7 +55,7 @@ pub const MAGIC: &[u8; 8] = b"RSTAPSX1";
 /// * 7: adds the SPU's register file and its 512 KB of sound RAM. No audio is
 ///   produced, but the registers are still machine state: software polls what
 ///   it wrote, and a state that loses them resumes into a spin.
-pub const FORMAT_VERSION: u16 = 7;
+pub const FORMAT_VERSION: u16 = 8;
 
 const HEADER_BYTES: usize = 8 + 2;
 const CPU_BYTES: usize = 32 * 4     // regs
@@ -131,7 +131,7 @@ const SPU_BYTES: usize = spu::REG_BYTES + 4 + spu::RAM_BYTES + 4;
 
 /// The CD-ROM controller, added in format version 6. Every array is fixed width
 /// so the state stays a constant length whatever is queued.
-const CDROM_BYTES: usize = 8      // index, irq enable/flags, stat, mode, three lengths
+const CDROM_BYTES: usize = 10     // index, irq enable/flags, stat, mode, three lengths, filter
     + 3                           // the Setloc target
     + 16                          // parameter FIFO
     + 16                          // response FIFO
@@ -687,12 +687,12 @@ fn read_spu(r: &mut Reader, s: &mut spu::Spu) -> Option<()> {
 }
 
 fn read_cdrom(r: &mut Reader, c: &mut cdrom::Cdrom) -> Option<()> {
-    let mut regs = [0u8; 8];
+    let mut regs = [0u8; 10];
     let mut seek_loc = [0u8; 3];
     let mut params = [0u8; 16];
     let mut response = [0u8; 16];
     let mut pending = [0u8; 2 * (2 + 16)];
-    regs.copy_from_slice(r.take(8)?);
+    regs.copy_from_slice(r.take(10)?);
     seek_loc.copy_from_slice(r.take(3)?);
     params.copy_from_slice(r.take(16)?);
     response.copy_from_slice(r.take(16)?);
@@ -969,6 +969,19 @@ mod tests {
             psx.bus.store8(0x1F80_1802, p);
         }
         psx.bus.store8(0x1F80_1801, 0x02);
+
+        // Setfilter, with two values that differ from each other and from
+        // everything else here. A filter left at its default is two more zero
+        // bytes, and zero bytes cannot show that a field was dropped.
+        psx.bus.store8(0x1F80_1800, 0x01);
+        psx.bus.store8(0x1F80_1803, 0x07);
+        psx.bus.store8(0x1F80_1800, 0x00);
+        for p in [0x03u8, 0x05] {
+            psx.bus.store8(0x1F80_1802, p);
+        }
+        psx.bus.store8(0x1F80_1801, 0x0D);
+        psx.bus.tick(60_000);
+
         psx.bus.store8(0x1F80_1802, 0x42); // a parameter for a command not yet sent
 
         // The SPU: control set, and samples pushed through the transfer port so
@@ -998,15 +1011,15 @@ mod tests {
 
         // Header, byte for byte.
         assert_eq!(&snap[0..8], MAGIC);
-        assert_eq!(&snap[8..10], &[0x07, 0x00]);
+        assert_eq!(&snap[8..10], &[0x08, 0x00]);
 
         // Total length, pinned to a literal, deliberately NOT compared against
         // `Psx::state_size()`, which would only compare the layout to itself.
-        assert_eq!(snap.len(), 3_675_127);
+        assert_eq!(snap.len(), 3_675_129);
 
         // Whole-buffer checksum: any added, removed, reordered or re-widened
         // field moves it.
-        assert_eq!(fnv1a64(&snap), 0x4B67_84BC_12EC_A083);
+        assert_eq!(fnv1a64(&snap), 0xF29D_8F0D_240C_2C48);
     }
 
     #[test]

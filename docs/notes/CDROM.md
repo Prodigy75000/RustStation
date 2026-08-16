@@ -168,9 +168,19 @@ that later looks like a timing bug.
 `ReadTOC` (0x1E) acknowledges and completes with nothing to do: the table of
 contents here is parsed from the cue sheet once and cannot go stale.
 
-Both were found by a game, not by a test. Crash Bash issued 1 117 commands this
-core refused as unknown, all of them these two, and a refusal is answered with
-an INT5 error, which tells the game its drive is broken.
+`Setfilter` (0x0D) records the XA file and channel and filters nothing, and
+`Getparam` (0x0F) reports them back along with the mode. The filter is stored,
+and serialized, purely so that it reads back: software is entitled to check that
+what it set is what it gets, and a drive that answers zero to that is the same
+spin as a stubbed register reading zero. `Init` clears both, so a game that
+reinitialises the drive is not told about settings it just threw away.
+
+All of these were found by games, not by tests. Crash Bash issued 1 117 commands
+this core refused as unknown, Dino Crisis 372 and Beyblade 12, and a refusal is
+answered with an INT5 error, which tells a game its drive is broken. None of
+them turned out to be that game's actual blocker, which is worth saying plainly:
+what they were was one wrong answer each from a device that is supposed to be
+trustworthy.
 
 ## Traps
 
