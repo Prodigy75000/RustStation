@@ -29,7 +29,7 @@
 use crate::bus::{self, Bus};
 use crate::cpu::Cpu;
 use crate::video::Standard;
-use crate::{cdrom, dma, gpu, sio, Psx};
+use crate::{cdrom, dma, gpu, sio, spu, Psx};
 
 /// Core magic. The trailing digit is a generation marker: it only changes if
 /// the stream stops being a RustStation state at all.
@@ -52,7 +52,10 @@ pub const MAGIC: &[u8; 8] = b"RSTAPSX1";
 ///   Unlike the pads, the drive's own state *is* serialized: whether an
 ///   interrupt is outstanding is machine state, and a state restored without it
 ///   leaves software waiting for a response that will never arrive.
-pub const FORMAT_VERSION: u16 = 6;
+/// * 7: adds the SPU's register file and its 512 KB of sound RAM. No audio is
+///   produced, but the registers are still machine state: software polls what
+///   it wrote, and a state that loses them resumes into a spin.
+pub const FORMAT_VERSION: u16 = 7;
 
 const HEADER_BYTES: usize = 8 + 2;
 const CPU_BYTES: usize = 32 * 4     // regs
@@ -94,7 +97,8 @@ const TIMED_BYTES: usize = 2 + 2                  // irq: stat, mask
     + GPU_BYTES
     + DMA_BYTES
     + SIO_BYTES
-    + CDROM_BYTES;
+    + CDROM_BYTES
+    + SPU_BYTES;
 
 /// The GP0 FIFO is serialized as a fixed-size array so the state stays a
 /// constant length. The longest real command is 12 words (a Gouraud textured
@@ -120,6 +124,10 @@ const SIO_BYTES: usize = 2 * 3      // mode, ctrl, baud
     + 1                             // target
     + 8 + 1                         // /ACK countdown, and whether one is armed
     + 1; // ack level, interrupt latch
+
+/// The SPU, added in format version 7: the register file, then sound RAM
+/// behind a length prefix, then the transfer pointer.
+const SPU_BYTES: usize = spu::REG_BYTES + 4 + spu::RAM_BYTES + 4;
 
 /// The CD-ROM controller, added in format version 6. Every array is fixed width
 /// so the state stays a constant length whatever is queued.
@@ -372,6 +380,7 @@ fn write_bus(w: &mut Writer, b: &Bus) {
     write_dma(w, &b.dma);
     write_sio(w, &b.sio);
     write_cdrom(w, &b.cdrom);
+    write_spu(w, &b.spu);
 }
 
 fn write_gpu(w: &mut Writer, g: &gpu::Gpu) {
@@ -413,6 +422,16 @@ fn write_dma(w: &mut Writer, d: &dma::Dma) {
     }
     w.u32(d.control);
     w.u32(d.interrupt_raw());
+}
+
+fn write_spu(w: &mut Writer, s: &spu::Spu) {
+    let (regs, ram, transfer) = s.parts();
+    for r in regs {
+        w.u16(*r);
+    }
+    w.u32(ram.len() as u32);
+    w.bytes(ram);
+    w.u32(transfer);
 }
 
 fn write_cdrom(w: &mut Writer, c: &cdrom::Cdrom) {
@@ -605,6 +624,7 @@ fn read_bus(r: &mut Reader, b: &mut Bus) -> Option<()> {
     read_dma(r, &mut b.dma)?;
     read_sio(r, &mut b.sio)?;
     read_cdrom(r, &mut b.cdrom)?;
+    read_spu(r, &mut b.spu)?;
 
     Some(())
 }
@@ -647,6 +667,22 @@ fn read_dma(r: &mut Reader, d: &mut dma::Dma) -> Option<()> {
     d.control = r.u32()?;
     let interrupt = r.u32()?;
     d.restore_interrupt(interrupt);
+    Some(())
+}
+
+fn read_spu(r: &mut Reader, s: &mut spu::Spu) -> Option<()> {
+    let mut regs = [0u16; spu::REG_BYTES / 2];
+    for v in regs.iter_mut() {
+        *v = r.u16()?;
+    }
+    // Length-prefixed and checked, like RAM and VRAM: a short buffer must be
+    // refused, not padded.
+    if r.u32()? as usize != spu::RAM_BYTES {
+        return None;
+    }
+    let ram = r.take(spu::RAM_BYTES)?.to_vec();
+    let transfer = r.u32()?;
+    s.restore(regs, &ram, transfer);
     Some(())
 }
 
@@ -935,6 +971,16 @@ mod tests {
         psx.bus.store8(0x1F80_1801, 0x02);
         psx.bus.store8(0x1F80_1802, 0x42); // a parameter for a command not yet sent
 
+        // The SPU: control set, and samples pushed through the transfer port so
+        // sound RAM is not half a megabyte of zeroes. Same reasoning as the
+        // disc above; a region that is entirely zero cannot show a reordering.
+        psx.bus.store16(0x1F80_1DAA, 0xC000); // SPUCNT
+        psx.bus.store16(0x1F80_1DA6, 0x0040); // transfer address, in 8-byte units
+        for i in 0..8u32 {
+            psx.bus.store16(0x1F80_1DA8, (0x1234 + i * 0x1111) as u16);
+        }
+        psx.bus.store16(0x1F80_1C00, 0x3FFF); // voice 0 volume left
+
         psx
     }
 
@@ -952,15 +998,15 @@ mod tests {
 
         // Header, byte for byte.
         assert_eq!(&snap[0..8], MAGIC);
-        assert_eq!(&snap[8..10], &[0x06, 0x00]);
+        assert_eq!(&snap[8..10], &[0x07, 0x00]);
 
         // Total length, pinned to a literal, deliberately NOT compared against
         // `Psx::state_size()`, which would only compare the layout to itself.
-        assert_eq!(snap.len(), 3_150_191);
+        assert_eq!(snap.len(), 3_675_127);
 
         // Whole-buffer checksum: any added, removed, reordered or re-widened
         // field moves it.
-        assert_eq!(fnv1a64(&snap), 0x96AB_A924_D199_0C70);
+        assert_eq!(fnv1a64(&snap), 0x4B67_84BC_12EC_A083);
     }
 
     #[test]

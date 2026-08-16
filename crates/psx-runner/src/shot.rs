@@ -231,6 +231,10 @@ fn main() -> ExitCode {
         psx.bus.stub_reads, psx.bus.stub_writes, psx.bus.unmapped_reads, psx.bus.unmapped_writes
     );
     println!(
+        "spu: {} bytes into sound RAM (no audio produced)",
+        psx.bus.spu.bytes_written
+    );
+    println!(
         "cdrom: {} commands ({} unknown), {} sectors read",
         psx.bus.cdrom.commands, psx.bus.cdrom.unknown_commands, psx.bus.cdrom.sectors_read
     );

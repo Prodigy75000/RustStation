@@ -406,3 +406,45 @@ this repository.
 **What it still does not prove:** that a real game boots. The synthetic disc has
 no filesystem, no `SYSTEM.CNF` and no executable, so everything past "the BIOS
 likes this disc" is untested. The timing constants remain approximate.
+
+## Real games, as of 2026-08-16
+
+Four commercial discs, BIN/CUE, run with `shot --disc`. This is the first time
+this core has been pointed at software it was not written against.
+
+| Game | BIOS | How far it gets |
+|---|---|---|
+| **Crash Bandicoot (USA)** | SCPH-1001 | **Title screen.** Logo, Crash's 3D model, textured background, working menu |
+| Tomb Raider (USA) Rev 6 | SCPH-1001 | The BIOS licence screen with its 3D logo, then hangs at 27 sectors |
+| Silent Hill (USA) | SCPH-1001 | 424 sectors, then noise on screen. Its intro is an MDEC video, and there is no MDEC |
+| Ace Combat 2 (SCES) | SCPH-1002 | Nothing: the **PAL BIOS itself** does not boot, disc or no disc |
+
+Crash reads 1 647 sectors, draws 1.33 million textured primitives and pushes
+619 KB of samples into sound RAM. Tomb Raider's 57-track, one-file-per-track cue
+sheet parsed correctly, which is the multi-file case `docs/notes/DISC.md` listed
+as implemented but untested.
+
+### What Crash cost, and it was one register
+
+It stopped at 473 sectors and 600 primitives, spinning on `0x1F801DAA`,
+**`SPUCNT`**, 3 841 times in the last four thousand reads before the stall. The
+game writes that register and polls it until its own value comes back; a stub
+returning zero forever is not a missing feature, it is a hang.
+
+Making the SPU register file read back what was written, and nothing else, took
+it to the title screen. No audio was implemented and none is produced.
+
+The diagnostic that found it is worth keeping: a histogram of reads to
+decoded-but-unemulated ports. "The game is stuck" and "the game is stuck reading
+this one address" are very different starting points.
+
+### The PAL BIOS is a separate bug
+
+Both European BIOS images fail and both American ones work, with or without a
+disc. SCPH-1002 gets as far as clearing sound RAM and stops: **one** stub read,
+nine stub writes, zero GPU primitives, zero unmapped accesses. It never reaches
+the display.
+
+PAL video timing is implemented (3 406 cycles per line, 314 lines), so that is
+not it, and the failure is too early for it to be. Untouched for now, and named
+here so it does not get mistaken for a disc or region problem.

@@ -72,6 +72,14 @@ Working, and confirmed against real hardware behaviour rather than asserted:
   controller existed. `cargo run --release --bin shot -- <bios.bin>
   --steps 300000000`. One rendering fault is visible and recorded in
   [`docs/notes/GPU.md`](docs/notes/GPU.md).
+- **Commercial games boot.** Crash Bandicoot reaches its title screen: logo,
+  Crash's GTE-transformed 3D model, textured background and a working menu.
+  Tomb Raider renders the BIOS licence screen with its 3D logo. See
+  [`docs/TESTS.md`](docs/TESTS.md) for how far each of four discs gets.
+- **SPU**: the register file and 512 KB of sound RAM, and **no audio at all**.
+  Thin on purpose: a register that always reads zero is a hang, not a missing
+  feature, and read-back alone is what took Crash from a spin to its title
+  screen.
 - **CD-ROM**: the controller, seeking, and reads that deliver a sector at a time
   through the data FIFO and DMA channel 3. **With a synthetic disc the BIOS runs
   its whole recognition sequence and draws the PlayStation licence screen, with
@@ -94,16 +102,17 @@ Working, and confirmed against real hardware behaviour rather than asserted:
 
 Not started:
 
-- XA audio, CD-DA playback, and the CD-ROM's sub-channel.
-- CHD images.
-- SPU, MDEC, memory cards.
+- **Audio of any kind.** No voices, no ADPCM, no CD-DA, no XA.
+- MDEC, so games with full-motion video show noise where it should be.
+- Memory cards, CHD images, the CD-ROM's sub-channel.
+- **The PAL BIOS does not boot**, with or without a disc. American BIOS images
+  work. Recorded in [`docs/TESTS.md`](docs/TESTS.md).
 - Per-instruction cycle costs. Every instruction is one cycle and
   multiply/divide do not stall.
 
-**No real game has been tried yet**, for want of a dump to try. The disc path is
-proven as far as a synthetic disc can prove it: the BIOS recognises the disc,
-reads its system area and puts text from it on screen. Homebrew and test
-binaries sideloaded as PSX-EXEs also run, and draw.
+It is still early: one game of four reaches a title screen, there is no sound,
+and anything using full-motion video shows noise. Homebrew and test binaries
+sideloaded as PSX-EXEs also run, and draw.
 
 ## Layout
 

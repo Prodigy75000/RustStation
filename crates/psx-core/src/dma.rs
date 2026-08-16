@@ -22,6 +22,7 @@
 //! to hand some back. `docs/notes/TIMING.md` carries that as an open question.
 
 use crate::cdrom::Cdrom;
+use crate::spu::Spu;
 use crate::gpu::Gpu;
 use crate::irq::{self, Irq};
 
@@ -224,12 +225,14 @@ impl Dma {
         ram: &mut [u8],
         gpu: &mut Gpu,
         cdrom: &mut Cdrom,
+        spu: &mut Spu,
         irq: &mut Irq,
         channel: usize,
     ) {
         match channel {
             CH_GPU => Self::run_gpu(dma, ram, gpu),
             CH_CDROM => Self::run_cdrom(dma, ram, cdrom),
+            CH_SPU => Self::run_spu(dma, ram, spu),
             CH_OTC => Self::run_otc(dma, ram),
             _ => {
                 dma.unimplemented_transfers += 1;
@@ -295,6 +298,24 @@ impl Dma {
         dma.channels[CH_CDROM].madr = addr;
     }
 
+    /// Channel 4 moves samples between RAM and sound RAM. Both directions
+    /// exist: a game uploads samples, and reads them back to find out where the
+    /// hardware got to.
+    fn run_spu(dma: &mut Dma, ram: &mut [u8], spu: &mut Spu) {
+        let ch = dma.channels[CH_SPU];
+        let mut addr = ch.madr & 0x1F_FFFC;
+        for _ in 0..ch.word_count() {
+            if ch.reads_ram() {
+                spu.write_word(read_ram(ram, addr));
+            } else {
+                let word = spu.read_word();
+                write_ram(ram, addr, word);
+            }
+            addr = addr.wrapping_add_signed(ch.step()) & 0x1F_FFFC;
+        }
+        dma.channels[CH_SPU].madr = addr;
+    }
+
     /// Channel 6 builds a reverse ordering table: a run of words each pointing
     /// at the one before it, ending with the list terminator. It is the only
     /// channel that writes RAM from nothing.
@@ -354,7 +375,7 @@ mod tests {
         assert!(dma.write(0x64, 4).is_none());
         let ch = dma.write(0x68, 0x1100_0002);
         assert_eq!(ch, Some(CH_OTC));
-        Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut irq, CH_OTC);
+        Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut Spu::new(), &mut irq, CH_OTC);
 
         assert_eq!(read_ram(&ram, 0x1000), 0x0FFC, "should point at the previous");
         assert_eq!(read_ram(&ram, 0x0FFC), 0x0FF8);
@@ -376,7 +397,7 @@ mod tests {
         assert!(dma.write(0x24, 3).is_none()); // three words, manual mode
         let ch = dma.write(0x28, 0x0100_0201); // enable + trigger, from RAM
         assert_eq!(ch, Some(CH_GPU));
-        Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut irq, CH_GPU);
+        Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut Spu::new(), &mut irq, CH_GPU);
 
         assert_ne!(gpu.vram[0], 0, "the fill did not reach the GPU");
     }
@@ -398,7 +419,7 @@ mod tests {
         // Enable (bit 24), sync mode 2 (bits 9-10), from RAM (bit 0).
         let ch = dma.write(0x28, 0x0100_0401);
         assert_eq!(ch, Some(CH_GPU));
-        Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut irq, CH_GPU);
+        Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut Spu::new(), &mut irq, CH_GPU);
 
         assert_ne!(gpu.vram[0], 0, "the list's fill did not run");
     }
@@ -411,7 +432,7 @@ mod tests {
 
         assert!(dma.write(0x20, 0x400).is_none());
         let _ = dma.write(0x28, 0x0100_0401);
-        Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut irq, CH_GPU);
+        Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut Spu::new(), &mut irq, CH_GPU);
         // Reaching here at all is the assertion.
     }
 
@@ -423,7 +444,7 @@ mod tests {
 
         // Masked: no interrupt.
         let _ = dma.write(0x68, 0x1100_0002);
-        Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut irq, CH_OTC);
+        Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut Spu::new(), &mut irq, CH_OTC);
         assert_eq!(irq.stat(), 0);
 
         // Enable channel 6 and the master bit, then run again.
@@ -431,7 +452,7 @@ mod tests {
         assert!(dma.write(0x60, 0x1000).is_none());
         assert!(dma.write(0x64, 2).is_none());
         let _ = dma.write(0x68, 0x1100_0002);
-        Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut irq, CH_OTC);
+        Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut Spu::new(), &mut irq, CH_OTC);
         assert_ne!(irq.stat() & (1 << irq::DMA), 0);
     }
 

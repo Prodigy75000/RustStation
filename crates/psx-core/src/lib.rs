@@ -20,15 +20,16 @@
 //!   it.
 //! * The GTE, conformant against `gte/test-all`.
 //! * SIO0: the controller port, with a digital pad.
+//! * The CD-ROM controller and BIN/CUE disc images.
+//! * The SPU's register file and sound RAM, but **no audio**.
 //! * BIOS TTY capture, so a conformance binary's own verdict is readable.
 //! * PSX-EXE sideload at the BIOS shell hook.
 //! * Save states that satisfy the in-house byte-identical contract.
 //!
 //! ## What does not exist yet
 //!
-//! CD-ROM, SPU, MDEC, memory cards. No per-instruction timing model: every
-//! instruction costs one cycle. **A disc will not boot**, because there is no
-//! CD-ROM; sideloaded PSX-EXEs do run, and draw.
+//! Audio of any kind, MDEC, memory cards, CHD images. No per-instruction timing
+//! model: every instruction costs one cycle.
 
 pub mod bus;
 pub mod cdrom;
@@ -42,6 +43,7 @@ pub mod gte;
 pub mod irq;
 pub mod save;
 pub mod sio;
+pub mod spu;
 pub mod timers;
 pub mod video;
 
