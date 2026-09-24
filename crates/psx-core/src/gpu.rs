@@ -23,8 +23,11 @@
 //!
 //! ## What does not
 //!
-//! 24-bit display output, interlace, and the texture cache the `clut-cache`
-//! test exercises. Nothing models how long drawing takes.
+//! Interlaced *rendering*, and the texture cache the `clut-cache` test
+//! exercises. Nothing models how long drawing takes.
+//!
+//! **Display output** follows the game's own registers: 15-bit or 24-bit from
+//! GP1(08h) bit 4, and as many lines as GP1(07h)'s vertical range asks for.
 
 use crate::video::{Standard, DOT_DIVIDER_256, DOT_DIVIDER_320, DOT_DIVIDER_368};
 use crate::video::{DOT_DIVIDER_512, DOT_DIVIDER_640};
@@ -32,6 +35,10 @@ use crate::video::{DOT_DIVIDER_512, DOT_DIVIDER_640};
 pub const VRAM_WIDTH: usize = 1024;
 pub const VRAM_HEIGHT: usize = 512;
 pub const VRAM_WORDS: usize = VRAM_WIDTH * VRAM_HEIGHT;
+
+/// The tallest picture [`Gpu::display_height`] reports: 480 lines interlaced,
+/// and 288 progressive, which is a full PAL frame.
+pub const MAX_DISPLAY_HEIGHT: u32 = 480;
 
 /// `RSTA_GPU_TRACE=1` logs VRAM transfers and the texture state each textured
 /// primitive samples with. Both answer the same question: a picture drawn from
@@ -1224,13 +1231,31 @@ impl Gpu {
         }
     }
 
+    /// Lines shown, from GP1(07h)'s vertical range: Y2 - Y1, doubled in
+    /// 480-line interlaced mode.
+    ///
+    /// Not the nominal 240. A game showing fewer lines leaves whatever sits
+    /// below its picture in VRAM, and reading 240 put that on screen: the BIOS
+    /// licence screen asks for 239 (two stray rows at 480i) and CTR's menu for
+    /// 216 (a 24-row strip). A range that is empty or inverted, which only a
+    /// half-initialised GPU has, falls back to the nominal height. The top is
+    /// clamped to what a frontend has been told to expect.
     pub fn display_height(&self) -> u32 {
-        // Bit 2 selects 480, but only with interlace (bit 5) on.
-        if self.display_mode & (1 << 2) != 0 && self.display_mode & (1 << 5) != 0 {
-            480
+        let interlaced_480 =
+            self.display_mode & (1 << 2) != 0 && self.display_mode & (1 << 5) != 0;
+        let y1 = self.display_range_v & 0x3FF;
+        let y2 = (self.display_range_v >> 10) & 0x3FF;
+        let lines = if y2 > y1 { y2 - y1 } else { 240 };
+        if interlaced_480 {
+            (lines * 2).min(MAX_DISPLAY_HEIGHT)
         } else {
-            240
+            lines.min(MAX_DISPLAY_HEIGHT / 2 + 48)
         }
+    }
+
+    /// GP1(08h) bit 4: the display reads VRAM as packed 24-bit colour.
+    pub fn display_24bit(&self) -> bool {
+        self.display_mode & (1 << 4) != 0
     }
 
     /// Video clocks per dot clock, for [`crate::video`].
@@ -1255,6 +1280,22 @@ impl Gpu {
         }
     }
 
+    /// GP1(06h) and GP1(07h) as last written: the horizontal range in video
+    /// clocks, and the vertical range in scanlines. For diagnostics.
+    pub fn display_ranges(&self) -> (u32, u32) {
+        (self.display_range_h, self.display_range_v)
+    }
+
+    /// GP1(05h): the top-left of the displayed area in VRAM.
+    pub fn display_start(&self) -> (u32, u32) {
+        (self.display_start_x, self.display_start_y)
+    }
+
+    /// GP1(08h) as last written.
+    pub fn display_mode_bits(&self) -> u32 {
+        self.display_mode
+    }
+
     pub fn display_disabled(&self) -> bool {
         self.display_disabled
     }
@@ -1273,15 +1314,33 @@ impl Gpu {
                 if i >= out.len() {
                     return;
                 }
+                let vy = (self.display_start_y as usize + y) & (VRAM_HEIGHT - 1);
                 out[i] = if self.display_disabled {
                     0
+                } else if self.display_24bit() {
+                    self.pixel_24bit(vy, x)
                 } else {
                     let vx = (self.display_start_x as usize + x) & (VRAM_WIDTH - 1);
-                    let vy = (self.display_start_y as usize + y) & (VRAM_HEIGHT - 1);
                     from_rgb555(self.vram[vy * VRAM_WIDTH + vx])
                 };
             }
         }
+    }
+
+    /// Pixel `x` of display row `vy` in 24-bit mode. Three bytes a pixel,
+    /// red first, packed across the 16-bit VRAM words with no padding, so every
+    /// other pixel straddles two words. The row starts at the display's X in
+    /// halfwords and wraps within the 2048 bytes of a VRAM line.
+    fn pixel_24bit(&self, vy: usize, x: usize) -> u32 {
+        let row = &self.vram[vy * VRAM_WIDTH..(vy + 1) * VRAM_WIDTH];
+        let byte = |b: usize| {
+            let b = b & (VRAM_WIDTH * 2 - 1);
+            let half = row[b / 2];
+            if b & 1 == 0 { half as u8 } else { (half >> 8) as u8 }
+        };
+        let base = self.display_start_x as usize * 2 + x * 3;
+        let (r, g, b) = (byte(base), byte(base + 1), byte(base + 2));
+        ((r as u32) << 16) | ((g as u32) << 8) | b as u32
     }
 
     // -- save state -------------------------------------------------------
@@ -1928,6 +1987,50 @@ mod tests {
 
         g.gp1(0x0800_0008); // PAL
         assert_eq!(g.standard(), Standard::Pal);
+    }
+
+#[test]
+    fn a_24bit_display_reads_three_bytes_a_pixel() {
+        let mut g = Gpu::new();
+        g.gp1(0x0300_0000); // display on
+        g.gp1(0x0800_0011); // 320 wide, 24-bit
+        g.gp1(0x0500_0000 | (1 << 10) | 4); // start at (4, 1)
+        assert!(g.display_24bit());
+        // Two pixels, 6 bytes, from halfword 4 of row 1:
+        // (0x11, 0x22, 0x33) and (0x44, 0x55, 0x66).
+        let base = VRAM_WIDTH + 4;
+        g.vram[base] = 0x2211;
+        g.vram[base + 1] = 0x4433;
+        g.vram[base + 2] = 0x6655;
+        let mut out = vec![0u32; 320 * 240];
+        g.framebuffer(&mut out);
+        assert_eq!(out[0], 0x11_22_33, "red is the first byte");
+        assert_eq!(out[1], 0x44_55_66, "the second pixel straddles two words");
+
+        // Back in 15-bit mode the same words read as two ordinary pixels.
+        g.gp1(0x0800_0001);
+        g.framebuffer(&mut out);
+        assert_eq!(out[0], from_rgb555(0x2211));
+    }
+
+    #[test]
+    fn the_display_shows_the_lines_the_game_asked_for() {
+        let mut g = Gpu::new();
+        g.gp1(0x0800_0001); // 320x240
+        g.gp1(0x0700_0000 | (244 << 10) | 28); // CTR's menu: lines 28 to 244
+        assert_eq!(g.display_height(), 216);
+        // The BIOS licence screen at 480i: lines 16 to 255, twice over.
+        g.gp1(0x0800_0027);
+        g.gp1(0x0700_0000 | (255 << 10) | 16);
+        assert_eq!(g.display_height(), 478);
+        // An empty range is a half-initialised GPU: the nominal height.
+        g.gp1(0x0800_0001);
+        g.gp1(0x0700_0000 | (16 << 10) | 16);
+        assert_eq!(g.display_height(), 240);
+        // Nothing past the frame a frontend was promised.
+        g.gp1(0x0800_0027);
+        g.gp1(0x0700_0000 | (0x3FF << 10));
+        assert_eq!(g.display_height(), MAX_DISPLAY_HEIGHT);
     }
 
     #[test]

@@ -123,9 +123,21 @@ Three things that each cost a debugging round:
 6. **GPUSTAT's busy bits are always ready.** Commands execute the instant their
    last word arrives, so the core is never busy. That is a lie in the forgiving
    direction, but code that polls for *busy* before proceeding would spin.
-7. **Not started**: 24-bit display output, interlaced *rendering*, the texture
-   cache, the display range registers (stored but unused), and any notion of
-   how long drawing takes.
+7. **Not started**: interlaced *rendering*, the texture cache, and any notion
+   of how long drawing takes.
+8. **Display output, done 2026-09-24, from the owner playing on a phone.** Two
+   bugs, both in what is handed to the frontend and neither in emulation:
+   * **24-bit display** (GP1(08h) bit 4) was read as 15-bit, so every MDEC
+     video in 24-bit colour came out as rainbow stripes: GTA 2 and Twisted Metal
+     reported as "looks very strange" until the menu, which is 15-bit. Three
+     bytes a pixel, red first, packed across halfwords with no padding.
+   * **The height ignored GP1(07h).** It was a fixed 240 (480 interlaced), so
+     a game showing fewer lines showed whatever sat below its picture in VRAM:
+     the BIOS licence screen asks for lines 16 to 255, 239 of them, which left
+     two stray rows at 480i; CTR's menu asks for 28 to 244, a 24-row strip. The
+     height is now Y2 - Y1, doubled at 480i. The *horizontal* range is still
+     ignored and the width is the mode's nominal one, which is why this core
+     fills the screen where Beetle shows a border; the owner prefers it.
 
 ## Tracing, when a picture is wrong
 

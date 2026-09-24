@@ -954,32 +954,10 @@ impl Cdrom {
     /// there is no disc here to try it against, so the fallback matters, and
     /// the fallback is to report the disc as licensed rather than to reject it.
     fn region(&mut self) -> Option<[u8; 4]> {
-        self.disc.as_ref()?;
-        let mut raw = [0u8; RAW_SECTOR];
-        let mut text = String::new();
-        for lba in 4..16 {
-            let ok = match self.disc.as_mut() {
-                Some(d) => d.read_sector(lba, &mut raw),
-                None => false,
-            };
-            if !ok {
-                break;
-            }
-            text.extend(raw.iter().map(|&b| {
-                if b.is_ascii_graphic() || b == b' ' {
-                    b as char
-                } else {
-                    ' '
-                }
-            }));
-        }
-        Some(if text.contains("Europe") {
-            *b"SCEE"
-        } else if text.contains("Japan") {
-            *b"SCEI"
-        } else {
-            *b"SCEA"
-        })
+        let disc = self.disc.as_mut()?;
+        // A disc with no readable system area still reports as licensed, the
+        // fallback this has always had.
+        Some(disc.licence_region().unwrap_or(disc::Region::America).scex())
     }
 
     fn test(&mut self) {

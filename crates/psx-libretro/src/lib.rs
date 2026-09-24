@@ -26,7 +26,7 @@ use std::path::PathBuf;
 use std::ptr;
 
 use psx_core::sio::button;
-use psx_core::disc::Disc;
+use psx_core::disc::{Disc, Region};
 use psx_core::{exe::Exe, save, Psx};
 
 // ---------------------------------------------------------------------------
@@ -135,11 +135,47 @@ const BIOS_CANDIDATES: &[&str] = &[
     "scph5500.bin",
     "scph5502.bin",
     "scph7001.bin",
+    "scph7002.bin",
     "scph1001.bin",
+    "scph1002.bin",
     "scph1000.bin",
     "psxonpsp660.bin",
     "bios.bin",
 ];
+
+/// The BIOS names for each region, best first. A console refuses a disc from
+/// another region and drops to its own shell, so a Japanese BIOS picked for an
+/// American disc does exactly that: the owner met it on 2026-09-24 with
+/// scph5500.bin alongside an American BIOS, and every game went to the BIOS
+/// screen.
+const BIOS_AMERICA: &[&str] = &["scph5501.bin", "scph7001.bin", "scph1001.bin"];
+const BIOS_EUROPE: &[&str] = &["scph5502.bin", "scph7002.bin", "scph1002.bin"];
+const BIOS_JAPAN: &[&str] = &["scph5500.bin", "scph1000.bin"];
+/// No region of their own, or unknown, so tried after the right region's and
+/// before a wrong one.
+const BIOS_NEUTRAL: &[&str] = &["psxonpsp660.bin", "bios.bin"];
+
+fn region_bios(region: Option<Region>) -> &'static [&'static str] {
+    match region {
+        Some(Region::America) => BIOS_AMERICA,
+        Some(Region::Europe) => BIOS_EUROPE,
+        Some(Region::Japan) => BIOS_JAPAN,
+        None => &[],
+    }
+}
+
+/// The order to look for a BIOS in, for a disc from `region`: that region's
+/// own names, then the neutral ones, then everything else as a last resort,
+/// because a mismatched BIOS still boots EXEs and the BIOS menu.
+fn bios_order(region: Option<Region>) -> Vec<&'static str> {
+    let mut order: Vec<&str> = region_bios(region).iter().chain(BIOS_NEUTRAL).copied().collect();
+    for name in BIOS_CANDIDATES {
+        if !order.contains(name) {
+            order.push(name);
+        }
+    }
+    order
+}
 
 // The libretro ABI is single-threaded and callback-driven, so the core's state
 // is process-global. These accessors go through raw pointers rather than taking
@@ -437,7 +473,15 @@ unsafe fn send_audio(batch: AudioSampleBatchFn, samples: &[i16]) {
 
 #[no_mangle]
 pub unsafe extern "C" fn retro_load_game(info: *const GameInfo) -> bool {
-    let Some(bios) = load_bios() else {
+    // The disc's region decides which BIOS to prefer, so look at it first.
+    let region = if info.is_null() {
+        None
+    } else {
+        content_disc_path(&*info)
+            .and_then(|p| Disc::open(std::path::Path::new(p)).ok())
+            .and_then(|mut d| d.licence_region())
+    };
+    let Some(bios) = load_bios(region) else {
         eprintln!(
             "[RustStation] no BIOS found in the frontend's system directory. \
              Expected one of: {}",
@@ -488,15 +532,8 @@ unsafe fn load_content(psx: &mut Psx, info: &GameInfo) -> bool {
         CStr::from_ptr(info.path).to_str().ok()
     };
 
-    let is_disc = path.is_some_and(|p| {
-        let p = p.to_ascii_lowercase();
-        [".cue", ".bin", ".iso", ".img"]
-            .iter()
-            .any(|ext| p.ends_with(ext))
-    });
-
-    if is_disc {
-        return match Disc::open(std::path::Path::new(path.expect("checked above"))) {
+    if let Some(disc_path) = content_disc_path(info) {
+        return match Disc::open(std::path::Path::new(disc_path)) {
             Ok(d) => {
                 psx.bus.cdrom.disc = Some(d);
                 true
@@ -561,7 +598,20 @@ pub extern "C" fn retro_get_region() -> c_uint {
 }
 
 /// Ask the frontend where its system directory is and look for a BIOS in it.
-unsafe fn load_bios() -> Option<Vec<u8>> {
+/// The content's path, if it is a disc image rather than an EXE.
+unsafe fn content_disc_path(info: &GameInfo) -> Option<&str> {
+    if info.path.is_null() {
+        return None;
+    }
+    let p = CStr::from_ptr(info.path).to_str().ok()?;
+    let lower = p.to_ascii_lowercase();
+    [".cue", ".bin", ".iso", ".img"]
+        .iter()
+        .any(|ext| lower.ends_with(ext))
+        .then_some(p)
+}
+
+unsafe fn load_bios(region: Option<Region>) -> Option<Vec<u8>> {
     let env = ENV_CB?;
     let mut dir: *const c_char = ptr::null();
     if !env(
@@ -573,12 +623,21 @@ unsafe fn load_bios() -> Option<Vec<u8>> {
     }
 
     let base = PathBuf::from(CStr::from_ptr(dir).to_string_lossy().into_owned());
-    for name in BIOS_CANDIDATES {
+    let order = bios_order(region);
+    let matching = region_bios(region).len() + BIOS_NEUTRAL.len();
+    for (rank, name) in order.iter().enumerate() {
         // Case varies between dumps; try both, since Linux and Android will not
         // do it for us.
         for candidate in [base.join(name), base.join(name.to_uppercase())] {
             if let Ok(image) = std::fs::read(&candidate) {
                 if image.len() == psx_core::bus::BIOS_SIZE {
+                    eprintln!("[RustStation] BIOS {name} for a {region:?} disc");
+                    if region.is_some() && rank >= matching {
+                        eprintln!(
+                            "[RustStation] {name} is not a {region:?} BIOS: \
+                             expect the BIOS shell rather than the game"
+                        );
+                    }
                     return Some(image);
                 }
                 eprintln!(
@@ -686,6 +745,40 @@ pub unsafe extern "C" fn ruststation_state_token() -> *const c_char {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The case the owner hit: a Japanese BIOS and an American one side by
+    /// side, and an American disc. The old fixed order found scph5500 first.
+    #[test]
+    fn an_american_disc_prefers_an_american_bios_over_a_japanese_one() {
+        let order = bios_order(Some(Region::America));
+        let pos = |n: &str| order.iter().position(|x| *x == n).unwrap();
+        assert!(pos("scph1001.bin") < pos("scph5500.bin"));
+        assert!(pos("scph5501.bin") < pos("scph5500.bin"));
+        assert_eq!(order[0], "scph5501.bin");
+    }
+
+    #[test]
+    fn each_region_puts_its_own_bios_first_and_keeps_every_name() {
+        for (region, first) in [
+            (Region::Europe, "scph5502.bin"),
+            (Region::Japan, "scph5500.bin"),
+        ] {
+            let order = bios_order(Some(region));
+            assert_eq!(order[0], first);
+            // Region-free names come before any other region's.
+            let neutral = order.iter().position(|x| *x == "psxonpsp660.bin").unwrap();
+            assert!(neutral < order.iter().position(|x| *x == "scph5501.bin").unwrap());
+        }
+        // Nothing is ever dropped: a wrong-region BIOS is a last resort, not
+        // a refusal, because it still boots EXEs and the BIOS menu.
+        for region in [None, Some(Region::America), Some(Region::Europe), Some(Region::Japan)] {
+            let order = bios_order(region);
+            assert_eq!(order.len(), BIOS_CANDIDATES.len(), "{region:?}");
+            for name in BIOS_CANDIDATES {
+                assert!(order.contains(name), "{region:?} lost {name}");
+            }
+        }
+    }
 
     /// The name this core would print for a pad bit. Independent of both tables
     /// under test, so it can referee between them.

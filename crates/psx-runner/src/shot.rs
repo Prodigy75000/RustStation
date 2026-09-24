@@ -328,6 +328,17 @@ fn main() -> ExitCode {
             ""
         }
     );
+    let (rh, rv) = psx.bus.gpu.display_ranges();
+    println!(
+        "display: start ({}, {}), x {}..{} clocks, y {}..{} lines, mode {:02X}",
+        psx.bus.gpu.display_start().0,
+        psx.bus.gpu.display_start().1,
+        rh & 0xFFF,
+        (rh >> 12) & 0xFFF,
+        rv & 0x3FF,
+        (rv >> 10) & 0x3FF,
+        psx.bus.gpu.display_mode_bits(),
+    );
     println!(
         "gpu: {} textured primitives, {} oversized discarded",
         psx.bus.gpu.textured_primitives, psx.bus.gpu.oversized_primitives

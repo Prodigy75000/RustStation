@@ -106,7 +106,58 @@ pub struct Disc {
     pub label: String,
 }
 
+/// Which market a disc was licensed for, from the text in its system area.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Region {
+    America,
+    Europe,
+    Japan,
+}
+
+impl Region {
+    /// The four `SCEx` bytes `GetID` reports for this region.
+    pub fn scex(self) -> [u8; 4] {
+        match self {
+            Region::America => *b"SCEA",
+            Region::Europe => *b"SCEE",
+            Region::Japan => *b"SCEI",
+        }
+    }
+}
+
 impl Disc {
+    /// The region the disc's licence text names: sectors 4 to 15 of the
+    /// system area carry "Licensed by Sony Computer Entertainment" followed by
+    /// America, Europe or Inc. (Japan). `None` for a disc with no readable
+    /// system area; a disc that has one but names neither Europe nor Japan is
+    /// taken as American, which is the licence text's own default form.
+    pub fn licence_region(&mut self) -> Option<Region> {
+        let mut raw = [0u8; RAW_SECTOR];
+        let mut text = String::new();
+        for lba in 4..16 {
+            if !self.read_sector(lba, &mut raw) {
+                break;
+            }
+            text.extend(raw.iter().map(|&b| {
+                if b.is_ascii_graphic() || b == b' ' {
+                    b as char
+                } else {
+                    ' '
+                }
+            }));
+        }
+        if text.is_empty() {
+            return None;
+        }
+        Some(if text.contains("Europe") {
+            Region::Europe
+        } else if text.contains("Japan") {
+            Region::Japan
+        } else {
+            Region::America
+        })
+    }
+
     /// Load from a `.cue`, or from a bare `.bin`/`.iso` with no cue beside it.
     pub fn open(path: &Path) -> Result<Disc, String> {
         let ext = path
