@@ -36,6 +36,7 @@ use psx_core::{exe::Exe, save, Psx};
 const RETRO_API_VERSION: c_uint = 1;
 
 const RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY: c_uint = 9;
+const RETRO_ENVIRONMENT_GET_LOG_INTERFACE: c_uint = 27;
 const RETRO_ENVIRONMENT_SET_PIXEL_FORMAT: c_uint = 10;
 const RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS: c_uint = 11;
 
@@ -230,8 +231,62 @@ pub unsafe extern "C" fn retro_set_input_state(cb: InputStateFn) {
     INPUT_STATE_CB = Some(cb);
 }
 
+// ---------------------------------------------------------------------------
+// Logging
+// ---------------------------------------------------------------------------
+
+/// The frontend's printf-style logger, from GET_LOG_INTERFACE.
+type LogPrintfFn = unsafe extern "C" fn(level: c_uint, fmt: *const c_char, ...);
+
+#[repr(C)]
+struct LogCallback {
+    log: Option<LogPrintfFn>,
+}
+
+static mut LOG_CB: Option<LogPrintfFn> = None;
+
+const LOG_INFO: c_uint = 1;
+const LOG_WARN: c_uint = 2;
+const LOG_ERROR: c_uint = 3;
+
+/// Ask the frontend for its logger. Without one, lines go to stderr, which
+/// on Android goes nowhere: every line below was invisible on a phone until
+/// this existed, including which BIOS file the core had loaded.
+unsafe fn fetch_logger() {
+    if (*ptr::addr_of!(LOG_CB)).is_some() {
+        return;
+    }
+    let Some(env) = ENV_CB else { return };
+    let mut cb = LogCallback { log: None };
+    if env(
+        RETRO_ENVIRONMENT_GET_LOG_INTERFACE,
+        &mut cb as *mut LogCallback as *mut c_void,
+    ) {
+        LOG_CB = cb.log;
+    }
+}
+
+/// One line to the frontend's log, or to stderr when there is none. Passed
+/// through "%s" so a percent sign in a path cannot become a format directive.
+fn log_line(level: c_uint, line: &str) {
+    // SAFETY: LOG_CB is set once from the frontend and only read after.
+    match unsafe { LOG_CB } {
+        Some(log) => {
+            let text = CString::new(format!("[RustStation] {line}\n").replace('\0', " "))
+                .expect("NULs replaced");
+            unsafe { log(level, c"%s".as_ptr(), text.as_ptr()) };
+        }
+        None => eprintln!("[RustStation] {line}"),
+    }
+}
+
+macro_rules! info { ($($t:tt)*) => { log_line(LOG_INFO, &format!($($t)*)) } }
+macro_rules! warn { ($($t:tt)*) => { log_line(LOG_WARN, &format!($($t)*)) } }
+macro_rules! error { ($($t:tt)*) => { log_line(LOG_ERROR, &format!($($t)*)) } }
+
 #[no_mangle]
 pub unsafe extern "C" fn retro_init() {
+    fetch_logger();
     FRAMEBUFFER = vec![0u32; FB_WIDTH * FB_HEIGHT];
     SILENCE = vec![0i16; SAMPLES_PER_FRAME * 2];
 }
@@ -481,10 +536,10 @@ pub unsafe extern "C" fn retro_load_game(info: *const GameInfo) -> bool {
             .and_then(|p| Disc::open(std::path::Path::new(p)).ok())
             .and_then(|mut d| d.licence_region())
     };
+    fetch_logger();
     let Some(bios) = load_bios(region) else {
-        eprintln!(
-            "[RustStation] no BIOS found in the frontend's system directory. \
-             Expected one of: {}",
+        error!(
+            "no BIOS found in the frontend's system directory. Expected one of: {}",
             BIOS_CANDIDATES.join(", ")
         );
         return false;
@@ -493,7 +548,7 @@ pub unsafe extern "C" fn retro_load_game(info: *const GameInfo) -> bool {
     let mut psx = match Psx::new(bios) {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("[RustStation] {e}");
+            error!("{e}");
             return false;
         }
     };
@@ -509,7 +564,7 @@ pub unsafe extern "C" fn retro_load_game(info: *const GameInfo) -> bool {
             RETRO_ENVIRONMENT_SET_PIXEL_FORMAT,
             &mut fmt as *mut c_uint as *mut c_void,
         ) {
-            eprintln!("[RustStation] frontend refused XRGB8888");
+            error!("frontend refused XRGB8888");
             return false;
         }
     }
@@ -539,7 +594,7 @@ unsafe fn load_content(psx: &mut Psx, info: &GameInfo) -> bool {
                 true
             }
             Err(e) => {
-                eprintln!("[RustStation] {e}");
+                error!("{e}");
                 false
             }
         };
@@ -557,12 +612,12 @@ unsafe fn load_content(psx: &mut Psx, info: &GameInfo) -> bool {
                 &owned
             }
             Err(e) => {
-                eprintln!("[RustStation] cannot read {p}: {e}");
+                error!("cannot read {p}: {e}");
                 return false;
             }
         }
     } else {
-        eprintln!("[RustStation] content has neither a path nor data");
+        error!("content has neither a path nor data");
         return false;
     };
 
@@ -572,7 +627,7 @@ unsafe fn load_content(psx: &mut Psx, info: &GameInfo) -> bool {
             true
         }
         Err(e) => {
-            eprintln!("[RustStation] {e}");
+            error!("{e}");
             false
         }
     }
@@ -623,6 +678,7 @@ unsafe fn load_bios(region: Option<Region>) -> Option<Vec<u8>> {
     }
 
     let base = PathBuf::from(CStr::from_ptr(dir).to_string_lossy().into_owned());
+    info!("looking for a BIOS in {}", base.display());
     let order = bios_order(region);
     let matching = region_bios(region).len() + BIOS_NEUTRAL.len();
     for (rank, name) in order.iter().enumerate() {
@@ -631,17 +687,20 @@ unsafe fn load_bios(region: Option<Region>) -> Option<Vec<u8>> {
         for candidate in [base.join(name), base.join(name.to_uppercase())] {
             if let Ok(image) = std::fs::read(&candidate) {
                 if image.len() == psx_core::bus::BIOS_SIZE {
-                    eprintln!("[RustStation] BIOS {name} for a {region:?} disc");
+                    info!(
+                        "BIOS {} for a {region:?} disc",
+                        candidate.display()
+                    );
                     if region.is_some() && rank >= matching {
-                        eprintln!(
-                            "[RustStation] {name} is not a {region:?} BIOS: \
-                             expect the BIOS shell rather than the game"
+                        warn!(
+                            "{name} is not a {region:?} BIOS: expect the BIOS shell \
+                             rather than the game"
                         );
                     }
                     return Some(image);
                 }
-                eprintln!(
-                    "[RustStation] ignoring {}: {} bytes, expected {}",
+                warn!(
+                    "ignoring {}: {} bytes, expected {}",
                     candidate.display(),
                     image.len(),
                     psx_core::bus::BIOS_SIZE
