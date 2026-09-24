@@ -26,9 +26,15 @@ pub enum ExeError {
     TooShort(usize),
     BadMagic,
     /// The header's `size` field disagrees with the file it came in.
-    SizeMismatch { declared: u32, available: usize },
+    SizeMismatch {
+        declared: u32,
+        available: usize,
+    },
     /// The load destination is not in the 2 MB of RAM, or wraps past the end.
-    BadDestination { dest: u32, size: u32 },
+    BadDestination {
+        dest: u32,
+        size: u32,
+    },
 }
 
 impl core::fmt::Display for ExeError {

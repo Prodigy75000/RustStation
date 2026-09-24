@@ -100,7 +100,13 @@ impl Decoder {
         }
     }
 
-    fn portion_4bit(&mut self, portion: &[u8], stereo: bool, left: &mut Vec<i16>, right: &mut Vec<i16>) {
+    fn portion_4bit(
+        &mut self,
+        portion: &[u8],
+        stereo: bool,
+        left: &mut Vec<i16>,
+        right: &mut Vec<i16>,
+    ) {
         for blk in 0..4 {
             for nibble in 0..2 {
                 // Stereo: the low nibble is left, the high one right. Mono: the
@@ -115,14 +121,24 @@ impl Decoder {
                     let s = predict(t << 12, shift, filter, old, older);
                     older = old;
                     old = s;
-                    if ch == 0 { left.push(s as i16) } else { right.push(s as i16) }
+                    if ch == 0 {
+                        left.push(s as i16)
+                    } else {
+                        right.push(s as i16)
+                    }
                 }
                 self.prev[ch] = [old as i16, older as i16];
             }
         }
     }
 
-    fn portion_8bit(&mut self, portion: &[u8], stereo: bool, left: &mut Vec<i16>, right: &mut Vec<i16>) {
+    fn portion_8bit(
+        &mut self,
+        portion: &[u8],
+        stereo: bool,
+        left: &mut Vec<i16>,
+        right: &mut Vec<i16>,
+    ) {
         for blk in 0..4 {
             let ch = if stereo { blk & 1 } else { 0 };
             let header = portion[4 + blk];
@@ -133,7 +149,11 @@ impl Decoder {
                 let s = predict(t << 8, shift, filter, old, older);
                 older = old;
                 old = s;
-                if ch == 0 { left.push(s as i16) } else { right.push(s as i16) }
+                if ch == 0 {
+                    left.push(s as i16)
+                } else {
+                    right.push(s as i16)
+                }
             }
             self.prev[ch] = [old as i16, older as i16];
         }
@@ -203,11 +223,19 @@ mod tests {
     fn coding_info_bits() {
         assert_eq!(
             Coding::from_byte(0x01),
-            Coding { stereo: true, half_rate: false, eight_bit: false }
+            Coding {
+                stereo: true,
+                half_rate: false,
+                eight_bit: false
+            }
         );
         assert_eq!(
             Coding::from_byte(0x14),
-            Coding { stereo: false, half_rate: true, eight_bit: true }
+            Coding {
+                stereo: false,
+                half_rate: true,
+                eight_bit: true
+            }
         );
         // The reserved values are neither.
         assert!(!Coding::from_byte(0x02).stereo);
@@ -257,7 +285,10 @@ mod tests {
         assert_eq!(predict(0x100 << 4, 0, 2, 0, 0), 0x1000);
         let s1 = predict(0, 0, 2, 0x1000, 0);
         assert_eq!(s1, (0x1000 * 115 + 32) >> 6);
-        assert_eq!(predict(0, 0, 2, s1, 0x1000), (s1 * 115 - 0x1000 * 52 + 32) >> 6);
+        assert_eq!(
+            predict(0, 0, 2, s1, 0x1000),
+            (s1 * 115 - 0x1000 * 52 + 32) >> 6
+        );
         // And the shift: 13 to 15 behave as 9.
         assert_eq!(shift_filter(0x2D), (9, 2));
     }

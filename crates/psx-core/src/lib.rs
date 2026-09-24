@@ -43,6 +43,7 @@ pub mod dma;
 pub mod exe;
 pub mod gpu;
 pub mod gte;
+mod idle;
 pub mod irq;
 pub mod mdec;
 pub mod save;
@@ -52,7 +53,7 @@ pub mod timers;
 pub mod video;
 pub mod xa;
 
-use bus::{Bus, BiosError};
+use bus::{BiosError, Bus};
 use cpu::Cpu;
 use exe::Exe;
 
@@ -73,6 +74,17 @@ pub struct Psx {
     pending_exe: Option<Exe>,
     /// Set once `pending_exe` has been applied.
     pub exe_loaded: bool,
+    /// Where the game's vsync wait loop starts, once one has been seen. Host
+    /// side and never serialized: it only decides where [`idle`] looks, and
+    /// the skip it enables is exact, so a state is the same with or without it.
+    idle_head: Option<u32>,
+    /// Steps since the last look for a wait loop.
+    idle_probe: u32,
+    /// Loop iterations skipped rather than stepped. Diagnostic.
+    pub idle_skipped: u64,
+    /// Whether to skip the vsync wait at all. On by default; off is for
+    /// checking that it changes nothing.
+    pub skip_idle: bool,
 }
 
 /// Physical addresses of the BIOS A/B/C function call gates. Emulated code
@@ -94,6 +106,10 @@ impl Psx {
             tty: Vec::new(),
             pending_exe: None,
             exe_loaded: false,
+            idle_head: None,
+            idle_probe: 0,
+            idle_skipped: 0,
+            skip_idle: true,
         })
     }
 
@@ -130,9 +146,38 @@ impl Psx {
         self.cpu.step(&mut self.bus);
     }
 
-    /// Execute up to `n` instructions.
+    /// Run for `n` master-clock cycles.
+    ///
+    /// Every instruction costs one cycle, so this is also `n` instructions,
+    /// except where the game is spinning in its vsync wait: those iterations
+    /// are skipped in bulk by [`idle`], which lands on exactly the state that
+    /// stepping them would have, and ends on the same cycle.
     pub fn run(&mut self, n: u64) {
-        for _ in 0..n {
+        let target = self.bus.cycle + n;
+        while self.bus.cycle < target {
+            if !self.skip_idle {
+                self.step();
+                continue;
+            }
+            if Some(self.cpu.pc) == self.idle_head {
+                match idle::skip(self, target) {
+                    Some(k) => {
+                        self.idle_skipped += k;
+                        if k > 0 {
+                            continue;
+                        }
+                    }
+                    // The code there is no longer the loop.
+                    None => self.idle_head = None,
+                }
+            }
+            self.idle_probe += 1;
+            if self.idle_probe >= idle::PROBE_INTERVAL {
+                self.idle_probe = 0;
+                if self.idle_head.is_none() {
+                    self.idle_head = idle::find(self);
+                }
+            }
             self.step();
         }
     }

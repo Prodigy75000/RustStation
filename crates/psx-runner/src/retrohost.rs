@@ -216,7 +216,9 @@ unsafe extern "C" fn environment(cmd: c_uint, data: *mut c_void) -> bool {
             let list = &mut *std::ptr::addr_of_mut!(DESCRIPTORS);
             list.clear();
             while !(*p).description.is_null() {
-                let text = CStr::from_ptr((*p).description).to_string_lossy().into_owned();
+                let text = CStr::from_ptr((*p).description)
+                    .to_string_lossy()
+                    .into_owned();
                 if (*p).port == 0 {
                     list.push(((*p).id, text));
                 }
@@ -229,7 +231,12 @@ unsafe extern "C" fn environment(cmd: c_uint, data: *mut c_void) -> bool {
     }
 }
 
-unsafe extern "C" fn video_refresh(data: *const c_void, width: c_uint, height: c_uint, pitch: usize) {
+unsafe extern "C" fn video_refresh(
+    data: *const c_void,
+    width: c_uint,
+    height: c_uint,
+    pitch: usize,
+) {
     FRAMES_SEEN += 1;
     if data.is_null() {
         return; // A duplicated frame. Legal, and means "reuse the last one".
@@ -327,7 +334,10 @@ fn run() -> Result<(), String> {
             }
             "--hold" => {
                 i += 1;
-                let name = args.get(i).ok_or("--hold needs a button")?.to_ascii_lowercase();
+                let name = args
+                    .get(i)
+                    .ok_or("--hold needs a button")?
+                    .to_ascii_lowercase();
                 let (_, id) = BUTTON_NAMES
                     .iter()
                     .find(|(n, _)| *n == name)
@@ -338,7 +348,10 @@ fn run() -> Result<(), String> {
             "--save-at" => {
                 let n = args.get(i + 1).ok_or("--save-at needs FRAME PATH")?;
                 let path = args.get(i + 2).ok_or("--save-at needs FRAME PATH")?;
-                save_at = Some((n.parse().map_err(|e| format!("--save-at: {e}"))?, path.clone()));
+                save_at = Some((
+                    n.parse().map_err(|e| format!("--save-at: {e}"))?,
+                    path.clone(),
+                ));
                 i += 2;
             }
             other => return Err(format!("unknown argument {other}")),
@@ -353,30 +366,73 @@ fn run() -> Result<(), String> {
 
     let handle = unsafe { dl::open(&core_path) }?;
 
-    let api_version = entry!(handle, "retro_api_version", unsafe extern "C" fn() -> c_uint);
-    let set_environment =
-        entry!(handle, "retro_set_environment", unsafe extern "C" fn(unsafe extern "C" fn(c_uint, *mut c_void) -> bool));
-    let set_video =
-        entry!(handle, "retro_set_video_refresh", unsafe extern "C" fn(unsafe extern "C" fn(*const c_void, c_uint, c_uint, usize)));
-    let set_audio =
-        entry!(handle, "retro_set_audio_sample", unsafe extern "C" fn(unsafe extern "C" fn(i16, i16)));
-    let set_audio_batch =
-        entry!(handle, "retro_set_audio_sample_batch", unsafe extern "C" fn(unsafe extern "C" fn(*const i16, usize) -> usize));
-    let set_input_poll =
-        entry!(handle, "retro_set_input_poll", unsafe extern "C" fn(unsafe extern "C" fn()));
-    let set_input_state =
-        entry!(handle, "retro_set_input_state", unsafe extern "C" fn(unsafe extern "C" fn(c_uint, c_uint, c_uint, c_uint) -> i16));
-    let get_system_info =
-        entry!(handle, "retro_get_system_info", unsafe extern "C" fn(*mut SystemInfo));
-    let get_av_info =
-        entry!(handle, "retro_get_system_av_info", unsafe extern "C" fn(*mut SystemAvInfo));
+    let api_version = entry!(
+        handle,
+        "retro_api_version",
+        unsafe extern "C" fn() -> c_uint
+    );
+    let set_environment = entry!(
+        handle,
+        "retro_set_environment",
+        unsafe extern "C" fn(unsafe extern "C" fn(c_uint, *mut c_void) -> bool)
+    );
+    let set_video = entry!(
+        handle,
+        "retro_set_video_refresh",
+        unsafe extern "C" fn(unsafe extern "C" fn(*const c_void, c_uint, c_uint, usize))
+    );
+    let set_audio = entry!(
+        handle,
+        "retro_set_audio_sample",
+        unsafe extern "C" fn(unsafe extern "C" fn(i16, i16))
+    );
+    let set_audio_batch = entry!(
+        handle,
+        "retro_set_audio_sample_batch",
+        unsafe extern "C" fn(unsafe extern "C" fn(*const i16, usize) -> usize)
+    );
+    let set_input_poll = entry!(
+        handle,
+        "retro_set_input_poll",
+        unsafe extern "C" fn(unsafe extern "C" fn())
+    );
+    let set_input_state = entry!(
+        handle,
+        "retro_set_input_state",
+        unsafe extern "C" fn(unsafe extern "C" fn(c_uint, c_uint, c_uint, c_uint) -> i16)
+    );
+    let get_system_info = entry!(
+        handle,
+        "retro_get_system_info",
+        unsafe extern "C" fn(*mut SystemInfo)
+    );
+    let get_av_info = entry!(
+        handle,
+        "retro_get_system_av_info",
+        unsafe extern "C" fn(*mut SystemAvInfo)
+    );
     let init = entry!(handle, "retro_init", unsafe extern "C" fn());
-    let load_game = entry!(handle, "retro_load_game", unsafe extern "C" fn(*const GameInfo) -> bool);
+    let load_game = entry!(
+        handle,
+        "retro_load_game",
+        unsafe extern "C" fn(*const GameInfo) -> bool
+    );
     let retro_run = entry!(handle, "retro_run", unsafe extern "C" fn());
-    let retro_serialize_size = entry!(handle, "retro_serialize_size", unsafe extern "C" fn() -> usize);
-    let retro_serialize =
-        entry!(handle, "retro_serialize", unsafe extern "C" fn(*mut c_void, usize) -> bool);
-    let serialize_size = entry!(handle, "retro_serialize_size", unsafe extern "C" fn() -> usize);
+    let retro_serialize_size = entry!(
+        handle,
+        "retro_serialize_size",
+        unsafe extern "C" fn() -> usize
+    );
+    let retro_serialize = entry!(
+        handle,
+        "retro_serialize",
+        unsafe extern "C" fn(*mut c_void, usize) -> bool
+    );
+    let serialize_size = entry!(
+        handle,
+        "retro_serialize_size",
+        unsafe extern "C" fn() -> usize
+    );
     let unload = entry!(handle, "retro_unload_game", unsafe extern "C" fn());
     let deinit = entry!(handle, "retro_deinit", unsafe extern "C" fn());
 
@@ -391,7 +447,10 @@ fn run() -> Result<(), String> {
         let version = CStr::from_ptr(info.library_version).to_string_lossy();
         let exts = CStr::from_ptr(info.valid_extensions).to_string_lossy();
         println!("core: {name} {version}");
-        println!("      extensions {exts}, need_fullpath {}", info.need_fullpath);
+        println!(
+            "      extensions {exts}, need_fullpath {}",
+            info.need_fullpath
+        );
 
         set_environment(environment);
         set_video(video_refresh);
@@ -454,7 +513,11 @@ fn run() -> Result<(), String> {
             println!(
                 "      {} input descriptors; holding {}",
                 descs.len(),
-                if held.is_empty() { "nothing".to_string() } else { held.join(", ") }
+                if held.is_empty() {
+                    "nothing".to_string()
+                } else {
+                    held.join(", ")
+                }
             );
         }
 
@@ -466,7 +529,13 @@ fn run() -> Result<(), String> {
         const MASH: [&str; 8] = ["start", "b", "b", "down", "b", "a", "right", "start"];
         let mash_ids: Vec<u32> = MASH
             .iter()
-            .map(|n| BUTTON_NAMES.iter().find(|(m, _)| m == n).map(|(_, id)| *id).expect("a name in BUTTON_NAMES"))
+            .map(|n| {
+                BUTTON_NAMES
+                    .iter()
+                    .find(|(m, _)| m == n)
+                    .map(|(_, id)| *id)
+                    .expect("a name in BUTTON_NAMES")
+            })
             .collect();
 
         // Every retro_run is timed. A frame that takes seconds is how a hang
@@ -489,7 +558,10 @@ fn run() -> Result<(), String> {
                         return Err("retro_serialize refused".into());
                     }
                     std::fs::write(path, &buf).map_err(|e| format!("{path}: {e}"))?;
-                    println!("saved the state before frame {n} to {path} (held {:#06x})", *std::ptr::addr_of!(HELD));
+                    println!(
+                        "saved the state before frame {n} to {path} (held {:#06x})",
+                        *std::ptr::addr_of!(HELD)
+                    );
                 }
             }
             let t = std::time::Instant::now();

@@ -62,7 +62,10 @@ fn main() -> ExitCode {
             }
             "--steps" => {
                 i += 1;
-                run_steps = args.get(i).and_then(|s| s.parse().ok()).unwrap_or(run_steps);
+                run_steps = args
+                    .get(i)
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(run_steps);
             }
             "--boot-steps" => {
                 i += 1;
@@ -371,10 +374,7 @@ fn grade(tty: &str) -> (Verdict, String) {
 
     match (passes, fails) {
         (_, f) if f > 0 => (Verdict::Fail, format!("{f} failed, {passes} passed")),
-        (0, _) => (
-            Verdict::Ungraded,
-            "printed no pass/fail lines".to_string(),
-        ),
+        (0, _) => (Verdict::Ungraded, "printed no pass/fail lines".to_string()),
         _ => (Verdict::Pass, format!("{passes} passed")),
     }
 }

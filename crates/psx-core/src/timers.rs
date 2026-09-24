@@ -490,10 +490,7 @@ mod tests {
     fn repeat_mode_fires_every_lap() {
         let (mut t, mut irq) = timers();
         t.write(0x08, 4);
-        t.write(
-            0x04,
-            (RESET_ON_TARGET | IRQ_ON_TARGET | IRQ_REPEAT) as u32,
-        );
+        t.write(0x04, (RESET_ON_TARGET | IRQ_ON_TARGET | IRQ_REPEAT) as u32);
 
         t.run(5, &no_ticks(), (false, false), &mut irq);
         assert_eq!(irq.stat(), 1 << irq::TIMER0);

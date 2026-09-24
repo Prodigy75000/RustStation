@@ -574,7 +574,11 @@ mod tests {
 
         sio.run(1, &mut irq);
         assert_ne!(sio.status() & (1 << 9), 0, "STAT bit 9");
-        assert_ne!(sio.status() & (1 << 7), 0, "/ACK reads 1 while the line is low");
+        assert_ne!(
+            sio.status() & (1 << 7),
+            0,
+            "/ACK reads 1 while the line is low"
+        );
         assert_ne!(irq.stat() & (1 << irq::CONTROLLER), 0);
     }
 
@@ -587,7 +591,11 @@ mod tests {
         sio.run(PAD_ACK_DELAY, &mut irq);
 
         assert_ne!(sio.status() & (1 << 9), 0, "the port still latches it");
-        assert_eq!(irq.stat() & (1 << irq::CONTROLLER), 0, "the CPU does not see it");
+        assert_eq!(
+            irq.stat() & (1 << irq::CONTROLLER),
+            0,
+            "the CPU does not see it"
+        );
     }
 
     #[test]

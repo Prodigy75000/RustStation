@@ -287,10 +287,7 @@ impl Gte {
         }
         self.sxy[0] = self.sxy[1];
         self.sxy[1] = self.sxy[2];
-        self.sxy[2] = (
-            x.clamp(-0x400, 0x3FF) as i16,
-            y.clamp(-0x400, 0x3FF) as i16,
-        );
+        self.sxy[2] = (x.clamp(-0x400, 0x3FF) as i16, y.clamp(-0x400, 0x3FF) as i16);
     }
 
     // ---- the divider ----------------------------------------------------
@@ -715,11 +712,7 @@ impl Gte {
             self.rt[1][1] as i64,
             self.rt[2][2] as i64,
         );
-        let (i1, i2, i3) = (
-            self.ir[1] as i64,
-            self.ir[2] as i64,
-            self.ir[3] as i64,
-        );
+        let (i1, i2, i3) = (self.ir[1] as i64, self.ir[2] as i64, self.ir[3] as i64);
         self.set_mac_and_ir(1, d2 * i3 - d3 * i2, sf, lm);
         self.set_mac_and_ir(2, d3 * i1 - d1 * i3, sf, lm);
         self.set_mac_and_ir(3, d1 * i2 - d2 * i1, sf, lm);
@@ -748,8 +741,7 @@ impl Gte {
     }
 
     fn avsz4(&mut self) {
-        let sum =
-            self.sz[0] as i64 + self.sz[1] as i64 + self.sz[2] as i64 + self.sz[3] as i64;
+        let sum = self.sz[0] as i64 + self.sz[1] as i64 + self.sz[2] as i64 + self.sz[3] as i64;
         let value = self.zsf4 as i64 * sum;
         self.set_mac0(value);
         self.set_otz(value >> 12);
@@ -800,13 +792,11 @@ impl Gte {
         // still have to match.
         if cv == 2 {
             for (row, mrow) in matrix.iter().enumerate() {
-                let partial =
-                    ((self.fc[row] as i64) << 12) + mrow[0] as i64 * vector[0] as i64;
+                let partial = ((self.fc[row] as i64) << 12) + mrow[0] as i64 * vector[0] as i64;
                 self.set_mac(row + 1, partial, sf);
                 self.set_ir(row + 1, self.mac[row + 1], false);
 
-                let full = mrow[1] as i64 * vector[1] as i64
-                    + mrow[2] as i64 * vector[2] as i64;
+                let full = mrow[1] as i64 * vector[1] as i64 + mrow[2] as i64 * vector[2] as i64;
                 let m = self.set_mac(row + 1, full, sf);
                 self.set_ir(row + 1, m, lm);
             }
@@ -1015,17 +1005,8 @@ impl Gte {
         u32,
     ) {
         (
-            self.v,
-            self.rgbc,
-            self.otz,
-            self.ir,
-            self.sxy,
-            self.sz,
-            self.rgb,
-            self.res1,
-            self.mac,
-            self.lzcs,
-            self.lzcr,
+            self.v, self.rgbc, self.otz, self.ir, self.sxy, self.sz, self.rgb, self.res1, self.mac,
+            self.lzcs, self.lzcr,
         )
     }
 
@@ -1397,7 +1378,11 @@ mod tests {
 
         // Summing the row as one expression sees neither: the total is in range.
         assert_ne!(g.flag & (1 << F_MAC_POS[0]), 0, "MAC1 overflowed positive");
-        assert_ne!(g.flag & (1 << F_MAC_NEG[0]), 0, "and negative, same command");
+        assert_ne!(
+            g.flag & (1 << F_MAC_NEG[0]),
+            0,
+            "and negative, same command"
+        );
     }
 
     #[test]

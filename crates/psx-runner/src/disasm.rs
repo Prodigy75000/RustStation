@@ -51,7 +51,9 @@ pub fn disasm(word: u32, pc: u32) -> String {
     let sa = (word >> 6) & 31;
     let funct = word & 63;
     // A branch displacement counts from the delay slot, not from the branch.
-    let target = pc.wrapping_add(4).wrapping_add(((word as i16 as i32) << 2) as u32);
+    let target = pc
+        .wrapping_add(4)
+        .wrapping_add(((word as i16 as i32) << 2) as u32);
     let jump = (pc.wrapping_add(4) & 0xF000_0000) | ((word & 0x03FF_FFFF) << 2);
 
     match op {

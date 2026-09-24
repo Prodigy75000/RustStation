@@ -318,8 +318,7 @@ impl Disc {
                             )))
                         }
                     };
-                    let file = current_file
-                        .ok_or_else(|| err("TRACK before any FILE".into()))?;
+                    let file = current_file.ok_or_else(|| err("TRACK before any FILE".into()))?;
                     if let Some(t) = pending.take() {
                         tracks.push(t);
                     }
@@ -464,7 +463,10 @@ fn sectors_in(lengths: &[u64], tracks: &[Track], file: usize) -> u32 {
         .find(|t| t.file == file)
         .map(|t| t.sector_size)
         .unwrap_or(RAW_SECTOR);
-    lengths.get(file).map(|l| (l / size as u64) as u32).unwrap_or(0)
+    lengths
+        .get(file)
+        .map(|l| (l / size as u64) as u32)
+        .unwrap_or(0)
 }
 
 /// `FILE "name with spaces.bin" BINARY` needs quote-aware splitting.
@@ -706,8 +708,7 @@ mod tests {
 
     #[test]
     fn quoted_filenames_with_spaces_survive_splitting() {
-        let words: Vec<String> =
-            split_cue("FILE \"Some Game (USA).bin\" BINARY").collect();
+        let words: Vec<String> = split_cue("FILE \"Some Game (USA).bin\" BINARY").collect();
         assert_eq!(words[1], "Some Game (USA).bin");
         assert_eq!(words[2], "BINARY");
     }

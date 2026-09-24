@@ -11,11 +11,11 @@
 //! `mask_region` below is the whole of "virtual memory" here. See
 //! `docs/MEMORY_MAP.md`.
 
+use crate::cdrom::Cdrom;
 use crate::dma::Dma;
 use crate::gpu::Gpu;
 use crate::irq::{self, Irq};
 use crate::mdec::Mdec;
-use crate::cdrom::Cdrom;
 use crate::sio::Sio;
 use crate::spu::Spu;
 use crate::timers::Timers;
@@ -249,7 +249,8 @@ impl Bus {
             // lands at the end of a sync window; running the SPU first means
             // the samples before that point never see it, which is what a sync
             // on every cycle would give too.
-            self.spu.run_with_cd(elapsed, &mut || self.cdrom.pop_audio());
+            self.spu
+                .run_with_cd(elapsed, &mut || self.cdrom.pop_audio());
             self.spu_irq();
             self.cdrom.run(elapsed, &mut self.irq);
             self.synced_to = self.cycle;

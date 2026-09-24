@@ -372,7 +372,11 @@ impl Mdec {
     // ---- the decode ------------------------------------------------------
 
     fn start_macroblock(&mut self) {
-        self.block_index = if self.monochrome() { BLOCK_Y1 } else { BLOCK_CR };
+        self.block_index = if self.monochrome() {
+            BLOCK_Y1
+        } else {
+            BLOCK_CR
+        };
         self.start_block();
     }
 
@@ -710,7 +714,11 @@ impl Mdec {
     #[allow(clippy::type_complexity)]
     pub(crate) fn progress(&self) -> ([u16; 3], [u32; 6], [i8; 6 * BLOCK], [u32; OUT_MAX]) {
         (
-            [self.remaining, self.coeff_pos as u16, self.block_index as u16],
+            [
+                self.remaining,
+                self.coeff_pos as u16,
+                self.block_index as u16,
+            ],
             [
                 self.quant_pos as u32,
                 self.scale_pos as u32,
@@ -980,7 +988,11 @@ mod tests {
         assert_eq!(m.status() & 0xFFFF, 0xFFFF, "idle reads all ones");
         m.write_command(0x6000_0000); // load the scale table, 32 words
         assert_eq!(m.status() & 0xFFFF, 31);
-        assert_ne!(m.status() & (1 << 29), 0, "and the chip reports itself busy");
+        assert_ne!(
+            m.status() & (1 << 29),
+            0,
+            "and the chip reports itself busy"
+        );
     }
 
     /// A reset empties the FIFOs and abandons the command, and **keeps the

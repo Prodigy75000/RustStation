@@ -69,9 +69,10 @@ fn main() -> ExitCode {
     };
 
     if let Some(path) = &exe_path {
-        match std::fs::read(path).map_err(|e| e.to_string()).and_then(|img| {
-            Exe::parse(&img).map_err(|e| e.to_string())
-        }) {
+        match std::fs::read(path)
+            .map_err(|e| e.to_string())
+            .and_then(|img| Exe::parse(&img).map_err(|e| e.to_string()))
+        {
             Ok(exe) => {
                 println!(
                     "exe {path}: pc={:#010X} dest={:#010X} text={} bytes",

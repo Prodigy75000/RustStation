@@ -59,7 +59,10 @@ fn trace_region() -> Option<(i32, i32, i32, i32)> {
     static REGION: std::sync::OnceLock<Option<(i32, i32, i32, i32)>> = std::sync::OnceLock::new();
     *REGION.get_or_init(|| {
         let spec = std::env::var("RSTA_GPU_REGION").ok()?;
-        let n: Vec<i32> = spec.split(',').filter_map(|s| s.trim().parse().ok()).collect();
+        let n: Vec<i32> = spec
+            .split(',')
+            .filter_map(|s| s.trim().parse().ok())
+            .collect();
         match n[..] {
             [x0, y0, x1, y1] => Some((x0, y0, x1, y1)),
             _ => None,
@@ -429,9 +432,7 @@ impl Gpu {
             2 => self.texture_window,
             3 => (self.draw_left as u32 & 0x3FF) | ((self.draw_top as u32 & 0x3FF) << 10),
             4 => (self.draw_right as u32 & 0x3FF) | ((self.draw_bottom as u32 & 0x3FF) << 10),
-            5 => {
-                (self.draw_offset_x as u32 & 0x7FF) | ((self.draw_offset_y as u32 & 0x7FF) << 11)
-            }
+            5 => (self.draw_offset_x as u32 & 0x7FF) | ((self.draw_offset_y as u32 & 0x7FF) << 11),
             _ => self.gpuread_latch,
         }
     }
@@ -540,7 +541,6 @@ impl Gpu {
         let width = ((words[2] & 0xFFFF).wrapping_sub(1) & 0x3FF) + 1;
         let height = (((words[2] >> 16) & 0xFFFF).wrapping_sub(1) & 0x1FF) + 1;
 
-
         self.transfer = Transfer {
             x,
             y,
@@ -625,7 +625,11 @@ impl Gpu {
     }
 
     fn fill_rectangle(&mut self, words: &[u32]) {
-        let colour = to_rgb555(words[0] & 0xFF, (words[0] >> 8) & 0xFF, (words[0] >> 16) & 0xFF);
+        let colour = to_rgb555(
+            words[0] & 0xFF,
+            (words[0] >> 8) & 0xFF,
+            (words[0] >> 16) & 0xFF,
+        );
         // The fill works in 16-pixel units and ignores the drawing area, the
         // mask bit and semi-transparency entirely. It is the one primitive
         // that writes VRAM without going through the usual pixel path.
@@ -989,16 +993,38 @@ impl Gpu {
                     "gpu: tri ({},{}) ({},{}) ({},{}) rgb {:02X}{:02X}{:02X} {:02X}{:02X}{:02X} \
                      {:02X}{:02X}{:02X} uv ({},{}) ({},{}) ({},{}) gouraud {gouraud} semi {semi} \
                      tex {:?}",
-                    a.x, a.y, b.x, b.y, c.x, c.y,
-                    a.r, a.g, a.b, b.r, b.g, b.b, c.r, c.g, c.b,
-                    a.u, a.v, b.u, b.v, c.u, c.v,
+                    a.x,
+                    a.y,
+                    b.x,
+                    b.y,
+                    c.x,
+                    c.y,
+                    a.r,
+                    a.g,
+                    a.b,
+                    b.r,
+                    b.g,
+                    b.b,
+                    c.r,
+                    c.g,
+                    c.b,
+                    a.u,
+                    a.v,
+                    b.u,
+                    b.v,
+                    c.u,
+                    c.v,
                     tex.map(|t| (t.page_x, t.page_y, t.depth, t.clut_x, t.clut_y, t.raw)),
                 );
             }
         }
 
         // Work in a consistent winding so the edge tests share a sign.
-        let (a, b, c) = if orient(a, b, c) < 0 { (a, c, b) } else { (a, b, c) };
+        let (a, b, c) = if orient(a, b, c) < 0 {
+            (a, c, b)
+        } else {
+            (a, b, c)
+        };
         let area = orient(a, b, c);
         if area == 0 {
             return;
@@ -1241,8 +1267,7 @@ impl Gpu {
     /// half-initialised GPU has, falls back to the nominal height. The top is
     /// clamped to what a frontend has been told to expect.
     pub fn display_height(&self) -> u32 {
-        let interlaced_480 =
-            self.display_mode & (1 << 2) != 0 && self.display_mode & (1 << 5) != 0;
+        let interlaced_480 = self.display_mode & (1 << 2) != 0 && self.display_mode & (1 << 5) != 0;
         let y1 = self.display_range_v & 0x3FF;
         let y2 = (self.display_range_v >> 10) & 0x3FF;
         let lines = if y2 > y1 { y2 - y1 } else { 240 };
@@ -1336,7 +1361,11 @@ impl Gpu {
         let byte = |b: usize| {
             let b = b & (VRAM_WIDTH * 2 - 1);
             let half = row[b / 2];
-            if b & 1 == 0 { half as u8 } else { (half >> 8) as u8 }
+            if b & 1 == 0 {
+                half as u8
+            } else {
+                (half >> 8) as u8
+            }
         };
         let base = self.display_start_x as usize * 2 + x * 3;
         let (r, g, b) = (byte(base), byte(base + 1), byte(base + 2));
@@ -1661,7 +1690,10 @@ mod tests {
         let near = px(&g, 1, 1);
         let far = px(&g, 30, 30);
         assert_ne!(near, far, "the shading did not vary across the triangle");
-        assert!(near & 0x1F > (far & 0x1F), "red should fall off from the origin");
+        assert!(
+            near & 0x1F > (far & 0x1F),
+            "red should fall off from the origin"
+        );
     }
 
     #[test]
@@ -1949,7 +1981,10 @@ mod tests {
             g.gp0(0x1234_5678);
         }
         g.gp1(0x0100_0000);
-        assert_eq!(g.abandoned_transfers, 1, "a completed transfer is not abandoned");
+        assert_eq!(
+            g.abandoned_transfers, 1,
+            "a completed transfer is not abandoned"
+        );
 
         // And a reset with no transfer at all is not abandoned either, which is
         // the case that fires constantly if the port check is dropped.
@@ -1989,7 +2024,7 @@ mod tests {
         assert_eq!(g.standard(), Standard::Pal);
     }
 
-#[test]
+    #[test]
     fn a_24bit_display_reads_three_bytes_a_pixel() {
         let mut g = Gpu::new();
         g.gp1(0x0300_0000); // display on

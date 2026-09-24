@@ -627,6 +627,16 @@ check (CD Test 04h/05h, now answered with zero SCEx counts). It reaches its
 menu here and **attract-mode gameplay on the tablet**, confirmed on device.
 Dino Crisis had the same check and now reaches its in-engine intro.
 
+**Crash Bandicoot ran about 20% slow on the phone** while the counter read 60.
+Not a timing error: the emulated console was on time (30 game frames and 59
+to 60 vblanks per second). The tablet simply needed 17.0 ms per frame, 22 ms
+at worst, to emulate the owner's gameplay state, against 16.7 ms. Twisted Metal
+2's gameplay needed 14.0 ms, which is why it ran at full speed. 64% of
+Crash's instructions were its vsync wait, which is now skipped exactly
+(`docs/notes/TIMING.md`): **9.8 ms on the tablet**, Twisted Metal 2 6.7 ms.
+`shot --pace` prints vblanks, flips and wall time per second of frames, and
+the ARM build of `shot` runs on the tablet over adb.
+
 Where Beetle is still ahead: reverb, analog sticks, memory cards, multi-disc,
 PAL timing, and years of compatibility across far more than 31 discs.
 

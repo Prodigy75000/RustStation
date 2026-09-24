@@ -122,7 +122,11 @@ fn a_masked_source_never_interrupts() {
     ]);
 
     psx.run(NTSC_FRAME_CYCLES * 3);
-    assert_ne!(psx.bus.irq.stat() & 1, 0, "VBlank should still have latched");
+    assert_ne!(
+        psx.bus.irq.stat() & 1,
+        0,
+        "VBlank should still have latched"
+    );
     assert_ne!(
         psx.cpu.pc, BEV_HANDLER,
         "a masked source must not reach the CPU"
@@ -309,7 +313,10 @@ fn an_interrupt_does_not_swallow_a_gte_command() {
         psx.cpu.gte.unknown_commands, 1,
         "the GTE command was skipped by the interrupt"
     );
-    assert_ne!(psx.cpu.pc, BEV_HANDLER, "the interrupt should have deferred");
+    assert_ne!(
+        psx.cpu.pc, BEV_HANDLER,
+        "the interrupt should have deferred"
+    );
 
     // It is only deferred, not lost.
     psx.step();

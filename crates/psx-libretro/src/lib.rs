@@ -25,8 +25,8 @@ use std::ffi::{c_char, c_uint, c_void, CStr, CString};
 use std::path::PathBuf;
 use std::ptr;
 
-use psx_core::sio::button;
 use psx_core::disc::{Disc, Region};
+use psx_core::sio::button;
 use psx_core::{exe::Exe, save, Psx};
 
 // ---------------------------------------------------------------------------
@@ -169,7 +169,11 @@ fn region_bios(region: Option<Region>) -> &'static [&'static str] {
 /// own names, then the neutral ones, then everything else as a last resort,
 /// because a mismatched BIOS still boots EXEs and the BIOS menu.
 fn bios_order(region: Option<Region>) -> Vec<&'static str> {
-    let mut order: Vec<&str> = region_bios(region).iter().chain(BIOS_NEUTRAL).copied().collect();
+    let mut order: Vec<&str> = region_bios(region)
+        .iter()
+        .chain(BIOS_NEUTRAL)
+        .copied()
+        .collect();
     for name in BIOS_CANDIDATES {
         if !order.contains(name) {
             order.push(name);
@@ -274,8 +278,7 @@ fn log_line(level: c_uint, line: &str) {
         // No core name on this path: the frontend stamps its own
         // ("[RustStation/core]" in the Android host), and adding ours doubled it.
         Some(log) => {
-            let text = CString::new(format!("{line}\n").replace('\0', " "))
-                .expect("NULs replaced");
+            let text = CString::new(format!("{line}\n").replace('\0', " ")).expect("NULs replaced");
             unsafe { log(level, c"%s".as_ptr(), text.as_ptr()) };
         }
         None => eprintln!("[RustStation] {line}"),
@@ -689,10 +692,7 @@ unsafe fn load_bios(region: Option<Region>) -> Option<Vec<u8>> {
         for candidate in [base.join(name), base.join(name.to_uppercase())] {
             if let Ok(image) = std::fs::read(&candidate) {
                 if image.len() == psx_core::bus::BIOS_SIZE {
-                    info!(
-                        "BIOS {} for a {region:?} disc",
-                        candidate.display()
-                    );
+                    info!("BIOS {} for a {region:?} disc", candidate.display());
                     if region.is_some() && rank >= matching {
                         warn!(
                             "{name} is not a {region:?} BIOS: expect the BIOS shell \
@@ -832,7 +832,12 @@ mod tests {
         }
         // Nothing is ever dropped: a wrong-region BIOS is a last resort, not
         // a refusal, because it still boots EXEs and the BIOS menu.
-        for region in [None, Some(Region::America), Some(Region::Europe), Some(Region::Japan)] {
+        for region in [
+            None,
+            Some(Region::America),
+            Some(Region::Europe),
+            Some(Region::Japan),
+        ] {
             let order = bios_order(region);
             assert_eq!(order.len(), BIOS_CANDIDATES.len(), "{region:?}");
             for name in BIOS_CANDIDATES {
@@ -875,7 +880,11 @@ mod tests {
     fn the_retropad_ids_map_to_the_conventional_face_buttons() {
         assert_eq!(PAD_MAP[0], button::CROSS, "id 0 is B, the south button");
         assert_eq!(PAD_MAP[1], button::SQUARE, "id 1 is Y, the west button");
-        assert_eq!(PAD_MAP[2], button::SELECT, "id 2 is SELECT, not a face button");
+        assert_eq!(
+            PAD_MAP[2],
+            button::SELECT,
+            "id 2 is SELECT, not a face button"
+        );
         assert_eq!(PAD_MAP[3], button::START);
         assert_eq!(PAD_MAP[8], button::CIRCLE, "id 8 is A, the east button");
         assert_eq!(PAD_MAP[9], button::TRIANGLE, "id 9 is X, the north button");
@@ -914,7 +923,11 @@ mod tests {
                 name_of(PAD_MAP[index]),
                 "the label for RetroPad id {id} does not match what it drives"
             );
-            assert_eq!(*text.last().expect("non-empty"), 0, "labels are NUL-terminated");
+            assert_eq!(
+                *text.last().expect("non-empty"),
+                0,
+                "labels are NUL-terminated"
+            );
         }
     }
 

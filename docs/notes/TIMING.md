@@ -125,6 +125,28 @@ Clock sources: timer 0 from the system clock or the dot clock, timer 1 from the
 system clock or HBlank, timer 2 from the system clock or the system clock over
 8. Two of those come out of the video timing, which is why it had to land first.
 
+## Skipping the vsync wait
+
+Most games end each frame spinning on a RAM counter that only the vblank
+handler moves. In Crash Bandicoot's gameplay that is 64% of all instructions,
+and on the test tablet it was the difference between 17 ms per frame (over the
+16.7 ms budget, so the phone played about 20% slow) and 9.8 ms.
+
+`crates/psx-core/src/idle.rs` recognises one such loop, the vsync wait with a
+stack timeout that Crash, Spyro and Twisted Metal 2 share, by its exact
+instructions. At its head, with nothing in flight and no interrupt waiting, it
+runs every whole pass that fits before the next scheduled device event: the
+clock goes up by 14 per pass, the timeout word down by one, and nothing else
+changes. That is exactly what stepping them does, so it is an optimisation and
+not an approximation. The unit tests check it byte for byte through a save
+state, and so did 20 seconds of each of Crash, Twisted Metal 2 and Spyro
+(`shot --noidle --save-end` against the default). `Psx::run` now counts
+cycles rather than steps, which is the same number while every instruction
+costs one.
+
+Other games wait with other loops (Tekken 3 and Metal Slug X skip nothing).
+They are cheap to add one at a time, each with the same byte-identical check.
+
 ## Open questions
 
 1. **Instruction cycle costs.** Every instruction is one cycle

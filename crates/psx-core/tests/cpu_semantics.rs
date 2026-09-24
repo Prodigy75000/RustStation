@@ -31,7 +31,11 @@ fn branch_delay_slot_executes() {
     psx.run(3);
 
     assert_eq!(psx.cpu.reg(1), 7, "delay slot did not execute");
-    assert_eq!(psx.cpu.reg(2), 0, "instruction after the delay slot was not skipped");
+    assert_eq!(
+        psx.cpu.reg(2),
+        0,
+        "instruction after the delay slot was not skipped"
+    );
     assert_eq!(psx.cpu.reg(3), 11, "branch landed in the wrong place");
 }
 
@@ -61,7 +65,11 @@ fn load_delay_slot_hides_the_result() {
     ]);
     psx.run(7);
 
-    assert_eq!(psx.cpu.reg(2), 0x0BBB, "delay slot saw the loaded value too early");
+    assert_eq!(
+        psx.cpu.reg(2),
+        0x0BBB,
+        "delay slot saw the loaded value too early"
+    );
     assert_eq!(psx.cpu.reg(3), 0x0AAA, "loaded value never landed");
 }
 
@@ -98,10 +106,10 @@ fn explicit_write_in_the_delay_slot_beats_the_load() {
 #[test]
 fn a_second_load_cancels_the_first() {
     let mut psx = machine(&[
-        addiu(4, 0, 0),      // $4 = 0
-        addiu(7, 0, 16),     // $7 = 16
+        addiu(4, 0, 0),  // $4 = 0
+        addiu(7, 0, 16), // $7 = 16
         lui(5, 0x0AAA),
-        sw(5, 0, 4),         // [0]  = 0x0AAA0000
+        sw(5, 0, 4), // [0]  = 0x0AAA0000
         lui(8, 0x0BBB),
         sw(8, 0, 7),         // [16] = 0x0BBB0000
         addiu(1, 0, 0x0123), // $1 = 0x123, the value that must survive
@@ -236,7 +244,11 @@ fn divide_by_zero_returns_hardware_junk() {
     ]);
     psx.run(6);
 
-    assert_eq!(psx.cpu.reg(3), 0xFFFF_FFFF, "lo should be -1 for a non-negative dividend");
+    assert_eq!(
+        psx.cpu.reg(3),
+        0xFFFF_FFFF,
+        "lo should be -1 for a non-negative dividend"
+    );
     assert_eq!(psx.cpu.reg(4), 5, "hi should be the dividend");
 }
 
@@ -252,10 +264,22 @@ fn addi_traps_on_overflow_and_addiu_does_not() {
     ]);
     psx.run(3);
 
-    assert_eq!(psx.cpu.reg(2), 0, "the trapping add must not write its target");
+    assert_eq!(
+        psx.cpu.reg(2),
+        0,
+        "the trapping add must not write its target"
+    );
     assert_eq!(psx.cpu.pc, 0xBFC0_0180, "did not vector to the BEV handler");
-    assert_eq!((psx.cpu.cop0.cause >> 2) & 0x1F, 0xC, "wrong exception code");
-    assert_eq!(psx.cpu.cop0.epc, RESET + 8, "EPC does not name the faulting add");
+    assert_eq!(
+        (psx.cpu.cop0.cause >> 2) & 0x1F,
+        0xC,
+        "wrong exception code"
+    );
+    assert_eq!(
+        psx.cpu.cop0.epc,
+        RESET + 8,
+        "EPC does not name the faulting add"
+    );
 
     let mut psx = machine(&[lui(1, 0x7FFF), ori(1, 1, 0xFFFF), addiu(2, 1, 1), nop()]);
     psx.run(4);
@@ -288,11 +312,11 @@ fn isolated_cache_swallows_stores() {
     let mut psx = machine(&[
         addiu(4, 0, 0),
         addiu(1, 0, 0x0777),
-        lui(5, 0x0001),  // r5 = 0x00010000, Status Isc
-        mtc0(5, 12),     // SR = Isc (BEV cleared too, which is fine here)
-        sw(1, 0, 4),     // dropped
-        mtc0(0, 12),     // SR = 0
-        lw(2, 0, 4),     // reads RAM
+        lui(5, 0x0001), // r5 = 0x00010000, Status Isc
+        mtc0(5, 12),    // SR = Isc (BEV cleared too, which is fine here)
+        sw(1, 0, 4),    // dropped
+        mtc0(0, 12),    // SR = 0
+        lw(2, 0, 4),    // reads RAM
         nop(),
         nop(),
     ]);
@@ -316,18 +340,25 @@ fn coprocessor_usability_follows_the_status_bit() {
     let mut psx = machine(&[COP1_OP, nop()]);
     psx.run(1);
     assert_eq!(psx.cpu.pc, 0xBFC0_0180);
-    assert_eq!((psx.cpu.cop0.cause >> 2) & 0x1F, 0xB, "expected CoprocessorError");
+    assert_eq!(
+        (psx.cpu.cop0.cause >> 2) & 0x1F,
+        0xB,
+        "expected CoprocessorError"
+    );
 
     // CU1 set (Status bit 29): accepted, and execution simply continues.
-    let mut psx = machine(&[
-        lui(5, 0x2000),
-        mtc0(5, 12),
-        COP1_OP,
-        nop(),
-    ]);
+    let mut psx = machine(&[lui(5, 0x2000), mtc0(5, 12), COP1_OP, nop()]);
     psx.run(4);
-    assert_eq!(psx.cpu.pc, RESET + 0x10, "a usable coprocessor must not trap");
-    assert_eq!((psx.cpu.cop0.cause >> 2) & 0x1F, 0, "no exception should have been taken");
+    assert_eq!(
+        psx.cpu.pc,
+        RESET + 0x10,
+        "a usable coprocessor must not trap"
+    );
+    assert_eq!(
+        (psx.cpu.cop0.cause >> 2) & 0x1F,
+        0,
+        "no exception should have been taken"
+    );
 }
 
 /// An unrecognised COP0 sub-opcode is ignored, not a reserved-instruction trap.

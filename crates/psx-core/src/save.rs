@@ -350,8 +350,7 @@ fn write_cpu(w: &mut Writer, cpu: &Cpu) {
     w.u32(lzcs);
     w.u32(lzcr);
 
-    let (rt, tr, llm, bk, lcm, fc, of, h, dqa, dqb, zsf3, zsf4, flag) =
-        cpu.gte.control_parts();
+    let (rt, tr, llm, bk, lcm, fc, of, h, dqa, dqb, zsf3, zsf4, flag) = cpu.gte.control_parts();
     for m in [&rt, &llm, &lcm] {
         for row in m {
             for c in row {
@@ -397,8 +396,7 @@ fn write_bus(w: &mut Writer, b: &Bus) {
         Standard::Ntsc => 0,
         Standard::Pal => 1,
     });
-    let (dot_in_line, line, clock_frac, dot_frac, dot_divider, in_vblank, frames) =
-        b.video.parts();
+    let (dot_in_line, line, clock_frac, dot_frac, dot_divider, in_vblank, frames) = b.video.parts();
     w.u64(dot_in_line);
     w.u32(line);
     w.u64(clock_frac);
@@ -880,7 +878,9 @@ fn read_mdec(r: &mut Reader, m: &mut mdec::Mdec) -> Option<()> {
     for v in out.iter_mut() {
         *v = r.u32()?;
     }
-    m.restore(flags, quant, scale, coeffs, counters, positions, blocks, out);
+    m.restore(
+        flags, quant, scale, coeffs, counters, positions, blocks, out,
+    );
     Some(())
 }
 
@@ -1115,7 +1115,8 @@ mod tests {
         psx.bus.store32(0x1F80_1814, 0x0800_0001); // 320x240 NTSC
         psx.bus.store32(0x1F80_1814, 0x0300_0000); // display on
         psx.bus.store32(0x1F80_1810, 0xE300_0000); // drawing area top-left
-        psx.bus.store32(0x1F80_1810, 0xE400_0000 | (255 << 10) | 511);
+        psx.bus
+            .store32(0x1F80_1810, 0xE400_0000 | (255 << 10) | 511);
         psx.bus.store32(0x1F80_1810, 0xE500_0000 | (3 << 11) | 7); // offset
         psx.bus.store32(0x1F80_1810, 0x3000_00FF); // gouraud triangle
         psx.bus.store32(0x1F80_1810, 0);
@@ -1210,7 +1211,6 @@ mod tests {
 
         psx.bus.store8(0x1F80_1802, 0x42); // a parameter for a command not yet sent
 
-
         // The SPU: control set, and samples pushed through the transfer port so
         // sound RAM is not half a megabyte of zeroes. Same reasoning as the
         // disc above; a region that is entirely zero cannot show a reordering.
@@ -1224,7 +1224,11 @@ mod tests {
         // A second block behind it, flagged loop start, end and repeat, so a
         // voice that reaches it sets ENDX and then stays there.
         for i in 0..8u32 {
-            let v = if i == 0 { 0x0721 } else { 0x9A5C ^ (i * 0x0F0F) };
+            let v = if i == 0 {
+                0x0721
+            } else {
+                0x9A5C ^ (i * 0x0F0F)
+            };
             psx.bus.store16(0x1F80_1DA8, v as u16);
         }
 
@@ -1265,11 +1269,13 @@ mod tests {
         psx.bus.store32(0x1F80_1824, 0x6000_0000); // both DMA requests enabled
         psx.bus.store32(0x1F80_1820, 0x4000_0001); // load quant tables, colour
         for i in 0..32u32 {
-            psx.bus.store32(0x1F80_1820, 0x0102_0304u32.wrapping_mul(i + 1));
+            psx.bus
+                .store32(0x1F80_1820, 0x0102_0304u32.wrapping_mul(i + 1));
         }
         psx.bus.store32(0x1F80_1820, 0x6000_0000); // load the IDCT scale table
         for i in 0..32u32 {
-            psx.bus.store32(0x1F80_1820, 0x0040_0020u32.wrapping_add(i * 0x11));
+            psx.bus
+                .store32(0x1F80_1820, 0x0040_0020u32.wrapping_add(i * 0x11));
         }
         // Decode, 15-bit output, bit 15 set. Two blocks' worth of run-length
         // data and no end-of-block for the second, so it stops mid-block.

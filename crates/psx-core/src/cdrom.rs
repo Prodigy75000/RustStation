@@ -719,7 +719,9 @@ impl Cdrom {
             self.playing = false;
             return;
         };
-        let here = d.track_at(lba).map(|t| (t.number, t.mode == disc::TrackMode::Audio, t.start_lba));
+        let here = d
+            .track_at(lba)
+            .map(|t| (t.number, t.mode == disc::TrackMode::Audio, t.start_lba));
         let mut raw = [0u8; RAW_SECTOR];
         let Some((track, audio, start)) = here.filter(|_| d.read_sector(lba, &mut raw)) else {
             // Off the end of the disc: the motor stops and INT4 says so.
@@ -957,7 +959,11 @@ impl Cdrom {
         let disc = self.disc.as_mut()?;
         // A disc with no readable system area still reports as licensed, the
         // fallback this has always had.
-        Some(disc.licence_region().unwrap_or(disc::Region::America).scex())
+        Some(
+            disc.licence_region()
+                .unwrap_or(disc::Region::America)
+                .scex(),
+        )
     }
 
     fn test(&mut self) {
@@ -1022,11 +1028,7 @@ impl Cdrom {
         self.irq_flags = r.irq;
 
         if trace_enabled() {
-            eprintln!(
-                "cdrom int{} {:02x?}",
-                r.irq,
-                &r.data[..r.len as usize]
-            );
+            eprintln!("cdrom int{} {:02x?}", r.irq, &r.data[..r.len as usize]);
         }
 
         for i in 1..PENDING_MAX {
@@ -1095,8 +1097,18 @@ impl Cdrom {
                         frames.push(if mute { [0, 0] } else { f })
                     });
                     if trace_enabled() {
-                        let peak = frames.iter().map(|f| f[0].unsigned_abs().max(f[1].unsigned_abs())).max().unwrap_or(0);
-                        eprintln!("cdrom xa decode {:?} ci={:02x} sub={:02x?} frames={} peak={peak}", coding, self.sector[7], &self.sector[4..8], frames.len());
+                        let peak = frames
+                            .iter()
+                            .map(|f| f[0].unsigned_abs().max(f[1].unsigned_abs()))
+                            .max()
+                            .unwrap_or(0);
+                        eprintln!(
+                            "cdrom xa decode {:?} ci={:02x} sub={:02x?} frames={} peak={peak}",
+                            coding,
+                            self.sector[7],
+                            &self.sector[4..8],
+                            frames.len()
+                        );
                     }
                     for f in frames {
                         self.push_audio(f);
@@ -1440,7 +1452,6 @@ mod tests {
         );
     }
 
-
     // ---- with a disc in the drive ---------------------------------------
 
     /// A synthetic disc whose every sector carries its own number, so a read
@@ -1529,7 +1540,11 @@ mod tests {
         issue(&mut c, 0x03, &[]);
         let (code, reply) = take(&mut c, &mut irq);
         assert_eq!(code, INT3_ACK, "Play is acknowledged, not refused");
-        assert_ne!(reply[0] & STAT_PLAYING, 0, "and the drive says it is playing");
+        assert_ne!(
+            reply[0] & STAT_PLAYING,
+            0,
+            "and the drive says it is playing"
+        );
         assert_eq!(c.unknown_commands, 0);
 
         issue(&mut c, 0x09, &[]); // Pause
@@ -1554,7 +1569,11 @@ mod tests {
         issue(&mut c, 0x19, &[0x05]);
         let (code, reply) = take(&mut c, &mut irq);
         assert_eq!(code, INT3_ACK);
-        assert_eq!(reply, [0, 0], "no strings counted, as on an unmodified console");
+        assert_eq!(
+            reply,
+            [0, 0],
+            "no strings counted, as on an unmodified console"
+        );
     }
 
     #[test]
@@ -1608,7 +1627,11 @@ mod tests {
         c.write(0, 0);
         c.write(3, 0x80);
         let header: Vec<u8> = (0..12).map(|_| c.pop_data()).collect();
-        assert_eq!(header[0], disc::lba_to_msf_bcd(5)[0], "started at the header");
+        assert_eq!(
+            header[0],
+            disc::lba_to_msf_bcd(5)[0],
+            "started at the header"
+        );
 
         // Software may set the bit again while it is still working through the
         // sector. Hardware ignores that; only an empty FIFO reloads.
@@ -1626,7 +1649,11 @@ mod tests {
             c.pop_data();
         }
         c.write(3, 0x80);
-        assert_eq!(c.pop_data(), disc::lba_to_msf_bcd(5)[0], "back at the header");
+        assert_eq!(
+            c.pop_data(),
+            disc::lba_to_msf_bcd(5)[0],
+            "back at the header"
+        );
     }
 
     #[test]
@@ -1734,7 +1761,11 @@ mod tests {
         assert_eq!(first, INT3_ACK);
         let (second, data) = take(&mut c, &mut irq);
         assert_eq!(second, INT2_COMPLETE, "not the empty-tray error");
-        assert_eq!(&data[4..8], b"SCEA", "the default when no region is stamped");
+        assert_eq!(
+            &data[4..8],
+            b"SCEA",
+            "the default when no region is stamped"
+        );
     }
 
     #[test]
@@ -1879,7 +1910,6 @@ mod tests {
         assert_eq!(c.xa_sectors, 0);
     }
 
-
     // ---- CD audio ----------------------------------------------------------
 
     /// A disc whose second track is audio: 20 sectors of data, then 20 of
@@ -1912,12 +1942,20 @@ mod tests {
         assert_eq!(code, INT3_ACK);
         let queued = c.audio_queued();
         c.run(SECTOR_CYCLES, &mut irq);
-        assert_eq!(c.audio_queued() - queued, CDDA_FRAMES, "one sector, 588 frames");
+        assert_eq!(
+            c.audio_queued() - queued,
+            CDDA_FRAMES,
+            "one sector, 588 frames"
+        );
         assert_eq!(c.cdda_sectors as usize, 1 + queued / CDDA_FRAMES);
 
         // Default volume is unity, straight through.
         let first = c.pop_audio();
-        assert_eq!(first, [0, -20], "sample 0 of track 2's first sector, LBA 20");
+        assert_eq!(
+            first,
+            [0, -20],
+            "sample 0 of track 2's first sector, LBA 20"
+        );
         assert_eq!(c.pop_audio(), [1, -20]);
     }
 
@@ -1962,7 +2000,11 @@ mod tests {
         assert_eq!(code, INT1_DATA);
         assert_eq!(report.len(), 8);
         assert_eq!(report[1], 0x02, "track 2");
-        assert_eq!(&report[3..6], &disc::lba_to_msf_bcd(20), "absolute time on frame 20");
+        assert_eq!(
+            &report[3..6],
+            &disc::lba_to_msf_bcd(20),
+            "absolute time on frame 20"
+        );
         // Frame 30 is the next report, and is relative: 80h on the seconds.
         let (code, report) = take(&mut c, &mut irq);
         assert_eq!(code, INT1_DATA);
@@ -1999,7 +2041,7 @@ mod tests {
         c.write(2, 0x10); // R to L, an eighth
         assert_eq!(c.pop_audio(), [1000, -2000], "not applied yet");
         c.write(3, 0x20); // ADPCTL: apply
-        // Left: 1000 + -2000 / 8. Right: -2000 / 4 + 1000 / 2.
+                          // Left: 1000 + -2000 / 8. Right: -2000 / 4 + 1000 / 2.
         assert_eq!(c.pop_audio(), [750, 0]);
         // Mute silences the output without draining any less.
         c.muted = true;
@@ -2077,7 +2119,11 @@ mod tests {
             c.run(c.sector_cycles(), &mut irq);
         }
         assert_eq!(c.xa_sectors, 4, "all four kept by the drive");
-        assert_eq!(c.audio_queued(), 2 * 2352, "but only channel 1's two decoded");
+        assert_eq!(
+            c.audio_queued(),
+            2 * 2352,
+            "but only channel 1's two decoded"
+        );
         assert_eq!(c.irq_flags, 0, "and none reported to software");
     }
 
@@ -2091,7 +2137,11 @@ mod tests {
         let _ = take(&mut c, &mut irq);
         c.run(c.sector_cycles(), &mut irq);
         assert_eq!(c.irq_flags, 0, "a real-time audio sector is not data");
-        assert_eq!(c.audio_queued(), 0, "and with XA off it is not audio either");
+        assert_eq!(
+            c.audio_queued(),
+            0,
+            "and with XA off it is not audio either"
+        );
     }
 
     #[test]

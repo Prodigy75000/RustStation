@@ -275,7 +275,8 @@ impl Video {
 
     /// Rounds up: the first CPU cycle by which the video clocks have elapsed.
     fn cpu_cycles_for_video_cycles_ceil(&self, video_cycles: u64) -> u64 {
-        self.cpu_cycles_remaining(video_cycles).div_ceil(GPU_CLOCK_NUM)
+        self.cpu_cycles_remaining(video_cycles)
+            .div_ceil(GPU_CLOCK_NUM)
     }
 
     #[allow(clippy::too_many_arguments)]

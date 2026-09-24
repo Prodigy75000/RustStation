@@ -1198,8 +1198,16 @@ mod tests {
             frozen: false,
         };
         let mut c = 0;
-        assert_eq!(envelope(0x4000, &mut c, r), 0x4000 + (7 << 11), "below 0x6000, full rate");
-        assert_eq!(envelope(0x6001, &mut c, r), 0x6001 + (7 << 9), "above it, a quarter");
+        assert_eq!(
+            envelope(0x4000, &mut c, r),
+            0x4000 + (7 << 11),
+            "below 0x6000, full rate"
+        );
+        assert_eq!(
+            envelope(0x6001, &mut c, r),
+            0x6001 + (7 << 9),
+            "above it, a quarter"
+        );
     }
 
     #[test]
@@ -1248,7 +1256,11 @@ mod tests {
         s.write(V0 + 8, 2, 0x0000);
         s.write(V0 + 4, 2, 0x4000);
         key_on(&mut s, 0);
-        assert_eq!(s.read(V0 + 0xE, 2), 0x1000 / 8, "loop start sets the repeat address");
+        assert_eq!(
+            s.read(V0 + 0xE, 2),
+            0x1000 / 8,
+            "loop start sets the repeat address"
+        );
         for _ in 0..70 {
             s.run(CYCLES_PER_SAMPLE);
         }
@@ -1292,7 +1304,10 @@ mod tests {
         // 0x4000 through the interpolator (255/256), full envelope, voice
         // volume 0x7FFE and main 0x7FFE: just under 0x4000.
         assert!((0x3F00..0x4000).contains(&l), "left {l:#x}");
-        assert!((r * 4 - l).abs() < 16, "right is a quarter: {r:#x} vs {l:#x}");
+        assert!(
+            (r * 4 - l).abs() < 16,
+            "right is a quarter: {r:#x} vs {l:#x}"
+        );
     }
 
     #[test]

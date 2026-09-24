@@ -103,6 +103,9 @@ fn main() -> ExitCode {
     let mut state_path: Option<String> = None;
     let mut slowstep = false;
     let mut gpulist = false;
+    let mut pace = false;
+    let mut noidle = false;
+    let mut save_end: Option<String> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -148,6 +151,12 @@ fn main() -> ExitCode {
             }
             "--slowstep" => slowstep = true,
             "--gpulist" => gpulist = true,
+            "--pace" => pace = true,
+            "--noidle" => noidle = true,
+            "--save-end" => {
+                i += 1;
+                save_end = args.get(i).cloned();
+            }
             "--state" => {
                 i += 1;
                 state_path = args.get(i).cloned();
@@ -246,7 +255,12 @@ fn main() -> ExitCode {
         println!("resumed from {path} at cycle {}", psx.bus.cycle);
     }
 
-    let history = if slowstep {
+    psx.skip_idle = !noidle;
+
+    let history = if pace {
+        run_pacing(&mut psx, steps);
+        None
+    } else if slowstep {
         run_timing_steps(&mut psx, steps);
         None
     } else if let Some(addr) = watch {
@@ -277,6 +291,14 @@ fn main() -> ExitCode {
 
     if gpulist {
         report_gpu_list(&psx);
+    }
+    println!("idle: {} vsync-wait passes skipped", psx.idle_skipped);
+    if let Some(path) = &save_end {
+        if let Err(e) = std::fs::write(path, psx.save_state()) {
+            eprintln!("cannot write {path}: {e}");
+            return ExitCode::FAILURE;
+        }
+        println!("saved the final state to {path}");
     }
 
     let (width, height, pixels) = if whole_vram {
@@ -312,7 +334,10 @@ fn main() -> ExitCode {
     let mut encoder = png::Encoder::new(BufWriter::new(file), width as u32, height as u32);
     encoder.set_color(png::ColorType::Rgb);
     encoder.set_depth(png::BitDepth::Eight);
-    match encoder.write_header().and_then(|mut w| w.write_image_data(&pixels)) {
+    match encoder
+        .write_header()
+        .and_then(|mut w| w.write_image_data(&pixels))
+    {
         Ok(()) => {}
         Err(e) => {
             eprintln!("cannot encode {out_path}: {e}");
@@ -462,7 +487,10 @@ fn parse_peek(spec: &str) -> Option<(u32, u32)> {
         Some((a, c)) => (a, c.parse().ok()?),
         None => (spec, 8),
     };
-    Some((u32::from_str_radix(addr.trim_start_matches("0x"), 16).ok()?, count))
+    Some((
+        u32::from_str_radix(addr.trim_start_matches("0x"), 16).ok()?,
+        count,
+    ))
 }
 
 /// Fetch a word the way an observer would, not the way the CPU does.
@@ -758,10 +786,14 @@ fn write_vram(psx: &Psx, path: &str) {
         eprintln!("cannot write {path}");
         return;
     };
-    let mut encoder = png::Encoder::new(BufWriter::new(file), VRAM_WIDTH as u32, VRAM_HEIGHT as u32);
+    let mut encoder =
+        png::Encoder::new(BufWriter::new(file), VRAM_WIDTH as u32, VRAM_HEIGHT as u32);
     encoder.set_color(png::ColorType::Rgb);
     encoder.set_depth(png::BitDepth::Eight);
-    if let Err(e) = encoder.write_header().and_then(|mut w| w.write_image_data(&buf)) {
+    if let Err(e) = encoder
+        .write_header()
+        .and_then(|mut w| w.write_image_data(&buf))
+    {
         eprintln!("cannot encode {path}: {e}");
     }
 }
@@ -821,7 +853,13 @@ fn report_audio(audio: &[i16]) {
     let second = psx_core::spu::SAMPLE_RATE as usize * 2;
     let loud: Vec<String> = audio
         .chunks(second)
-        .map(|c| c.iter().map(|&x| (x as i32).abs()).max().unwrap_or(0).to_string())
+        .map(|c| {
+            c.iter()
+                .map(|&x| (x as i32).abs())
+                .max()
+                .unwrap_or(0)
+                .to_string()
+        })
         .collect();
     println!("audio peak per second: {}", loud.join(" "));
 }
@@ -853,6 +891,47 @@ fn write_wav(path: &str, audio: &[i16]) -> std::io::Result<()> {
 /// A frame is a fixed number of instructions, so a frame that takes seconds is
 /// one instruction handing a device an enormous amount of work, and this says
 /// which instruction and what the machine looked like when it did.
+/// --pace: run in libretro-sized frames and report, per second of frontend
+/// frames, how many vertical blanks the console saw and how many times the
+/// game moved its display start (a buffer flip, which is a game frame). Says
+/// whether a game that "feels slow" is losing vblanks or losing its own frames.
+fn run_pacing(psx: &mut Psx, steps: u64) {
+    const RETRO_FRAME: u64 = 564_480;
+    let mut last_start = psx.bus.gpu.display_start();
+    let (mut flips, mut vblanks0, mut cycles0) = (0u64, psx.bus.video.frames, psx.bus.cycle);
+    let mut frame = 0u64;
+    let mut wall = std::time::Instant::now();
+    let mut worst = std::time::Duration::ZERO;
+    while frame * RETRO_FRAME < steps {
+        let t = std::time::Instant::now();
+        psx.run(RETRO_FRAME);
+        worst = worst.max(t.elapsed());
+        frame += 1;
+        let start = psx.bus.gpu.display_start();
+        if start != last_start {
+            flips += 1;
+            last_start = start;
+        }
+        if frame % 60 == 0 {
+            println!(
+                "pace: frames {:>5}-{:>5}: {} vblanks, {} flips, {} cycles, {:.1} ms/frame, worst {:.1} ms",
+                frame - 60,
+                frame - 1,
+                psx.bus.video.frames - vblanks0,
+                flips,
+                psx.bus.cycle - cycles0,
+                wall.elapsed().as_secs_f64() * 1000.0 / 60.0,
+                worst.as_secs_f64() * 1000.0
+            );
+            wall = std::time::Instant::now();
+            worst = std::time::Duration::ZERO;
+            flips = 0;
+            vblanks0 = psx.bus.video.frames;
+            cycles0 = psx.bus.cycle;
+        }
+    }
+}
+
 fn run_timing_steps(psx: &mut Psx, steps: u64) {
     let mut worst = (std::time::Duration::ZERO, 0u32);
     for n in 0..steps {
@@ -872,8 +951,21 @@ fn run_timing_steps(psx: &mut Psx, steps: u64) {
                 dt.as_secs_f64(),
                 word.map(|w| disasm::disasm(w, pc)).unwrap_or_default()
             );
-            println!("    registers before: {}", (1..32).map(|r| format!("{}={:08X}", disasm::reg_name(r), regs_before[r as usize])).collect::<Vec<_>>().join(" "));
-            for (ch, m, b, c) in psx.bus.dma.channels.iter().enumerate().map(|(i, c)| (i, c.madr, c.bcr, c.chcr)) {
+            println!(
+                "    registers before: {}",
+                (1..32)
+                    .map(|r| format!("{}={:08X}", disasm::reg_name(r), regs_before[r as usize]))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+            for (ch, m, b, c) in psx
+                .bus
+                .dma
+                .channels
+                .iter()
+                .enumerate()
+                .map(|(i, c)| (i, c.madr, c.bcr, c.chcr))
+            {
                 println!("    dma{ch} after: madr {m:08X} bcr {b:08X} chcr {c:08X}");
             }
             for (ch, (m, b, c)) in dma_before.iter().enumerate() {
@@ -883,7 +975,11 @@ fn run_timing_steps(psx: &mut Psx, steps: u64) {
             }
         }
     }
-    println!("slowest step: {:.1} ms at pc {:08X}", worst.0.as_secs_f64() * 1e3, worst.1);
+    println!(
+        "slowest step: {:.1} ms at pc {:08X}",
+        worst.0.as_secs_f64() * 1e3,
+        worst.1
+    );
 }
 
 /// --gpulist: walk the ordering table DMA channel 2 would walk from its
@@ -906,7 +1002,11 @@ fn report_gpu_list(psx: &Psx) {
             let mut a = addr;
             for _ in 0..6 {
                 let h = word(a);
-                println!("    {a:08X}: header {h:08X} ({} words, next {:06X})", h >> 24, h & 0xFF_FFFF);
+                println!(
+                    "    {a:08X}: header {h:08X} ({} words, next {:06X})",
+                    h >> 24,
+                    h & 0xFF_FFFF
+                );
                 a = h & 0x1F_FFFC;
             }
             return;

@@ -27,10 +27,10 @@
 //! way**, which is the trap that cost the most here.
 
 use crate::cdrom::Cdrom;
-use crate::spu::Spu;
 use crate::gpu::Gpu;
 use crate::irq::{self, Irq};
 use crate::mdec::Mdec;
+use crate::spu::Spu;
 
 pub const CHANNELS: usize = 7;
 
@@ -561,13 +561,29 @@ mod tests {
         assert!(dma.write(0x64, 4, 4).is_none());
         let ch = dma.write(0x68, 4, 0x1100_0002);
         assert_eq!(ch, Some(CH_OTC));
-        Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut Spu::new(), &mut Mdec::new(), &mut irq, CH_OTC);
+        Dma::run(
+            &mut dma,
+            &mut ram,
+            &mut gpu,
+            &mut Cdrom::new(),
+            &mut Spu::new(),
+            &mut Mdec::new(),
+            &mut irq,
+            CH_OTC,
+        );
 
-        assert_eq!(read_ram(&ram, 0x1000), 0x0FFC, "should point at the previous");
+        assert_eq!(
+            read_ram(&ram, 0x1000),
+            0x0FFC,
+            "should point at the previous"
+        );
         assert_eq!(read_ram(&ram, 0x0FFC), 0x0FF8);
         assert_eq!(read_ram(&ram, 0x0FF8), 0x0FF4);
         assert_eq!(read_ram(&ram, 0x0FF4), LIST_END, "the list must terminate");
-        assert!(!dma.channels[CH_OTC].busy(), "the channel should have cleared");
+        assert!(
+            !dma.channels[CH_OTC].busy(),
+            "the channel should have cleared"
+        );
     }
 
     #[test]
@@ -583,7 +599,16 @@ mod tests {
         assert!(dma.write(0x24, 4, 3).is_none()); // three words, manual mode
         let ch = dma.write(0x28, 4, 0x0100_0201); // enable + trigger, from RAM
         assert_eq!(ch, Some(CH_GPU));
-        Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut Spu::new(), &mut Mdec::new(), &mut irq, CH_GPU);
+        Dma::run(
+            &mut dma,
+            &mut ram,
+            &mut gpu,
+            &mut Cdrom::new(),
+            &mut Spu::new(),
+            &mut Mdec::new(),
+            &mut irq,
+            CH_GPU,
+        );
 
         assert_ne!(gpu.vram[0], 0, "the fill did not reach the GPU");
     }
@@ -595,7 +620,7 @@ mod tests {
         // Node A at 0x200: one word, pointing at node B at 0x300.
         write_ram(&mut ram, 0x200, (1 << 24) | 0x300);
         write_ram(&mut ram, 0x204, 0xE300_0000); // drawing area top-left
-        // Node B: three words (a fill), then the terminator.
+                                                 // Node B: three words (a fill), then the terminator.
         write_ram(&mut ram, 0x300, (3 << 24) | LIST_END);
         write_ram(&mut ram, 0x304, 0x0200_00FF);
         write_ram(&mut ram, 0x308, 0);
@@ -605,7 +630,16 @@ mod tests {
         // Enable (bit 24), sync mode 2 (bits 9-10), from RAM (bit 0).
         let ch = dma.write(0x28, 4, 0x0100_0401);
         assert_eq!(ch, Some(CH_GPU));
-        Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut Spu::new(), &mut Mdec::new(), &mut irq, CH_GPU);
+        Dma::run(
+            &mut dma,
+            &mut ram,
+            &mut gpu,
+            &mut Cdrom::new(),
+            &mut Spu::new(),
+            &mut Mdec::new(),
+            &mut irq,
+            CH_GPU,
+        );
 
         assert_ne!(gpu.vram[0], 0, "the list's fill did not run");
     }
@@ -627,9 +661,21 @@ mod tests {
 
         assert!(dma.write(0x20, 4, 0x500).is_none());
         let _ = dma.write(0x28, 4, 0x0100_0401);
-        Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut Spu::new(), &mut Mdec::new(), &mut irq, CH_GPU);
+        Dma::run(
+            &mut dma,
+            &mut ram,
+            &mut gpu,
+            &mut Cdrom::new(),
+            &mut Spu::new(),
+            &mut Mdec::new(),
+            &mut irq,
+            CH_GPU,
+        );
 
-        assert_eq!(dma.list_nodes, 3, "the entry node and the two in the loop, once each");
+        assert_eq!(
+            dma.list_nodes, 3,
+            "the entry node and the two in the loop, once each"
+        );
         assert_eq!(dma.list_cycles, 1);
         assert_ne!(gpu.vram[0], 0, "and the fill inside the loop still ran");
         assert!(!dma.channels[CH_GPU].busy(), "the channel finishes");
@@ -643,7 +689,16 @@ mod tests {
 
         assert!(dma.write(0x20, 4, 0x400).is_none());
         let _ = dma.write(0x28, 4, 0x0100_0401);
-        Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut Spu::new(), &mut Mdec::new(), &mut irq, CH_GPU);
+        Dma::run(
+            &mut dma,
+            &mut ram,
+            &mut gpu,
+            &mut Cdrom::new(),
+            &mut Spu::new(),
+            &mut Mdec::new(),
+            &mut irq,
+            CH_GPU,
+        );
         // Reaching here at all is the assertion.
     }
 
@@ -655,15 +710,35 @@ mod tests {
 
         // Masked: no interrupt.
         let _ = dma.write(0x68, 4, 0x1100_0002);
-        Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut Spu::new(), &mut Mdec::new(), &mut irq, CH_OTC);
+        Dma::run(
+            &mut dma,
+            &mut ram,
+            &mut gpu,
+            &mut Cdrom::new(),
+            &mut Spu::new(),
+            &mut Mdec::new(),
+            &mut irq,
+            CH_OTC,
+        );
         assert_eq!(irq.stat(), 0);
 
         // Enable channel 6 and the master bit, then run again.
-        assert!(dma.write(0x74, 4, (1 << 23) | (1 << (16 + CH_OTC))).is_none());
+        assert!(dma
+            .write(0x74, 4, (1 << 23) | (1 << (16 + CH_OTC)))
+            .is_none());
         assert!(dma.write(0x60, 4, 0x1000).is_none());
         assert!(dma.write(0x64, 4, 2).is_none());
         let _ = dma.write(0x68, 4, 0x1100_0002);
-        Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut Spu::new(), &mut Mdec::new(), &mut irq, CH_OTC);
+        Dma::run(
+            &mut dma,
+            &mut ram,
+            &mut gpu,
+            &mut Cdrom::new(),
+            &mut Spu::new(),
+            &mut Mdec::new(),
+            &mut irq,
+            CH_OTC,
+        );
         assert_ne!(irq.stat() & (1 << irq::DMA), 0);
     }
 
@@ -683,7 +758,11 @@ mod tests {
         dma.control = 0; // nothing enabled
         assert!(dma.write(0x60, 4, 0x1000).is_none());
         assert!(dma.write(0x64, 4, 4).is_none());
-        assert_eq!(dma.write(0x68, 4, 0x1100_0002), None, "started while disabled");
+        assert_eq!(
+            dma.write(0x68, 4, 0x1100_0002),
+            None,
+            "started while disabled"
+        );
     }
     /// `DICR`'s interrupt enables are arranged so that one byte holds all seven
     /// of them plus the master enable, and software arms a channel by writing
@@ -709,7 +788,11 @@ mod tests {
         let after = dma.read(0x74, 4);
         assert_ne!(after & (1 << 23), 0, "the master enable survived");
         assert_ne!(after & (1 << (16 + CH_GPU)), 0, "so did the other channel");
-        assert_ne!(after & (1 << (16 + CH_CDROM)), 0, "and the new one is armed");
+        assert_ne!(
+            after & (1 << (16 + CH_CDROM)),
+            0,
+            "and the new one is armed"
+        );
     }
 
     /// A byte write cannot acknowledge flags outside the byte it wrote.
@@ -728,9 +811,21 @@ mod tests {
         assert!(dma.write(0x60, 4, 0x1000).is_none());
         assert!(dma.write(0x64, 4, 2).is_none());
         let ch = dma.write(0x68, 4, 0x1100_0002);
-        Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut Spu::new(),
-                 &mut Mdec::new(), &mut irq, ch.expect("channel 6 runs"));
-        assert_ne!(dma.read(0x74, 4) & (1 << (24 + CH_OTC)), 0, "the flag is set");
+        Dma::run(
+            &mut dma,
+            &mut ram,
+            &mut gpu,
+            &mut Cdrom::new(),
+            &mut Spu::new(),
+            &mut Mdec::new(),
+            &mut irq,
+            ch.expect("channel 6 runs"),
+        );
+        assert_ne!(
+            dma.read(0x74, 4) & (1 << (24 + CH_OTC)),
+            0,
+            "the flag is set"
+        );
 
         // Arming another channel touches bits 16..23 only.
         assert!(dma.write(0x76, 1, 0x80 | (1 << CH_GPU)).is_none());
@@ -740,5 +835,4 @@ mod tests {
             "and the flag is still set"
         );
     }
-
 }
