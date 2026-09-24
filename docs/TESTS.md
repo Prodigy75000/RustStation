@@ -637,6 +637,22 @@ Crash's instructions were its vsync wait, which is now skipped exactly
 `shot --pace` prints vblanks, flips and wall time per second of frames, and
 the ARM build of `shot` runs on the tablet over adb.
 
+**Still open, pinned by the owner: Crash Bandicoot plays about 20% slow by
+eye on the phone, and it is not performance.** The two speed-ups above (Crash's
+busy frame 19.5 ms to 14.8 on the tablet, host perf line at 60 fps) did not
+change what the owner sees. Music plays at the right speed, the counter reads
+60, and every other game tried plays at the right speed, Crash Bash, Twisted
+Metal 2 and Metal Slug X included. The spin "does not consistently spin" when
+jump and spin are pressed together. What is established: the emulated console
+is on time (60 frontend frames = 33 868 800 cycles, 59 to 60 vblanks a second)
+and Crash flips its picture 30 times a second in gameplay. So the next place to
+look is how Crash measures time or input: whether it paces movement from a
+root counter or the vblank count rather than from frames, whether the
+one-cycle-per-instruction CPU (roughly twice a real one) changes that, and
+whether the pad is read in time for a same-frame jump and spin. The quickest
+discriminator is a side-by-side against Beetle PSX on the same save state,
+timing one fixed stretch of a level in real seconds.
+
 Where Beetle is still ahead: reverb, analog sticks, memory cards, multi-disc,
 PAL timing, and years of compatibility across far more than 31 discs.
 
