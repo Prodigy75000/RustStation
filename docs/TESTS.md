@@ -559,8 +559,17 @@ instead of 6 248, both with the same picture, and Crash Bandicoot's primitive
 count moved by under 1%. Those are timing shifts from the SPU now taking sync
 points, not changes in what the games reach.
 
-What the survey does not measure is sound, and nothing here grades it. The
-recordings `shot --wav` makes are for a listener.
+What the survey does not measure is sound. The recordings `shot --wav` makes
+are for a listener, and they have had one: on 2026-09-24 the owner listened to
+30 seconds from power-on of six games and recognised every one, the boot
+sound first and then Crash Bandicoot, CTR, Mega Man X5, Metal Slug X, Spyro
+and Tekken 3, all judged to sound right. The last three exercise CD audio.
+
+That is recognition by ear, not a comparison against a console, and no
+reverb exists yet, so it says the voices, envelopes, pitch and CD paths are
+broadly right, not that they are exact. Metal Slug X is silent until about 27
+seconds; the recording measures exact zeros from 8 s to 25 s, so that is the
+game loading, not missing audio.
 
 ### What "gameplay" does and does not mean
 
