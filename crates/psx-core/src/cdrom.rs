@@ -964,6 +964,20 @@ impl Cdrom {
         match self.param(0) {
             // The controller firmware's own date and version.
             0x20 => self.queue(INT3_ACK, &FIRMWARE_ID, ACK_DELAY),
+            // Reset the SCEx counters and listen for region strings where the
+            // head is. Those strings are only in the lead-in, and there is no
+            // modchip here to fake them elsewhere, so nothing is ever counted.
+            0x04 => {
+                let s = self.take_stat();
+                self.queue(INT3_ACK, &[s], ACK_DELAY);
+            }
+            // Read the SCEx counters: total and successful, both zero for the
+            // reason above. This pair is an anti-modchip check. Crash Bash
+            // plays a stretch of its disc at 08:28:00, muted, sends 04h, then
+            // reads 05h and wants 00h,00h: a modchip would answer non-zero.
+            // Refused, it restarted the whole check from Init, forever, on the
+            // "Sony Computer Entertainment America presents" screen.
+            0x05 => self.queue(INT3_ACK, &[0, 0], ACK_DELAY),
             _ => {
                 let s = self.take_stat();
                 self.queue(INT5_ERROR, &[s | STAT_ERROR, 0x10], ACK_DELAY);
@@ -1527,6 +1541,22 @@ mod tests {
     /// `Getparam` hands back what `Setfilter` was given: software is entitled
     /// to check that what it set is what it gets, and a drive that answers zero
     /// to that is a spin.
+    /// The anti-modchip pair Crash Bash uses. A genuine drive reading away from
+    /// the lead-in counts no SCEx strings, and both commands are answered, not
+    /// refused: a refusal made the game restart its check forever.
+    #[test]
+    fn scex_counters_read_zero_away_from_the_lead_in() {
+        let mut c = with_disc();
+        let mut irq = Irq::new();
+        issue(&mut c, 0x19, &[0x04]);
+        let (code, _) = take(&mut c, &mut irq);
+        assert_eq!(code, INT3_ACK, "04h is acknowledged, not an error");
+        issue(&mut c, 0x19, &[0x05]);
+        let (code, reply) = take(&mut c, &mut irq);
+        assert_eq!(code, INT3_ACK);
+        assert_eq!(reply, [0, 0], "no strings counted, as on an unmodified console");
+    }
+
     #[test]
     fn getparam_reports_the_mode_and_the_filter_it_was_given() {
         let mut c = with_disc();
