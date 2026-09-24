@@ -571,6 +571,40 @@ broadly right, not that they are exact. Metal Slug X is silent until about 27
 seconds; the recording measures exact zeros from 8 s to 25 s, so that is the
 game loading, not missing audio.
 
+### On a phone, 2026-09-24
+
+The first time this core ran anywhere but the desktop: the libretro core in the
+Android app as a DEBUG-only toggle against Beetle PSX, played by the owner with
+real, changing input.
+
+- **60 fps flat on every disc tried**, five of them including Twisted Metal.
+  The interpreter's speed was the open risk; on this phone it is not one.
+- **RetroAchievements rich presence worked** (GTA 2 showed the lives count), which
+  is the memory map exercised end to end by something other than this repo.
+- The real PlayStation boot sequence, and no long black gap after it.
+
+Found, and fixed the same day, each reproduced on the desktop first:
+
+- **Videos in 24-bit colour looked "very strange"** (GTA 2, Twisted Metal) and
+  the games were perfect from their menus on. The display read 24-bit as
+  15-bit. **Confirmed fixed on the device by the owner.**
+- **A garbage row at the bottom of the licence screen**, and the strip under
+  CTR's menu: the height ignored GP1(07h). **Confirmed fixed on the device.**
+- **A Japanese BIOS next to an American one sent every American game to the
+  Japanese BIOS menu.** The BIOS is now chosen by the disc's region. Reproduced
+  and fixed through retrohost; not yet re-tried on the device.
+
+Still open:
+
+- **An occasional stall** after which the app reports the game as still loaded
+  until it is restarted. The host only says that when an unload never finished,
+  which points at a retro_run that never returned. Not reproduced yet.
+  retrohost now times every frame and can mash buttons for exactly this.
+- **Which BIOS the phone ran.** The owner reports none installed, yet the core
+  refuses a disc without one and has no fallback. The core now logs the
+  directory it searched and the BIOS it took through the frontend's logger, so
+  the next run on the phone answers it.
+
 ### What "gameplay" does and does not mean
 
 Tekken 3 renders a round in progress and Crash reaches its main menu. Neither is

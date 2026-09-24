@@ -303,6 +303,7 @@ fn run() -> Result<(), String> {
     let mut frames: u64 = 600;
     let mut out: Option<String> = None;
     let mut hold: u32 = 0;
+    let mut mash = false;
 
     let mut i = 2;
     while i < args.len() {
@@ -332,6 +333,7 @@ fn run() -> Result<(), String> {
                     .ok_or_else(|| format!("unknown button {name}"))?;
                 hold |= 1 << id;
             }
+            "--mash" => mash = true,
             other => return Err(format!("unknown argument {other}")),
         }
         i += 1;
@@ -446,9 +448,45 @@ fn run() -> Result<(), String> {
             );
         }
 
-        for _ in 0..frames {
+        // --mash: a fixed button sequence, one press of six frames every
+        // thirty, so a run gets past title screens the way a player would and
+        // two runs press exactly the same things. RetroPad names: b is the
+        // south button (Cross), a the east (Circle). Start first, then
+        // confirm, cancel and the D-pad in a cycle.
+        const MASH: [&str; 8] = ["start", "b", "b", "down", "b", "a", "right", "start"];
+        let mash_ids: Vec<u32> = MASH
+            .iter()
+            .map(|n| BUTTON_NAMES.iter().find(|(m, _)| m == n).map(|(_, id)| *id as u32).expect("a name in BUTTON_NAMES"))
+            .collect();
+
+        // Every retro_run is timed. A frame that takes seconds is how a hang
+        // on a phone looks from the frontend: the unload waits behind it, and
+        // the next load is told the game is still loaded.
+        let (mut slowest, mut slowest_at) = (std::time::Duration::ZERO, 0u64);
+        let mut total = std::time::Duration::ZERO;
+        for f in 0..frames {
+            if mash {
+                let press = (f % 30) < 6;
+                let id = mash_ids[((f / 30) as usize) % mash_ids.len()];
+                HELD = hold | if press { 1 << id } else { 0 };
+            }
+            let t = std::time::Instant::now();
             retro_run();
+            let dt = t.elapsed();
+            total += dt;
+            if dt > slowest {
+                slowest = dt;
+                slowest_at = f;
+            }
+            if dt > std::time::Duration::from_secs(1) {
+                println!("SLOW FRAME {f}: {:.1} s", dt.as_secs_f64());
+            }
         }
+        println!(
+            "frame time: slowest {:.1} ms at frame {slowest_at}, mean {:.2} ms",
+            slowest.as_secs_f64() * 1e3,
+            total.as_secs_f64() * 1e3 / frames.max(1) as f64
+        );
 
         let (w, h) = (FRAME_W, FRAME_H);
         let frame = &*std::ptr::addr_of!(FRAME);
