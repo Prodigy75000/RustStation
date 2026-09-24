@@ -144,6 +144,40 @@ state, and so did 20 seconds of each of Crash, Twisted Metal 2 and Spyro
 cycles rather than steps, which is the same number while every instruction
 costs one.
 
+There is also a general form, `idle::poll`, for waits that count nothing
+down: run one real pass from an address back to itself while the bus watches,
+and if it touched no device, every store wrote the value already there, and
+the CPU (registers, delay slots, both coprocessors) is back where it started,
+then every later pass up to the next event is the same pass, and they are
+skipped. Its tests include a loop that differs from an idle one only by a
+store, which must not be skipped. It does not help Crash Bash, whose wait
+calls `VSync(-1)`, which reads a root counter: a device, so never idle by this
+test, and correctly so.
+
+**The average frame is not the budget; the worst one is.** Crash does its game
+work in one frame and idles through the next. With the skip the pair averaged
+9.8 ms on the tablet but the busy frame was still 19 ms, and a frontend that
+waits for vsync after each frame turns that into two game frames per three
+refreshes. Charging two cycles per instruction to spread the work was tried
+and rejected: Crash drops to 20 frames a second, so the real console runs its
+code faster than that, and the knob belongs to a real timing model, not to
+performance.
+
+What did help, each checked byte-identical on end states of Crash and Crash
+Bash, measured on the tablet (Crash busy frame / Crash Bash demo average):
+
+| change | Crash | Crash Bash |
+|---|---|---|
+| vsync skip only | 19.5 ms | 19.8 ms |
+| RAM fast paths for fetch, loads and stores | | 17.6 |
+| edge functions stepped along the row, pixel path inlined | 19.0 | 17.2 |
+| copy back only the registers an instruction wrote (was 16% on ARM) | 15.5 | 14.5 |
+| call-gate hooks only at the call gates; carried division in triangles | 15.8 | 13.8 average, 16.0 worst, rested |
+
+The tablet throttles when warm, by about 10%, so compare runs after a rest.
+Profile with `simpleperf record` on the device and the NDK's `annotate.py`
+on the host for per-line costs.
+
 Other games wait with other loops (Tekken 3 and Metal Slug X skip nothing).
 They are cheap to add one at a time, each with the same byte-identical check.
 

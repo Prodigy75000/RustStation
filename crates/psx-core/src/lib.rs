@@ -80,6 +80,13 @@ pub struct Psx {
     idle_head: Option<u32>,
     /// Steps since the last look for a wait loop.
     idle_probe: u32,
+    /// A loop found to come back to exactly where it started, see
+    /// [`idle::poll`]. Host side, like `idle_head`.
+    poll_head: Option<u32>,
+    /// Whether `poll_head` was reached since the last probe.
+    poll_seen: bool,
+    /// Checked passes in a row at `poll_head` that were not idle.
+    poll_misses: u32,
     /// Loop iterations skipped rather than stepped. Diagnostic.
     pub idle_skipped: u64,
     /// Whether to skip the vsync wait at all. On by default; off is for
@@ -108,6 +115,9 @@ impl Psx {
             exe_loaded: false,
             idle_head: None,
             idle_probe: 0,
+            poll_head: None,
+            poll_seen: false,
+            poll_misses: 0,
             idle_skipped: 0,
             skip_idle: true,
         })
@@ -141,8 +151,15 @@ impl Psx {
     }
 
     /// Execute one instruction, having first serviced the host-side hooks.
+    #[inline(always)]
     pub fn step(&mut self) {
-        self.service_hooks();
+        // Every hook lives at a call gate (physical 0xA0, 0xB0, 0xC0, in any
+        // segment) or at the shell hook, so anywhere else there is nothing to
+        // look at. Checking on every instruction was 5% of the time.
+        let pc = self.cpu.pc;
+        if pc & 0x1FFF_FFFF < 0x100 || pc == exe::SHELL_HOOK {
+            self.service_hooks();
+        }
         self.cpu.step(&mut self.bus);
     }
 
@@ -171,14 +188,61 @@ impl Psx {
                     None => self.idle_head = None,
                 }
             }
-            self.idle_probe += 1;
+            if Some(self.cpu.pc) == self.poll_head {
+                // One real pass decides; if it changed nothing, the passes
+                // up to the next event are skipped.
+                self.poll_seen = true;
+                match idle::poll(self, target) {
+                    Some(k) => {
+                        self.idle_skipped += k;
+                        self.poll_misses = 0;
+                    }
+                    // A loop that has stopped being idle, and would only cost
+                    // a checked pass every time round.
+                    None => {
+                        self.poll_misses += 1;
+                        if self.poll_misses >= 16 {
+                            self.poll_head = None;
+                            self.poll_misses = 0;
+                        }
+                    }
+                }
+                continue;
+            }
             if self.idle_probe >= idle::PROBE_INTERVAL {
                 self.idle_probe = 0;
                 if self.idle_head.is_none() {
                     self.idle_head = idle::find(self);
                 }
+                if !self.poll_seen {
+                    // The known loop has not come round lately: try where the
+                    // CPU is now instead.
+                    let here = self.cpu.pc;
+                    if let Some(k) = idle::poll(self, target) {
+                        self.poll_head = Some(here);
+                        self.poll_misses = 0;
+                        self.idle_skipped += k;
+                    }
+                }
+                self.poll_seen = false;
+                continue;
             }
-            self.step();
+            // Nothing to look at here: step until something might be, with
+            // one set of compares per instruction.
+            let idle_at = self.idle_head.unwrap_or(u32::MAX);
+            let poll_at = self.poll_head.unwrap_or(u32::MAX);
+            loop {
+                self.step();
+                self.idle_probe += 1;
+                let pc = self.cpu.pc;
+                if self.bus.cycle >= target
+                    || pc == idle_at
+                    || pc == poll_at
+                    || self.idle_probe >= idle::PROBE_INTERVAL
+                {
+                    break;
+                }
+            }
         }
     }
 

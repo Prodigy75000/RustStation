@@ -123,6 +123,11 @@ pub struct Bus {
     /// The master clock: CPU cycles since reset. The CPU advances it, and every
     /// timed device is a pure function of it plus its own registers.
     pub cycle: u64,
+    /// Set while [`crate::idle`] checks a pass of a loop. Any access to a
+    /// device, and any store that changes memory, sets `watch_dirty`. Host
+    /// side: never serialized.
+    pub(crate) watching: bool,
+    pub(crate) watch_dirty: bool,
     /// Cycle at which some device next needs attention. The CPU checks this
     /// after each instruction, which is what stops a frame from collapsing into
     /// a single "run everything, then catch up" phase.
@@ -176,6 +181,8 @@ impl Bus {
             cache_ctrl: 0,
             cycle: 0,
             next_event: 0,
+            watching: false,
+            watch_dirty: false,
             synced_to: 0,
             irq: Irq::new(),
             video: Video::new(Standard::Ntsc),
@@ -203,6 +210,14 @@ impl Bus {
             v |= (buf[o + i] as u32) << (8 * i);
         }
         v
+    }
+
+    fn width_mask(width: u32) -> u32 {
+        if width >= 4 {
+            !0
+        } else {
+            (1 << (8 * width)) - 1
+        }
     }
 
     #[inline(always)]
@@ -346,6 +361,7 @@ impl Bus {
         if let Some(off) = SCRATCHPAD.contains(abs) {
             return Self::read_le(&self.scratchpad, off, width);
         }
+        self.watch_dirty |= self.watching;
         if let Some(off) = MEM_CTRL.contains(abs) {
             return self.mem_ctrl[(off / 4) as usize];
         }
@@ -446,13 +462,25 @@ impl Bus {
         let abs = mask_region(addr);
 
         if let Some(off) = RAM.contains(abs) {
-            Self::write_le(&mut self.ram, off & (RAM_SIZE as u32 - 1), width, val);
+            let off = off & (RAM_SIZE as u32 - 1);
+            if self.watching
+                && Self::read_le(&self.ram, off, width) != val & Self::width_mask(width)
+            {
+                self.watch_dirty = true;
+            }
+            Self::write_le(&mut self.ram, off, width, val);
             return;
         }
         if let Some(off) = SCRATCHPAD.contains(abs) {
+            if self.watching
+                && Self::read_le(&self.scratchpad, off, width) != val & Self::width_mask(width)
+            {
+                self.watch_dirty = true;
+            }
             Self::write_le(&mut self.scratchpad, off, width, val);
             return;
         }
+        self.watch_dirty |= self.watching;
         if BIOS.contains(abs).is_some() {
             // ROM. Writes are dropped, not an error: the BIOS itself does this.
             return;
@@ -561,27 +589,57 @@ impl Bus {
 
     #[inline(always)]
     pub fn load32(&mut self, addr: u32) -> u32 {
+        // RAM, which is nearly every fetch and most data, without the walk
+        // through the map. Same result as `load`: the CPU has already
+        // enforced alignment, so the word cannot run off the end.
+        if let Some(o) = Self::ram_fast(addr) {
+            let b = &self.ram[o..o + 4];
+            return u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+        }
         self.load(addr, 4)
     }
     #[inline(always)]
     pub fn load16(&mut self, addr: u32) -> u16 {
+        if let Some(o) = Self::ram_fast(addr) {
+            return u16::from_le_bytes([self.ram[o], self.ram[o + 1]]);
+        }
         self.load(addr, 2) as u16
     }
     #[inline(always)]
     pub fn load8(&mut self, addr: u32) -> u8 {
+        if let Some(o) = Self::ram_fast(addr) {
+            return self.ram[o];
+        }
         self.load(addr, 1) as u8
     }
     #[inline(always)]
     pub fn store32(&mut self, addr: u32, val: u32) {
-        self.store(addr, 4, val)
+        match Self::ram_fast(addr) {
+            Some(o) if !self.watching => self.ram[o..o + 4].copy_from_slice(&val.to_le_bytes()),
+            _ => self.store(addr, 4, val),
+        }
     }
     #[inline(always)]
     pub fn store16(&mut self, addr: u32, val: u16) {
-        self.store(addr, 2, val as u32)
+        match Self::ram_fast(addr) {
+            Some(o) if !self.watching => self.ram[o..o + 2].copy_from_slice(&val.to_le_bytes()),
+            _ => self.store(addr, 2, val as u32),
+        }
     }
     #[inline(always)]
     pub fn store8(&mut self, addr: u32, val: u8) {
-        self.store(addr, 1, val as u32)
+        match Self::ram_fast(addr) {
+            Some(o) if !self.watching => self.ram[o] = val,
+            _ => self.store(addr, 1, val as u32),
+        }
+    }
+
+    /// Offset into RAM if `addr` is in the 8 MB RAM window, which mirrors
+    /// the 2 MB four times.
+    #[inline(always)]
+    fn ram_fast(addr: u32) -> Option<usize> {
+        let abs = mask_region(addr);
+        (abs < 8 * 1024 * 1024).then_some(abs as usize & (RAM_SIZE - 1))
     }
 
     pub fn bios(&self) -> &[u8] {

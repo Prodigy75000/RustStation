@@ -116,6 +116,13 @@ pub struct Cpu {
     /// between instructions, so they carry no state across one.
     cancel_reg: u8,
     cancel_val: u32,
+    /// The register this instruction wrote through [`Self::set_reg`], or 0.
+    ///
+    /// With `cancel_reg` it names every register `out_regs` can differ from
+    /// `regs` in at the end of a step (no instruction writes two), so those
+    /// two are all that need copying back. Copying the whole file was 16% of
+    /// the time on an ARM tablet. Transient like `cancel_*`, not serialized.
+    written: u8,
     /// The instruction just executed took a branch.
     pub(crate) branch: bool,
     /// The instruction currently executing sits in a branch delay slot.
@@ -163,6 +170,7 @@ impl Cpu {
             load: (0, 0),
             cancel_reg: 0,
             cancel_val: 0,
+            written: 0,
             branch: false,
             delay_slot: false,
             cop0: Cop0::new(),
@@ -174,14 +182,17 @@ impl Cpu {
     /// Read a register as this instruction sees it.
     #[inline(always)]
     pub fn reg(&self, index: u32) -> u32 {
-        self.regs[index as usize]
+        // Register fields are five bits; the mask lets the compiler drop the
+        // bounds check on every operand read.
+        self.regs[index as usize & 31]
     }
 
     /// Schedule a register write for the end of this instruction.
     #[inline(always)]
     fn set_reg(&mut self, index: u32, val: u32) {
-        self.out_regs[index as usize] = val;
+        self.out_regs[index as usize & 31] = val;
         self.out_regs[0] = 0;
+        self.written = index as u8;
     }
 
     /// Force a register immediately, bypassing the shadow file. Only for the
@@ -208,6 +219,23 @@ impl Cpu {
     }
     pub fn branch_taken(&self) -> bool {
         self.branch
+    }
+
+    /// Everything an instruction can read or leave behind, compared. The
+    /// retired count is not state, and `cancel_*` are rewritten at the top of
+    /// every step before anything reads them.
+    pub(crate) fn same_state(&self, other: &Cpu) -> bool {
+        self.regs == other.regs
+            && self.out_regs == other.out_regs
+            && self.hi == other.hi
+            && self.lo == other.lo
+            && self.pc == other.pc
+            && self.next_pc == other.next_pc
+            && self.load == other.load
+            && self.branch == other.branch
+            && self.delay_slot == other.delay_slot
+            && self.cop0 == other.cop0
+            && self.gte == other.gte
     }
 
     /// Jump to `pc`, discarding any in-flight branch. For EXE sideload.
@@ -328,10 +356,16 @@ impl Cpu {
         // instruction runs, so this instruction still reads the old value out
         // of `regs`, and an explicit write here overwrites the arriving load.
         self.commit_pending_load();
+        self.written = 0;
 
         self.execute(instruction, bus);
 
-        self.regs = self.out_regs;
+        // The same as `self.regs = self.out_regs`: see `written`.
+        let c = self.cancel_reg as usize & 31;
+        self.regs[c] = self.out_regs[c];
+        let w = self.written as usize & 31;
+        self.regs[w] = self.out_regs[w];
+        debug_assert!(self.regs == self.out_regs);
         self.retire(bus);
     }
 
@@ -902,7 +936,11 @@ impl Cpu {
         if self.cop0.cache_isolated() {
             return;
         }
-        bus.store(addr, width, val);
+        match width {
+            4 => bus.store32(addr, val),
+            2 => bus.store16(addr, val as u16),
+            _ => bus.store8(addr, val as u8),
+        }
     }
 
     fn op_sb(&mut self, instr: Instruction, bus: &mut Bus) {

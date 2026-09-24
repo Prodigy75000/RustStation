@@ -1035,40 +1035,69 @@ impl Gpu {
         let min_y = a.y.min(b.y).min(c.y).max(self.draw_top);
         let max_y = a.y.max(b.y).max(c.y).min(self.draw_bottom);
 
+        // The edge functions are linear in x, so along a row each one moves by
+        // a constant. Stepping them gives exactly the values `orient` would.
+        let (d0, d1, d2) = (c.y - b.y, a.y - c.y, b.y - a.y);
         for y in min_y..=max_y {
+            let p = Vertex {
+                x: min_x,
+                y,
+                ..Default::default()
+            };
+            let (mut w0, mut w1, mut w2) = (orient(b, c, p), orient(c, a, p), orient(a, b, p));
+            // Each attribute is (w0 * a + w1 * b + w2 * c) / area, and the
+            // numerator is linear along the row too, so the quotient is carried
+            // from pixel to pixel instead of divided for. See `Lerp`.
+            let lerp = |fa: i32, fb: i32, fc: i32| {
+                Lerp::new(
+                    w0 * fa + w1 * fb + w2 * fc,
+                    -(d0 * fa + d1 * fb + d2 * fc),
+                    area,
+                )
+            };
+            let textured = tex.is_some();
+            let (mut lr, mut lg, mut lb) = if gouraud {
+                (
+                    lerp(a.r, b.r, c.r),
+                    lerp(a.g, b.g, c.g),
+                    lerp(a.b, b.b, c.b),
+                )
+            } else {
+                (Lerp::ZERO, Lerp::ZERO, Lerp::ZERO)
+            };
+            let (mut lu, mut lv) = if textured {
+                (lerp(a.u, b.u, c.u), lerp(a.v, b.v, c.v))
+            } else {
+                (Lerp::ZERO, Lerp::ZERO)
+            };
             for x in min_x..=max_x {
-                let p = Vertex {
-                    x,
-                    y,
-                    ..Default::default()
-                };
-                let w0 = orient(b, c, p);
-                let w1 = orient(c, a, p);
-                let w2 = orient(a, b, p);
+                if x > min_x {
+                    w0 -= d0;
+                    w1 -= d1;
+                    w2 -= d2;
+                    if gouraud {
+                        lr.step();
+                        lg.step();
+                        lb.step();
+                    }
+                    if textured {
+                        lu.step();
+                        lv.step();
+                    }
+                }
                 if w0 < 0 || w1 < 0 || w2 < 0 {
                     continue;
                 }
 
                 let colour = if gouraud {
-                    (
-                        (w0 * a.r + w1 * b.r + w2 * c.r) / area,
-                        (w0 * a.g + w1 * b.g + w2 * c.g) / area,
-                        (w0 * a.b + w1 * b.b + w2 * c.b) / area,
-                    )
+                    (lr.q, lg.q, lb.q)
                 } else {
                     (a.r, a.g, a.b)
                 };
                 // Texture coordinates interpolate the same way the colour does.
                 // Affine, not perspective-correct, which is what the hardware
                 // does and the reason PlayStation textures swim.
-                let (u, v) = if tex.is_some() {
-                    (
-                        (w0 * a.u + w1 * b.u + w2 * c.u) / area,
-                        (w0 * a.v + w1 * b.v + w2 * c.v) / area,
-                    )
-                } else {
-                    (0, 0)
-                };
+                let (u, v) = if textured { (lu.q, lv.q) } else { (0, 0) };
                 // A flat, untextured colour is already exact in 5 bits; only
                 // interpolated or modulated output has anything to dither.
                 self.shade_pixel(
@@ -1148,6 +1177,7 @@ impl Gpu {
     /// 3. Unless the command is "raw", the texel is modulated by the vertex
     ///    colour, where 0x80 is neutral rather than 0xFF.
     #[allow(clippy::too_many_arguments)]
+    #[inline(always)]
     fn shade_pixel(
         &mut self,
         x: i32,
@@ -1198,6 +1228,7 @@ impl Gpu {
 
     /// Write one pixel, honouring the drawing area, the mask bit and the blend
     /// mode. Every primitive goes through here; only the VRAM fill does not.
+    #[inline(always)]
     fn plot_dithered(
         &mut self,
         x: i32,
@@ -1494,6 +1525,52 @@ const DITHER: [[i32; 4]; 4] = [
     [3, -1, 2, -2],
 ];
 
+/// A quotient `n / area` carried along a row while `n` steps by a constant.
+///
+/// Kept as floor quotient and remainder, so stepping is two adds and a
+/// compare, and exact. Inside a triangle every weight is non-negative, and so
+/// is every attribute, so the numerator is too, and there the floor quotient
+/// is the truncating `/` the rasterizer used to compute per pixel. Outside,
+/// where the numerator can go negative, nothing reads it.
+#[derive(Clone, Copy)]
+struct Lerp {
+    q: i32,
+    r: i32,
+    dq: i32,
+    dr: i32,
+    area: i32,
+}
+
+impl Lerp {
+    const ZERO: Lerp = Lerp {
+        q: 0,
+        r: 0,
+        dq: 0,
+        dr: 0,
+        area: 1,
+    };
+
+    fn new(n: i32, delta: i32, area: i32) -> Lerp {
+        Lerp {
+            q: n.div_euclid(area),
+            r: n.rem_euclid(area),
+            dq: delta.div_euclid(area),
+            dr: delta.rem_euclid(area),
+            area,
+        }
+    }
+
+    #[inline(always)]
+    fn step(&mut self) {
+        self.q += self.dq;
+        self.r += self.dr;
+        if self.r >= self.area {
+            self.r -= self.area;
+            self.q += 1;
+        }
+    }
+}
+
 /// Twice the signed area of the triangle, and the edge test for a point.
 #[inline]
 fn orient(a: Vertex, b: Vertex, c: Vertex) -> i32 {
@@ -1590,6 +1667,31 @@ fn command_length(cmd: u8) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_carried_quotient_matches_division_wherever_it_is_read() {
+        // Numerators crossing zero both ways, deltas of both signs and of
+        // magnitudes above and below the area.
+        for &area in &[1, 2, 7, 255, 4096, 1_000_003] {
+            for &start in &[-50_000, -1, 0, 3, 99_999] {
+                for &delta in &[-3 * area - 2, -area, -1, 0, 1, area - 1, 5 * area + 3] {
+                    let mut l = Lerp::new(start, delta, area);
+                    let mut n = start;
+                    for _ in 0..200 {
+                        if n >= 0 {
+                            assert_eq!(
+                                l.q,
+                                n / area,
+                                "area {area} start {start} delta {delta} n {n}"
+                            );
+                        }
+                        l.step();
+                        n += delta;
+                    }
+                }
+            }
+        }
+    }
 
     fn gpu() -> Gpu {
         let mut g = Gpu::new();

@@ -179,6 +179,63 @@ pub(crate) fn skip(psx: &mut Psx, target: u64) -> Option<u64> {
     Some(k)
 }
 
+/// Longest pass [`poll`] will follow before deciding it is not a loop.
+const MAX_PASS: u32 = 2048;
+
+/// Run one pass from here back to here, and if it changed nothing, skip the
+/// passes that fit before the next device event and before `target`.
+///
+/// The general case, for the waits that do not count anything down. Crash
+/// Bash waits on a timer with `VSync(-1)` inside a state machine, about sixty
+/// instructions round, with its own call and its own stack frame. A pass
+/// is *nothing changed* when it touched no device, every store wrote the value
+/// already there, and the CPU (registers, delay slots, both coprocessors) is
+/// back where it started. The next pass then reads the same memory with the
+/// same registers and does the same thing, and so does every pass after it
+/// until an event: an interrupt, or a device writing memory. None can happen
+/// before the next scheduled event, so up to it the passes are all the same.
+///
+/// Returns the passes skipped, or `None` if this pass was not such a loop.
+/// Either way the one pass it ran was real, so the caller has made progress.
+pub(crate) fn poll(psx: &mut Psx, target: u64) -> Option<u64> {
+    let head = psx.cpu.pc;
+    let before = psx.cpu.clone();
+    let start = psx.bus.cycle;
+    psx.bus.watching = true;
+    psx.bus.watch_dirty = false;
+    let mut back = false;
+    for _ in 0..MAX_PASS {
+        if psx.bus.cycle >= target {
+            break;
+        }
+        psx.step();
+        if psx.cpu.pc == head {
+            back = true;
+            break;
+        }
+    }
+    psx.bus.watching = false;
+    if !back || psx.bus.watch_dirty || !psx.cpu.same_state(&before) {
+        return None;
+    }
+
+    // An interrupt the CPU would take at the next boundary ends the loop.
+    let mut cop0 = psx.cpu.cop0.clone();
+    cop0.set_external_irq(psx.bus.irq_pending());
+    if cop0.interrupt_ready() {
+        return Some(0);
+    }
+
+    let pass = psx.bus.cycle - start;
+    let now = psx.bus.cycle;
+    let until_event = psx.bus.next_event().saturating_sub(now + 1) / pass;
+    let until_target = target.saturating_sub(now) / pass;
+    let k = until_event.min(until_target);
+    psx.bus.cycle += k * pass;
+    psx.cpu.cycles = psx.cpu.cycles.wrapping_add(k * pass);
+    Some(k)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,6 +285,75 @@ mod tests {
             stepped.run(n);
         }
         (skipped, stepped)
+    }
+
+    /// A loop that calls a function to read a flag nothing sets: its own call,
+    /// its own stack frame. With `count` the
+    /// function also bumps a word in RAM every pass, which is not idle.
+    fn polling_machine(count: bool) -> Psx {
+        let mut psx = Psx::new(vec![0; crate::bus::BIOS_SIZE]).unwrap();
+        let main = [
+            0x0C00_0440, // jal 0x80001100
+            0x0000_0000,
+            0x1440_FFFD, // bne v0, zero, 0x80001000
+            0x0000_0000,
+            0x0800_0404, // j 0x80001010
+            0x0000_0000,
+        ];
+        let func = [
+            0x27BD_FFF0,                         // addiu sp, sp, -16
+            0xAFBF_0000,                         // sw ra, 0(sp)
+            0x3C08_8000,                         // lui t0, 0x8000
+            0x8D02_2000,                         // lw v0, 0x2000(t0)
+            if count { 0x8D09_2004 } else { 0 }, // lw t1, 0x2004(t0)
+            0x0000_0000,
+            if count { 0x2529_0001 } else { 0 }, // addiu t1, t1, 1
+            if count { 0xAD09_2004 } else { 0 }, // sw t1, 0x2004(t0)
+            0x8FBF_0000,                         // lw ra, 0(sp)
+            // Registers come back the same even when counting, so only the
+            // store can tell the two apart.
+            if count { 0x0000_4821 } else { 0 }, // addu t1, zero, zero
+            0x03E0_0008,                         // jr ra
+            0x27BD_0010,                         // addiu sp, sp, 16
+        ];
+        for (i, w) in main.iter().enumerate() {
+            put(&mut psx, HEAD + 4 * i as u32, *w);
+        }
+        for (i, w) in func.iter().enumerate() {
+            put(&mut psx, 0x8000_1100 + 4 * i as u32, *w);
+        }
+        put(&mut psx, COUNTER, 1);
+        psx.cpu.force_reg(SP as u32, STACK);
+        psx.cpu.set_pc(HEAD);
+        psx
+    }
+
+    #[test]
+    fn a_loop_that_changes_nothing_is_skipped_exactly() {
+        for count in [false, true] {
+            let mut skipped = polling_machine(count);
+            let mut stepped = polling_machine(count);
+            stepped.skip_idle = false;
+            for n in [1u64, 999, 123_457, 3_000_000] {
+                skipped.run(n);
+                stepped.run(n);
+            }
+            if count {
+                assert_eq!(skipped.idle_skipped, 0, "a counting loop is not idle");
+            } else {
+                assert!(
+                    skipped.idle_skipped > 50_000,
+                    "skipped {}",
+                    skipped.idle_skipped
+                );
+            }
+            assert_eq!(skipped.bus.cycle, stepped.bus.cycle);
+            assert_eq!(skipped.cpu.cycles, stepped.cpu.cycles);
+            assert!(
+                skipped.save_state() == stepped.save_state(),
+                "states differ, count {count}"
+            );
+        }
     }
 
     #[test]

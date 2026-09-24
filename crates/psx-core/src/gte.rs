@@ -93,7 +93,7 @@ fn trace_enabled() -> bool {
     *ON.get_or_init(|| std::env::var("RSTA_GTE_TRACE").is_ok_and(|v| v != "0"))
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq)]
 pub struct Gte {
     // ---- data registers (cop2r0..31) ----
     /// V0, V1, V2, each an (x, y, z) triple.

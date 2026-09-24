@@ -30,7 +30,7 @@ pub enum Exception {
     Overflow = 0xC,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct Cop0 {
     /// cop0r3: breakpoint on execute.
     pub bpc: u32,
