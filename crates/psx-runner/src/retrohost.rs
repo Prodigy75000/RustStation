@@ -304,6 +304,7 @@ fn run() -> Result<(), String> {
     let mut out: Option<String> = None;
     let mut hold: u32 = 0;
     let mut mash = false;
+    let mut save_at: Option<(u64, String)> = None;
 
     let mut i = 2;
     while i < args.len() {
@@ -334,6 +335,12 @@ fn run() -> Result<(), String> {
                 hold |= 1 << id;
             }
             "--mash" => mash = true,
+            "--save-at" => {
+                let n = args.get(i + 1).ok_or("--save-at needs FRAME PATH")?;
+                let path = args.get(i + 2).ok_or("--save-at needs FRAME PATH")?;
+                save_at = Some((n.parse().map_err(|e| format!("--save-at: {e}"))?, path.clone()));
+                i += 2;
+            }
             other => return Err(format!("unknown argument {other}")),
         }
         i += 1;
@@ -366,6 +373,9 @@ fn run() -> Result<(), String> {
     let init = entry!(handle, "retro_init", unsafe extern "C" fn());
     let load_game = entry!(handle, "retro_load_game", unsafe extern "C" fn(*const GameInfo) -> bool);
     let retro_run = entry!(handle, "retro_run", unsafe extern "C" fn());
+    let retro_serialize_size = entry!(handle, "retro_serialize_size", unsafe extern "C" fn() -> usize);
+    let retro_serialize =
+        entry!(handle, "retro_serialize", unsafe extern "C" fn(*mut c_void, usize) -> bool);
     let serialize_size = entry!(handle, "retro_serialize_size", unsafe extern "C" fn() -> usize);
     let unload = entry!(handle, "retro_unload_game", unsafe extern "C" fn());
     let deinit = entry!(handle, "retro_deinit", unsafe extern "C" fn());
@@ -456,7 +466,7 @@ fn run() -> Result<(), String> {
         const MASH: [&str; 8] = ["start", "b", "b", "down", "b", "a", "right", "start"];
         let mash_ids: Vec<u32> = MASH
             .iter()
-            .map(|n| BUTTON_NAMES.iter().find(|(m, _)| m == n).map(|(_, id)| *id as u32).expect("a name in BUTTON_NAMES"))
+            .map(|n| BUTTON_NAMES.iter().find(|(m, _)| m == n).map(|(_, id)| *id).expect("a name in BUTTON_NAMES"))
             .collect();
 
         // Every retro_run is timed. A frame that takes seconds is how a hang
@@ -469,6 +479,18 @@ fn run() -> Result<(), String> {
                 let press = (f % 30) < 6;
                 let id = mash_ids[((f / 30) as usize) % mash_ids.len()];
                 HELD = hold | if press { 1 << id } else { 0 };
+            }
+            // --save-at: the state before frame N runs, so a slow or hung
+            // frame can be replayed in the direct harness with its diagnostics.
+            if let Some((n, path)) = &save_at {
+                if f == *n {
+                    let mut buf = vec![0u8; retro_serialize_size()];
+                    if !retro_serialize(buf.as_mut_ptr() as *mut c_void, buf.len()) {
+                        return Err("retro_serialize refused".into());
+                    }
+                    std::fs::write(path, &buf).map_err(|e| format!("{path}: {e}"))?;
+                    println!("saved the state before frame {n} to {path} (held {:#06x})", *std::ptr::addr_of!(HELD));
+                }
             }
             let t = std::time::Instant::now();
             retro_run();

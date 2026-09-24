@@ -61,6 +61,8 @@ Sync modes, from `CHCR` bits 9 and 10:
 * **2, linked list.** `MADR` points at a header word: the high byte is how many
   words follow, the low three bytes the next header. `0x00FFFFFF` ends it. Only
   the GPU uses this, and it is how almost every game reaches the GPU at all.
+  **A list can come back on itself**, and this core stops at the first node it
+  has already walked, having run every node once. See the open question.
 
 Bit 0 chooses direction, bit 1 makes the address count down. Channel 6 forces
 both: hardware ignores what is written to those bits for the ordering table.
@@ -96,5 +98,17 @@ an open question. Two places where the difference shows:
 * **Priorities.** `DPCR`'s priority nibbles are stored and ignored. Only one
   channel ever runs at a time here, so there is nothing to arbitrate yet.
 * **Chopping.** `CHCR` bits 8, 16-18 and 20-22 are stored and ignored.
+* **A circular linked list stops; on hardware it would not.** psx-spx: the CPU
+  runs "after SyncMode 2 list entries", so on a console a list that loops only
+  keeps the GPU busy in the background until the game rebuilds it. Here a whole
+  list runs inside the store that starts it, so a loop has to be cut. Metal
+  Slug X builds one on the way into a stage (318 nodes, then three pointing in a
+  circle); walked to the old million-node bound it was 1.6 million GP0 commands,
+  150 seconds inside one frame, and on the owner's phone a game that froze and
+  could not be unloaded. Stopping at the first revisit draws every node once and
+  finishes the channel. What this cannot give is the hardware's timing: a game
+  that polled for the channel still being busy would see it done. The real fix
+  is list DMA that runs between CPU slices, which would also be the start of
+  charging transfers for their cycles.
 * **Channel 5.** The expansion port has nothing behind it, so transfers on it are
   counted rather than performed.

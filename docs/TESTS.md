@@ -597,9 +597,14 @@ Found, and fixed the same day, each reproduced on the desktop first:
 Still open:
 
 - **An occasional stall** after which the app reports the game as still loaded
-  until it is restarted. The host only says that when an unload never finished,
-  which points at a retro_run that never returned. Not reproduced yet.
-  retrohost now times every frame and can mash buttons for exactly this.
+  until it is restarted. **Found and fixed.** retrohost timed every frame of
+  every disc under 60 seconds of mashed input: 30 discs never exceeded 35 ms,
+  and Metal Slug X took **137 seconds on one frame**. Replayed from a state
+  saved before it, the time was one `sw` starting DMA channel 2 on an ordering
+  table with a three-node loop, walked to the million-node bound. The walk now
+  stops at the first node it revisits (`docs/notes/DMA.md`); the same frame
+  takes 0.08 s and the run reaches gameplay. On a phone that frame is the
+  freeze, and the unload waiting behind it is "game already loaded".
 - **Which BIOS the phone ran.** The owner reports none installed, yet the core
   refuses a disc without one and has no fallback. The core now logs the
   directory it searched and the BIOS it took through the frontend's logger, so

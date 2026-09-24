@@ -129,6 +129,10 @@ pub struct Dma {
     /// and "a game wants something else entirely", and a bare total cannot say
     /// which.
     pub unimplemented_channels: u8,
+    /// Linked-list nodes walked on channel 2, and lists that came back on
+    /// themselves. Host-side observation only, never serialized.
+    pub list_nodes: u64,
+    pub list_cycles: u64,
 }
 
 impl Default for Dma {
@@ -147,6 +151,8 @@ impl Dma {
             interrupt: 0,
             unimplemented_transfers: 0,
             unimplemented_channels: 0,
+            list_nodes: 0,
+            list_cycles: 0,
         }
     }
 
@@ -327,9 +333,30 @@ impl Dma {
                 // address in its low 24 bits and a word count in its high 8,
                 // followed by that many GP0 words.
                 let mut addr = ch.madr & 0x1F_FFFC;
-                // A malformed list can point at itself. Bound the walk rather
-                // than hanging the emulator.
+                // A list can come back on itself. Metal Slug X builds one on
+                // the way into a stage: 318 good nodes, then three that point
+                // round in a circle, most likely one primitive linked into its
+                // ordering table twice. On hardware the CPU runs between list
+                // entries, so a circular list only keeps the GPU busy in the
+                // background until the game rebuilds it. Here the whole list
+                // runs inside the store that starts it, so the same loop
+                // walked to the old million-node bound: 1.6 million GP0
+                // commands, 150 seconds in one frame, and on a phone a frozen
+                // game the frontend could not unload.
+                //
+                // So stop at the first node seen twice, having run every node
+                // once. One bit per word of RAM, 64 KB, cleared per walk. The
+                // node bound stays as a second line of defence.
+                let mut seen = vec![0u64; crate::bus::RAM_SIZE / 4 / 64];
                 for _ in 0..0x10_0000 {
+                    let word = (addr >> 2) as usize;
+                    let (slot, bit) = (word / 64, 1u64 << (word % 64));
+                    if seen[slot] & bit != 0 {
+                        dma.list_cycles += 1;
+                        break;
+                    }
+                    seen[slot] |= bit;
+                    dma.list_nodes += 1;
                     let header = read_ram(ram, addr);
                     let count = header >> 24;
                     for i in 0..count {
@@ -581,6 +608,31 @@ mod tests {
         Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut Spu::new(), &mut Mdec::new(), &mut irq, CH_GPU);
 
         assert_ne!(gpu.vram[0], 0, "the list's fill did not run");
+    }
+
+    /// A circular list runs each node once and stops, the shape Metal Slug X
+    /// hands the GPU. The walk used to go round to its million-node bound.
+    #[test]
+    fn a_circular_list_runs_each_node_once() {
+        let (mut dma, mut ram, mut gpu, mut irq) = rig();
+        // Entry node, then a loop of three: 0x500 -> 0x600 -> 0x700 -> 0x600.
+        write_ram(&mut ram, 0x500, (1 << 24) | 0x600);
+        write_ram(&mut ram, 0x504, 0xE300_0000);
+        write_ram(&mut ram, 0x600, (3 << 24) | 0x700);
+        write_ram(&mut ram, 0x604, 0x0200_00FF); // a fill
+        write_ram(&mut ram, 0x608, 0);
+        write_ram(&mut ram, 0x60C, (16 << 16) | 32);
+        write_ram(&mut ram, 0x700, (1 << 24) | 0x600);
+        write_ram(&mut ram, 0x704, 0xE300_0000);
+
+        assert!(dma.write(0x20, 4, 0x500).is_none());
+        let _ = dma.write(0x28, 4, 0x0100_0401);
+        Dma::run(&mut dma, &mut ram, &mut gpu, &mut Cdrom::new(), &mut Spu::new(), &mut Mdec::new(), &mut irq, CH_GPU);
+
+        assert_eq!(dma.list_nodes, 3, "the entry node and the two in the loop, once each");
+        assert_eq!(dma.list_cycles, 1);
+        assert_ne!(gpu.vram[0], 0, "and the fill inside the loop still ran");
+        assert!(!dma.channels[CH_GPU].busy(), "the channel finishes");
     }
 
     /// A list that points at itself must not hang the emulator.

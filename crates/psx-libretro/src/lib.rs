@@ -271,8 +271,10 @@ unsafe fn fetch_logger() {
 fn log_line(level: c_uint, line: &str) {
     // SAFETY: LOG_CB is set once from the frontend and only read after.
     match unsafe { LOG_CB } {
+        // No core name on this path: the frontend stamps its own
+        // ("[RustStation/core]" in the Android host), and adding ours doubled it.
         Some(log) => {
-            let text = CString::new(format!("[RustStation] {line}\n").replace('\0', " "))
+            let text = CString::new(format!("{line}\n").replace('\0', " "))
                 .expect("NULs replaced");
             unsafe { log(level, c"%s".as_ptr(), text.as_ptr()) };
         }

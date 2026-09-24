@@ -100,6 +100,9 @@ fn main() -> ExitCode {
     let mut film: Option<u64> = None;
     let mut watch: Option<u32> = None;
     let mut wav_path: Option<String> = None;
+    let mut state_path: Option<String> = None;
+    let mut slowstep = false;
+    let mut gpulist = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -142,6 +145,12 @@ fn main() -> ExitCode {
             "--disc" => {
                 i += 1;
                 disc_path = args.get(i).cloned();
+            }
+            "--slowstep" => slowstep = true,
+            "--gpulist" => gpulist = true,
+            "--state" => {
+                i += 1;
+                state_path = args.get(i).cloned();
             }
             "--wav" => {
                 i += 1;
@@ -219,7 +228,28 @@ fn main() -> ExitCode {
         }
     }
 
-    let history = if let Some(addr) = watch {
+    // --state: resume from a save state taken with the same BIOS and disc,
+    // for instance by retrohost --save-at, so a moment found through the
+    // libretro path can be looked at with this harness's diagnostics.
+    if let Some(path) = &state_path {
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("cannot read state {path}: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        if !psx.load_state(&bytes) {
+            eprintln!("{path} is not a state this build can load");
+            return ExitCode::FAILURE;
+        }
+        println!("resumed from {path} at cycle {}", psx.bus.cycle);
+    }
+
+    let history = if slowstep {
+        run_timing_steps(&mut psx, steps);
+        None
+    } else if let Some(addr) = watch {
         run_watching(&mut psx, steps, addr);
         None
     } else if pchist {
@@ -244,6 +274,10 @@ fn main() -> ExitCode {
         psx.run(steps);
         None
     };
+
+    if gpulist {
+        report_gpu_list(&psx);
+    }
 
     let (width, height, pixels) = if whole_vram {
         let mut buf = vec![0u8; VRAM_WIDTH * VRAM_HEIGHT * 3];
@@ -813,4 +847,78 @@ fn write_wav(path: &str, audio: &[i16]) -> std::io::Result<()> {
         w.write_all(&x.to_le_bytes())?;
     }
     w.flush()
+}
+
+/// --slowstep: time every instruction and name any that takes over 50 ms.
+/// A frame is a fixed number of instructions, so a frame that takes seconds is
+/// one instruction handing a device an enormous amount of work, and this says
+/// which instruction and what the machine looked like when it did.
+fn run_timing_steps(psx: &mut Psx, steps: u64) {
+    let mut worst = (std::time::Duration::ZERO, 0u32);
+    for n in 0..steps {
+        let pc = psx.cpu.pc;
+        let regs_before: Vec<u32> = psx.cpu.regs().to_vec();
+        let dma_before = psx.bus.dma.channels.map(|c| (c.madr, c.bcr, c.chcr));
+        let t = std::time::Instant::now();
+        psx.step();
+        let dt = t.elapsed();
+        if dt > worst.0 {
+            worst = (dt, pc);
+        }
+        if dt > std::time::Duration::from_millis(50) {
+            let word = peek_word(psx, pc);
+            println!(
+                "SLOW STEP {n}: pc {pc:08X} took {:.1} s: {}",
+                dt.as_secs_f64(),
+                word.map(|w| disasm::disasm(w, pc)).unwrap_or_default()
+            );
+            println!("    registers before: {}", (1..32).map(|r| format!("{}={:08X}", disasm::reg_name(r), regs_before[r as usize])).collect::<Vec<_>>().join(" "));
+            for (ch, m, b, c) in psx.bus.dma.channels.iter().enumerate().map(|(i, c)| (i, c.madr, c.bcr, c.chcr)) {
+                println!("    dma{ch} after: madr {m:08X} bcr {b:08X} chcr {c:08X}");
+            }
+            for (ch, (m, b, c)) in dma_before.iter().enumerate() {
+                if c & (1 << 24) != 0 {
+                    println!("    dma{ch} armed before: madr {m:08X} bcr {b:08X} chcr {c:08X}");
+                }
+            }
+        }
+    }
+    println!("slowest step: {:.1} ms at pc {:08X}", worst.0.as_secs_f64() * 1e3, worst.1);
+}
+
+/// --gpulist: walk the ordering table DMA channel 2 would walk from its
+/// current MADR, without running it: how many nodes, how many GP0 words, and
+/// whether it ends or comes back on itself.
+fn report_gpu_list(psx: &Psx) {
+    let start = psx.bus.dma.channels[2].madr & 0x1F_FFFC;
+    let ram = &psx.bus.ram;
+    let word = |a: u32| {
+        let a = (a & 0x1F_FFFC) as usize;
+        u32::from_le_bytes([ram[a], ram[a + 1], ram[a + 2], ram[a + 3]])
+    };
+    let mut seen = std::collections::HashMap::new();
+    let (mut addr, mut nodes, mut words) = (start, 0u64, 0u64);
+    loop {
+        if let Some(first) = seen.insert(addr, nodes) {
+            println!(
+                "gpu list from {start:08X}: CYCLE after {nodes} nodes and {words} words; node {nodes} is {addr:08X}, first seen as node {first}"
+            );
+            let mut a = addr;
+            for _ in 0..6 {
+                let h = word(a);
+                println!("    {a:08X}: header {h:08X} ({} words, next {:06X})", h >> 24, h & 0xFF_FFFF);
+                a = h & 0x1F_FFFC;
+            }
+            return;
+        }
+        let h = word(addr);
+        nodes += 1;
+        words += (h >> 24) as u64;
+        let next = h & 0xFF_FFFF;
+        if next == 0xFF_FFFF || next & 0x80_0000 != 0 {
+            println!("gpu list from {start:08X}: ends after {nodes} nodes and {words} words");
+            return;
+        }
+        addr = next & 0x1F_FFFC;
+    }
 }
