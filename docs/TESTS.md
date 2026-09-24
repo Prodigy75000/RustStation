@@ -543,8 +543,8 @@ Crisis 2's.
 
 ### With sound, 2026-09-24
 
-The survey was re-run twice after the SPU gained its voices and again after CD
-audio, against the table above. **Nothing regressed**: 29 of 31 discs match to
+The survey was re-run once after the SPU gained its voices and once after CD
+audio, against the table above. **Nothing regressed**: 27 of 31 discs match to
 the pixel, the sector, the macroblock and the primitive, and the CD audio build
 matches the SPU build exactly on every disc.
 
