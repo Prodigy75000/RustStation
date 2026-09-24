@@ -80,7 +80,8 @@ fn main() -> ExitCode {
             "usage: shot <bios.bin> [--exe file.exe] [--disc game.cue] [--steps N]\n\
              \x20            [--out shot.png] [--vram] [--compare ref.png] [--hold BUTTON,..]\n\
              diagnostics: [--pchist] [--peek ADDR[:N]] [--regs] [--film N]\n\
-             \x20            --film 0 writes VRAM once per transfer, not every N steps"
+             \x20            --film 0 writes VRAM once per transfer, not every N steps\n\
+             audio:       [--wav out.wav] records the SPU's output for the whole run"
         );
         return ExitCode::FAILURE;
     }
@@ -98,6 +99,7 @@ fn main() -> ExitCode {
     let mut regs = false;
     let mut film: Option<u64> = None;
     let mut watch: Option<u32> = None;
+    let mut wav_path: Option<String> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -140,6 +142,10 @@ fn main() -> ExitCode {
             "--disc" => {
                 i += 1;
                 disc_path = args.get(i).cloned();
+            }
+            "--wav" => {
+                i += 1;
+                wav_path = args.get(i).cloned();
             }
             "--hold" => {
                 i += 1;
@@ -225,6 +231,15 @@ fn main() -> ExitCode {
             run_filmed(&mut psx, steps, every, &out_path);
         }
         None
+    } else if let Some(path) = &wav_path {
+        let audio = run_recording_audio(&mut psx, steps);
+        report_audio(&audio);
+        if let Err(e) = write_wav(path, &audio) {
+            eprintln!("cannot write {path}: {e}");
+            return ExitCode::FAILURE;
+        }
+        println!("wrote {path} ({} stereo frames)", audio.len() / 2);
+        None
     } else {
         psx.run(steps);
         None
@@ -278,8 +293,8 @@ fn main() -> ExitCode {
         psx.bus.stub_reads, psx.bus.stub_writes, psx.bus.unmapped_reads, psx.bus.unmapped_writes
     );
     println!(
-        "spu: {} bytes into sound RAM (no audio produced)",
-        psx.bus.spu.bytes_written
+        "spu: {} bytes into sound RAM, {} key-ons",
+        psx.bus.spu.bytes_written, psx.bus.spu.key_ons
     );
     println!(
         "cdrom: {} commands ({} unknown), {} sectors read ({} XA audio kept by the drive)",
@@ -702,4 +717,78 @@ fn rgb555_to_rgb888(p: u16) -> (u8, u8, u8) {
         expand((p >> 5) & 0x1F),
         expand((p >> 10) & 0x1F),
     )
+}
+
+/// Run, draining the SPU's output a frame at a time so none of it is dropped
+/// by the core's one-second cap.
+fn run_recording_audio(psx: &mut Psx, steps: u64) -> Vec<i16> {
+    const CHUNK: u64 = 564_480;
+    let mut audio = Vec::new();
+    let mut left = steps;
+    while left > 0 {
+        let n = left.min(CHUNK);
+        psx.run(n);
+        left -= n;
+        psx.bus.sync();
+        audio.append(&mut psx.bus.spu.out);
+    }
+    audio
+}
+
+/// Peak, RMS and mean per channel. Mean is the one that catches a DC offset:
+/// silence must measure zero, and an RMS equal to the peak with every sample
+/// non-zero is a constant level rather than sound.
+fn report_audio(audio: &[i16]) {
+    let frames = audio.len() / 2;
+    if frames == 0 {
+        println!("audio: nothing produced");
+        return;
+    }
+    for (ch, name) in ["left", "right"].iter().enumerate() {
+        let xs = audio.iter().skip(ch).step_by(2).map(|&x| x as i64);
+        let (mut peak, mut sum, mut sq, mut nonzero) = (0i64, 0i64, 0f64, 0usize);
+        for x in xs {
+            peak = peak.max(x.abs());
+            sum += x;
+            sq += (x * x) as f64;
+            nonzero += (x != 0) as usize;
+        }
+        println!(
+            "audio {name}: peak {peak}, rms {:.1}, mean {:.2}, {:.1}% of samples non-zero",
+            (sq / frames as f64).sqrt(),
+            sum as f64 / frames as f64,
+            100.0 * nonzero as f64 / frames as f64
+        );
+    }
+    // Where in the run the sound is, a second at a time, so "it played at the
+    // start and then went quiet" is visible without opening the file.
+    let second = psx_core::spu::SAMPLE_RATE as usize * 2;
+    let loud: Vec<String> = audio
+        .chunks(second)
+        .map(|c| c.iter().map(|&x| (x as i32).abs()).max().unwrap_or(0).to_string())
+        .collect();
+    println!("audio peak per second: {}", loud.join(" "));
+}
+
+fn write_wav(path: &str, audio: &[i16]) -> std::io::Result<()> {
+    use std::io::Write;
+    let rate = psx_core::spu::SAMPLE_RATE;
+    let data_len = (audio.len() * 2) as u32;
+    let mut w = BufWriter::new(File::create(path)?);
+    w.write_all(b"RIFF")?;
+    w.write_all(&(36 + data_len).to_le_bytes())?;
+    w.write_all(b"WAVEfmt ")?;
+    w.write_all(&16u32.to_le_bytes())?;
+    w.write_all(&1u16.to_le_bytes())?; // PCM
+    w.write_all(&2u16.to_le_bytes())?; // stereo
+    w.write_all(&rate.to_le_bytes())?;
+    w.write_all(&(rate * 4).to_le_bytes())?; // bytes per second
+    w.write_all(&4u16.to_le_bytes())?; // bytes per frame
+    w.write_all(&16u16.to_le_bytes())?; // bits per sample
+    w.write_all(b"data")?;
+    w.write_all(&data_len.to_le_bytes())?;
+    for x in audio {
+        w.write_all(&x.to_le_bytes())?;
+    }
+    w.flush()
 }

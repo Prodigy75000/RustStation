@@ -246,6 +246,8 @@ impl Bus {
             self.timers.run(elapsed, &ticks, blank, &mut self.irq);
             self.sio.run(elapsed, &mut self.irq);
             self.cdrom.run(elapsed, &mut self.irq);
+            self.spu.run(elapsed);
+            self.spu_irq();
             self.synced_to = self.cycle;
         }
 
@@ -259,7 +261,17 @@ impl Bus {
         if let Some(t) = self.cdrom.cycles_to_event() {
             next = next.min(t);
         }
+        if let Some(t) = self.spu.cycles_to_event() {
+            next = next.min(t);
+        }
         self.next_event = self.cycle + next.max(1);
+    }
+
+    /// Forward an SPU interrupt edge to the interrupt controller.
+    fn spu_irq(&mut self) {
+        if self.spu.take_irq() {
+            self.irq.raise(irq::SPU);
+        }
     }
 
     /// Where the raster is, for [`crate::gpu::Gpu::status`].
@@ -383,6 +395,9 @@ impl Bus {
             return self.cdrom.read(off);
         }
         if let Some(off) = SPU.contains(abs) {
+            // Envelope levels, ENDX and the interrupt flag all move on their
+            // own, so a read has to see the present.
+            self.sync();
             return self.spu.read(off, width);
         }
         if let Some(off) = MDEC.contains(abs) {
@@ -490,6 +505,8 @@ impl Bus {
                     &mut self.irq,
                     channel,
                 );
+                // A transfer through the IRQ address raises the SPU interrupt.
+                self.spu_irq();
             }
             return;
         }
@@ -510,7 +527,14 @@ impl Bus {
             return;
         }
         if let Some(off) = SPU.contains(abs) {
+            // Catch the samples up first, or a key-on lands in samples that
+            // were already due before it was written.
+            self.sync();
             self.spu.write(off, width, val);
+            self.spu_irq();
+            // Arming or acknowledging the interrupt changes when the SPU next
+            // needs attention.
+            self.sync();
             return;
         }
         if let Some(off) = MDEC.contains(abs) {

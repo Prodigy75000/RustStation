@@ -84,10 +84,14 @@ Working, and confirmed against real hardware behaviour rather than asserted:
   output depths, and both DMA channels. **Full-motion video plays**: twenty-four
   of the thirty-one discs decode their intro, Tomb Raider's through to its title
   screen. See [`docs/notes/MDEC.md`](docs/notes/MDEC.md).
-- **SPU**: the register file and 512 KB of sound RAM, and **no audio at all**.
-  Thin on purpose: a register that always reads zero is a hang, not a missing
-  feature, and read-back alone is what took Crash from a spin to its title
-  screen.
+- **SPU, and games make sound.** All 24 voices: ADPCM decoding with its five
+  prediction filters, the pitch counter with 4-point Gaussian interpolation,
+  pitch modulation, the noise generator, the ADSR envelope and the volume
+  sweeps, key-on/key-off and ENDX, the capture buffers, and the SPU interrupt
+  from a voice, a transfer or a capture write. Output is 44 100 Hz stereo
+  through libretro, and `shot --wav` records it with peak, RMS and mean per
+  channel. Crash Bandicoot and Crash Team Racing play their music through
+  their title screens. See [`docs/notes/SPU.md`](docs/notes/SPU.md).
 - **CD-ROM**: the controller, seeking, and reads that deliver a sector at a time
   through the data FIFO and DMA channel 3. Real games load through it: several
   read eight thousand sectors in the survey. **With a synthetic disc the BIOS
@@ -116,9 +120,10 @@ Working, and confirmed against real hardware behaviour rather than asserted:
 
 Not started:
 
-- **Audio of any kind.** No voices, no ADPCM, no CD-DA, no XA. The drive
+- **CD audio and reverb.** No CD-DA and no XA-ADPCM, so any game whose music
+  streams off the disc is silent where that music would be. The drive already
   demultiplexes XA audio sectors out of a video stream correctly and then drops
-  them, so a video plays silently.
+  them. No reverb, so everything is dry.
 - Memory cards, CHD images, the CD-ROM's sub-channel.
 - Per-instruction cycle costs. Every instruction is one cycle and
   multiply/divide do not stall.
@@ -131,7 +136,7 @@ correctly, and that disagreement is the lead. Recorded in
 
 It is still early. Every one of the thirty-one discs on hand draws its own
 content and most play their intro video, but that means title screens and menus,
-not gameplay. There is no sound anywhere.
+not gameplay. Sound is the SPU's voices only, so far.
 No game has been driven with **changing** input, so "playable" is not a claim
 being made. Homebrew and test binaries sideloaded as PSX-EXEs also run, and draw.
 `scripts/survey.sh` runs the whole library and writes the table in

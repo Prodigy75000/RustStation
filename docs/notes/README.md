@@ -27,7 +27,7 @@ Structure that works:
 | [`SIO.md`](SIO.md) | SIO0: the controller and memory card port |
 | [`CDROM.md`](CDROM.md) | The CD-ROM controller |
 | [`DISC.md`](DISC.md) | Disc images: cue sheets, tracks and raw sectors |
-| [`SPU.md`](SPU.md) | The SPU's register file and sound RAM, without audio |
+| [`SPU.md`](SPU.md) | The SPU: voices, ADPCM, envelopes, the mixer and its interrupt |
 
 Still to write: memory cards, which share `SIO.md`'s port and will be added to
 it.

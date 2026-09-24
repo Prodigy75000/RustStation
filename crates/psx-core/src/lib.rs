@@ -23,14 +23,15 @@
 //! * The CD-ROM controller and BIN/CUE disc images.
 //! * MDEC, the macroblock decoder, which is what full-motion video goes
 //!   through.
-//! * The SPU's register file and sound RAM, but **no audio**.
+//! * The SPU's 24 voices, their envelopes and the mixer. No reverb, no CD
+//!   audio.
 //! * BIOS TTY capture, so a conformance binary's own verdict is readable.
 //! * PSX-EXE sideload at the BIOS shell hook.
 //! * Save states that satisfy the in-house byte-identical contract.
 //!
 //! ## What does not exist yet
 //!
-//! Audio of any kind, memory cards, CHD images. No per-instruction timing
+//! Reverb, CD-DA and XA-ADPCM, memory cards, CHD images. No per-instruction timing
 //! model: every instruction costs one cycle.
 
 pub mod bus;

@@ -8,9 +8,10 @@
 //! other files beside it and a frontend that reads content into a buffer for us
 //! would hand over the sheet's text and nothing it points at.
 //!
-//! Both pads are read every frame from the frontend's RetroPad. **There is no
-//! audio**: `retro_run` emits silence, which it must still do, because a
-//! frontend starved of audio stalls its own frame pacing.
+//! Both pads are read every frame from the frontend's RetroPad. Audio is the
+//! SPU's own output at 44 100 Hz, 735 stereo frames per video frame, handed
+//! over in one batch. Before content is loaded `retro_run` still emits a frame
+//! of silence, because a frontend starved of audio stalls its own frame pacing.
 //!
 //! Two surfaces here exist ahead of anything needing them, on purpose. The
 //! state transfer (`retro_serialize` / `retro_unserialize`) is what the netplay
@@ -399,10 +400,34 @@ pub unsafe extern "C" fn retro_run() {
         }
     }
 
-    // No SPU yet: silence. It must still be *emitted*, because a frontend starved of
-    // audio stalls its own frame pacing.
-    if let Some(batch) = AUDIO_BATCH_CB {
-        batch((*ptr::addr_of!(SILENCE)).as_ptr(), SAMPLES_PER_FRAME);
+    let Some(batch) = AUDIO_BATCH_CB else {
+        return;
+    };
+    match psx_mut() {
+        Some(psx) => {
+            // Bring the SPU up to the end of the frame. Syncing is idempotent,
+            // so this changes when samples are produced, never which.
+            psx.bus.sync();
+            let samples = std::mem::take(&mut psx.bus.spu.out);
+            send_audio(batch, &samples);
+        }
+        // Nothing loaded: silence, which must still be *emitted*.
+        None => {
+            batch((*ptr::addr_of!(SILENCE)).as_ptr(), SAMPLES_PER_FRAME);
+        }
+    }
+}
+
+/// Hand interleaved stereo to the frontend. It may take fewer frames than it
+/// is offered, so keep offering the rest until it stops taking any.
+unsafe fn send_audio(batch: AudioSampleBatchFn, samples: &[i16]) {
+    let mut rest = samples;
+    while rest.len() >= 2 {
+        let taken = batch(rest.as_ptr(), rest.len() / 2).min(rest.len() / 2);
+        if taken == 0 {
+            break;
+        }
+        rest = &rest[taken * 2..];
     }
 }
 

@@ -55,7 +55,11 @@ pub const MAGIC: &[u8; 8] = b"RSTAPSX1";
 /// * 7: adds the SPU's register file and its 512 KB of sound RAM. No audio is
 ///   produced, but the registers are still machine state: software polls what
 ///   it wrote, and a state that loses them resumes into a spin.
-pub const FORMAT_VERSION: u16 = 9;
+/// * 10: the SPU makes sound, so it gains the state behind the registers: each
+///   voice's pitch counter, block, predictor, envelope and volumes, and the
+///   chip's key latches, ENDX, noise generator, main volumes, capture position,
+///   interrupt flag and the cycles owed towards the next sample.
+pub const FORMAT_VERSION: u16 = 10;
 
 const HEADER_BYTES: usize = 8 + 2;
 const CPU_BYTES: usize = 32 * 4     // regs
@@ -127,8 +131,21 @@ const SIO_BYTES: usize = 2 * 3      // mode, ctrl, baud
     + 1; // ack level, interrupt latch
 
 /// The SPU, added in format version 7: the register file, then sound RAM
-/// behind a length prefix, then the transfer pointer.
-const SPU_BYTES: usize = spu::REG_BYTES + 4 + spu::RAM_BYTES + 4;
+/// behind a length prefix, then the transfer pointer. Version 10 adds the
+/// voices and the chip state behind them.
+const SPU_BYTES: usize = spu::REG_BYTES + 4 + spu::RAM_BYTES + 4
+    + spu::VOICES * SPU_VOICE_BYTES
+    + 4 + 4 + 4                   // key-on and key-off latches, ENDX
+    + 2 + 4                       // noise level and timer
+    + 2 * 2 + 2 * 4               // main volumes and their sweep counters
+    + 2 + 1 + 4; // capture position, interrupt flag, cycles towards the next sample
+
+const SPU_VOICE_BYTES: usize = 4 + 4 + 1     // pitch counter, address, block flags
+    + 28 * 2 + 3 * 2                          // the block and the three before it
+    + 2 + 2                                   // ADPCM predictor
+    + 1 + 2 + 4                               // envelope phase, level, counter
+    + 2 * 2 + 2 * 4                           // volumes and their sweep counters
+    + 2; // OUTX
 
 /// MDEC, added in format version 9. Everything fixed width: the tables, the
 /// block being assembled, the six decoded blocks and the output buffer.
@@ -445,6 +462,37 @@ fn write_spu(w: &mut Writer, s: &spu::Spu) {
     w.u32(ram.len() as u32);
     w.bytes(ram);
     w.u32(transfer);
+
+    for v in &s.voices {
+        w.u32(v.counter);
+        w.u32(v.addr);
+        w.u8(v.flags);
+        for x in v.samples.iter().chain(v.history.iter()) {
+            w.u16(*x as u16);
+        }
+        w.u16(v.old as u16);
+        w.u16(v.older as u16);
+        w.u8(v.phase as u8);
+        w.u16(v.env as u16);
+        w.u32(v.env_counter);
+        w.u16(v.vol[0] as u16);
+        w.u16(v.vol[1] as u16);
+        w.u32(v.vol_counter[0]);
+        w.u32(v.vol_counter[1]);
+        w.u16(v.outx as u16);
+    }
+    w.u32(s.pending_on);
+    w.u32(s.pending_off);
+    w.u32(s.endx);
+    w.u16(s.noise_level);
+    w.u32(s.noise_timer as u32);
+    w.u16(s.main_vol[0] as u16);
+    w.u16(s.main_vol[1] as u16);
+    w.u32(s.main_counter[0]);
+    w.u32(s.main_counter[1]);
+    w.u16(s.capture);
+    w.bool(s.irq_flag);
+    w.u32(s.cycle_frac);
 }
 
 fn write_cdrom(w: &mut Writer, c: &cdrom::Cdrom) {
@@ -722,6 +770,41 @@ fn read_spu(r: &mut Reader, s: &mut spu::Spu) -> Option<()> {
     let ram = r.take(spu::RAM_BYTES)?.to_vec();
     let transfer = r.u32()?;
     s.restore(regs, &ram, transfer);
+
+    // Values the serializer never emits are canonicalized rather than
+    // refused, as with `bool`: the restore pass must not be able to fail
+    // once the length checks have passed. They are also what keeps a hostile
+    // state from indexing past the end of a block.
+    for v in s.voices.iter_mut() {
+        v.counter = r.u32()? % (28 << 12);
+        v.addr = r.u32()? & (spu::RAM_BYTES as u32 - 1);
+        v.flags = r.u8()?;
+        for x in v.samples.iter_mut().chain(v.history.iter_mut()) {
+            *x = r.u16()? as i16;
+        }
+        v.old = r.u16()? as i16;
+        v.older = r.u16()? as i16;
+        v.phase = spu::Phase::from_u8(r.u8()?).unwrap_or(spu::Phase::Off);
+        v.env = r.u16()? as i16;
+        v.env_counter = r.u32()?;
+        v.vol[0] = r.u16()? as i16;
+        v.vol[1] = r.u16()? as i16;
+        v.vol_counter[0] = r.u32()?;
+        v.vol_counter[1] = r.u32()?;
+        v.outx = r.u16()? as i16;
+    }
+    s.pending_on = r.u32()?;
+    s.pending_off = r.u32()?;
+    s.endx = r.u32()?;
+    s.noise_level = r.u16()?;
+    s.noise_timer = r.u32()? as i32;
+    s.main_vol[0] = r.u16()? as i16;
+    s.main_vol[1] = r.u16()? as i16;
+    s.main_counter[0] = r.u32()?;
+    s.main_counter[1] = r.u32()?;
+    s.capture = r.u16()? & 0x1FF;
+    s.irq_flag = r.bool()?;
+    s.cycle_frac = r.u32()? % spu::CYCLES_PER_SAMPLE as u32;
     Some(())
 }
 
@@ -1066,6 +1149,42 @@ mod tests {
         }
         psx.bus.store16(0x1F80_1C00, 0x3FFF); // voice 0 volume left
 
+        // A second block behind it, flagged loop start, end and repeat, so a
+        // voice that reaches it sets ENDX and then stays there.
+        for i in 0..8u32 {
+            let v = if i == 0 { 0x0721 } else { 0x9A5C ^ (i * 0x0F0F) };
+            psx.bus.store16(0x1F80_1DA8, v as u16);
+        }
+
+        // And a voice playing them. Every field below would otherwise be zero,
+        // and zero bytes cannot show a reordering, so each is set up to move:
+        //
+        // * Voice 2 runs through both blocks at nearly three times pitch, so it
+        //   has history from the first, ENDX from the second, and a predictor,
+        //   pitch counter and envelope all partway.
+        // * Its attack and both volume sweeps use slow rates, so their counters
+        //   sit partway rather than resetting to zero every sample. The two
+        //   sweeps use different rates so their counters differ.
+        // * Both main volumes sweep, at different rates, for the same reason.
+        // * The IRQ address is the first block, so the key-on raises the flag.
+        // * A key-on and a key-off are written last and left latched, because
+        //   the next sample has not come due.
+        psx.bus.store16(0x1F80_1DA4, 0x0040); // IRQ address: the first block
+        psx.bus.store16(0x1F80_1DAA, 0xC040); // SPUCNT: on, unmuted, IRQ armed
+        psx.bus.store16(0x1F80_1D80, 0x8039); // main left: sweep, 8-sample counter
+        psx.bus.store16(0x1F80_1D82, 0x8035); // main right: sweep, 4-sample counter
+        psx.bus.store16(0x1F80_1C20, 0x9035); // voice 2 left: sweep, 4-sample counter
+        psx.bus.store16(0x1F80_1C22, 0xC03A); // voice 2 right: sweep, 8-sample counter
+        psx.bus.store16(0x1F80_1C24, 0x2E71); // pitch
+        psx.bus.store16(0x1F80_1C26, 0x0040); // start: the first block
+        psx.bus.store16(0x1F80_1C28, 0x3A93); // ADSR1: attack shift 14, 8-sample counter
+        psx.bus.store16(0x1F80_1C2A, 0x8F4B); // ADSR2
+        psx.bus.store16(0x1F80_1D88, 1 << 2); // key on voice 2
+        psx.bus.tick(768 * 37 + 211);
+        psx.bus.sync();
+        psx.bus.store16(0x1F80_1D8C, 1 << 5); // key off, still latched
+        psx.bus.store16(0x1F80_1D8A, 1 << 3); // key on voice 19, still latched
+
         // MDEC: both quant tables, the scale table, and a decode left partway
         // through so the coefficient buffer, the block index and the output
         // buffer all hold something. A chip sitting at its power-on values
@@ -1122,15 +1241,15 @@ mod tests {
 
         // Header, byte for byte.
         assert_eq!(&snap[0..8], MAGIC);
-        assert_eq!(&snap[8..10], &[0x09, 0x00]);
+        assert_eq!(&snap[8..10], &[0x0A, 0x00]);
 
         // Total length, pinned to a literal, deliberately NOT compared against
         // `Psx::state_size()`, which would only compare the layout to itself.
-        assert_eq!(snap.len(), 3_676_704);
+        assert_eq!(snap.len(), 3_679_045);
 
         // Whole-buffer checksum: any added, removed, reordered or re-widened
         // field moves it.
-        assert_eq!(fnv1a64(&snap), 0xAD63_67CC_9977_9E4A);
+        assert_eq!(fnv1a64(&snap), 0x4E71_BF71_A881_4019);
     }
 
     #[test]
