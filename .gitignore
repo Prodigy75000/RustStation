@@ -43,3 +43,4 @@ android-jnilibs/
 # Scratch from RSTA_GTE_TRACE runs.
 trace.log
 sio.log
+/target-*/
