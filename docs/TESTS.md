@@ -630,7 +630,7 @@ Dino Crisis had the same check and now reaches its in-engine intro.
 Where Beetle is still ahead: reverb, analog sticks, memory cards, multi-disc,
 PAL timing, and years of compatibility across far more than 31 discs.
 
-**Reading the next survey:** . Lit-pixel
+**Reading the next survey:** `node tools/survey-compare.mjs OLD NEW`. Lit-pixel
 counts moved on 2026-09-24 for an output-only reason: the display height now
 follows GP1(07h), so CTR's menu is 216 lines rather than 240 and counts fewer
 pixels with its sectors and primitives unchanged. Judge emulation changes by
