@@ -610,6 +610,32 @@ Still open:
   directory it searched and the BIOS it took through the frontend's logger, so
   the next run on the phone answers it.
 
+### Against Beetle PSX on the same phone, 2026-09-24
+
+The owner's own comparison, flipping the toggle on the same discs:
+
+- **GTA 2 runs on this core and black-screens on Beetle** (with and without a
+  BIOS).
+- **No long black waits before a game starts**; Beetle has them.
+- The real Sony boot sequence, where Beetle without a BIOS shows its own.
+- Every disc tried plays at 60 fps, except the two multi-disc games (Final
+  Fantasy VIII, Metal Gear Solid), which do not load: there is no .m3u or
+  disc-swap support yet.
+
+Crash Bash, which stalled on the "SCEA presents" screen, was an anti-modchip
+check (CD Test 04h/05h, now answered with zero SCEx counts). It reaches its
+menu here and **attract-mode gameplay on the tablet**, confirmed on device.
+Dino Crisis had the same check and now reaches its in-engine intro.
+
+Where Beetle is still ahead: reverb, analog sticks, memory cards, multi-disc,
+PAL timing, and years of compatibility across far more than 31 discs.
+
+**Reading the next survey:** . Lit-pixel
+counts moved on 2026-09-24 for an output-only reason: the display height now
+follows GP1(07h), so CTR's menu is 216 lines rather than 240 and counts fewer
+pixels with its sectors and primitives unchanged. Judge emulation changes by
+sectors, macroblocks and primitives, not by pixels alone.
+
 ### What "gameplay" does and does not mean
 
 Tekken 3 renders a round in progress and Crash reaches its main menu. Neither is
