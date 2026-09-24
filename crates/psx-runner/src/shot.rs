@@ -304,6 +304,17 @@ fn main() -> ExitCode {
         psx.bus.cdrom.xa_sectors
     );
     println!(
+        "cd audio: {} CD-DA sectors played, {} frames queued, {} dropped; SPUCNT {:04X}, CD volume {:04X}/{:04X}, main volume {:04X}/{:04X}",
+        psx.bus.cdrom.cdda_sectors,
+        psx.bus.cdrom.audio_queued(),
+        psx.bus.cdrom.audio_overflows,
+        psx.bus.spu.read(0x1AA, 2),
+        psx.bus.spu.read(0x1B0, 2),
+        psx.bus.spu.read(0x1B2, 2),
+        psx.bus.spu.read(0x180, 2),
+        psx.bus.spu.read(0x182, 2),
+    );
+    println!(
         "sio: {} bytes exchanged, {} answered by a device",
         psx.bus.sio.transfers, psx.bus.sio.acknowledged
     );

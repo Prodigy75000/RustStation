@@ -59,7 +59,11 @@ pub const MAGIC: &[u8; 8] = b"RSTAPSX1";
 ///   voice's pitch counter, block, predictor, envelope and volumes, and the
 ///   chip's key latches, ENDX, noise generator, main volumes, capture position,
 ///   interrupt flag and the cycles owed towards the next sample.
-pub const FORMAT_VERSION: u16 = 10;
+/// * 11: CD audio. The drive gains its volume matrix, both mutes, CD-DA
+///   playback, the XA decoder's predictor and resampler, and the frames waiting
+///   for the SPU. Those are written oldest first and padded with zeros, so the
+///   bytes do not depend on where the ring happens to start.
+pub const FORMAT_VERSION: u16 = 11;
 
 const HEADER_BYTES: usize = 8 + 2;
 const CPU_BYTES: usize = 32 * 4     // regs
@@ -171,7 +175,16 @@ const CDROM_BYTES: usize = 10     // index, irq enable/flags, stat, mode, three 
     + 1                           // whether a read is running
     + 8                           // cycles to the next sector
     + 2 + 2                       // how much of the sector software asked for
-    + 2340; // and the sector itself
+    + 2340                        // and the sector itself
+    + CD_AUDIO_BYTES;
+
+/// CD audio, added in format version 11.
+const CD_AUDIO_BYTES: usize = 4 + 4   // the volume matrix, applied and pending
+    + 1 + 1                       // XA mute, Mute
+    + 1 + 8 + 1                   // playing, cycles to the next sector, Setloc pending
+    + 2 * 2 * 2                   // XA predictor, both channels
+    + 2 * 32 * 2 + 1 + 1          // the resampler ring, its position, the six-step count
+    + 2 + cdrom::AUDIO_FIFO * 4; // frames queued, then the queue, oldest first
 
 /// Exact serialized length for [`FORMAT_VERSION`]. Derived from the field
 /// widths above rather than from `save_state().len()`, so a test that pins it
@@ -514,6 +527,36 @@ fn write_cdrom(w: &mut Writer, c: &cdrom::Cdrom) {
     w.u16(data_len);
     w.u16(data_pos);
     w.bytes(sector);
+
+    w.bytes(&c.atv);
+    w.bytes(&c.atv_next);
+    w.bool(c.xa_mute);
+    w.bool(c.muted);
+    w.bool(c.playing);
+    w.u64(c.play_countdown);
+    w.bool(c.setloc_pending);
+    for ch in &c.xa.prev {
+        w.u16(ch[0] as u16);
+        w.u16(ch[1] as u16);
+    }
+    for ring in &c.xa.ring {
+        for x in ring {
+            w.u16(*x as u16);
+        }
+    }
+    w.u8(c.xa.ring_pos);
+    w.u8(c.xa.six);
+    let len = c.audio_len as usize;
+    w.u16(c.audio_len);
+    for i in 0..cdrom::AUDIO_FIFO {
+        let [l, r] = if i < len {
+            c.audio[(c.audio_head as usize + i) % cdrom::AUDIO_FIFO]
+        } else {
+            [0, 0]
+        };
+        w.u16(l as u16);
+        w.u16(r as u16);
+    }
 }
 
 fn write_mdec(w: &mut Writer, m: &mdec::Mdec) {
@@ -873,6 +916,34 @@ fn read_cdrom(r: &mut Reader, c: &mut cdrom::Cdrom) -> Option<()> {
         data_pos,
         sector,
     );
+
+    c.atv.copy_from_slice(r.take(4)?);
+    c.atv_next.copy_from_slice(r.take(4)?);
+    c.xa_mute = r.bool()?;
+    c.muted = r.bool()?;
+    c.playing = r.bool()?;
+    c.play_countdown = r.u64()?;
+    c.setloc_pending = r.bool()?;
+    for ch in c.xa.prev.iter_mut() {
+        ch[0] = r.u16()? as i16;
+        ch[1] = r.u16()? as i16;
+    }
+    for ring in c.xa.ring.iter_mut() {
+        for x in ring.iter_mut() {
+            *x = r.u16()? as i16;
+        }
+    }
+    c.xa.ring_pos = r.u8()?;
+    // Canonicalized: the count runs 6 down to 1, and 0 would underflow.
+    c.xa.six = match r.u8()? {
+        n @ 1..=6 => n,
+        _ => 6,
+    };
+    c.audio_len = r.u16()?.min(cdrom::AUDIO_FIFO as u16);
+    c.audio_head = 0;
+    for frame in c.audio.iter_mut() {
+        *frame = [r.u16()? as i16, r.u16()? as i16];
+    }
     Some(())
 }
 
@@ -1139,6 +1210,7 @@ mod tests {
 
         psx.bus.store8(0x1F80_1802, 0x42); // a parameter for a command not yet sent
 
+
         // The SPU: control set, and samples pushed through the transfer port so
         // sound RAM is not half a megabyte of zeroes. Same reasoning as the
         // disc above; a region that is entirely zero cannot show a reordering.
@@ -1224,6 +1296,39 @@ mod tests {
         psx.bus.store32(0x1F80_1084, 0x0002_0002); // two words, two blocks
         psx.bus.store32(0x1F80_1088, 0x0100_0201); // from RAM, sync 1, start
 
+        // CD audio, last of all, because every tick above drains the queue
+        // into the SPU and a playing drive refills it. Set directly rather
+        // than driven, because this test is about
+        // the layout, and every field has to hold something distinct and
+        // non-zero for a reordering to show. The queue is given a head part way
+        // round the ring and wraps past its end, which is the case the
+        // oldest-first writing exists for.
+        {
+            let c = &mut psx.bus.cdrom;
+            c.atv = [0x80, 0x11, 0x7F, 0x22];
+            c.atv_next = [0x33, 0x44, 0x55, 0x66];
+            c.xa_mute = true;
+            c.muted = false;
+            c.playing = true;
+            c.play_countdown = 123_457;
+            c.setloc_pending = true;
+            c.xa.prev = [[101, -202], [303, -404]];
+            for (i, x) in c.xa.ring[0].iter_mut().enumerate() {
+                *x = 1000 + i as i16;
+            }
+            for (i, x) in c.xa.ring[1].iter_mut().enumerate() {
+                *x = -2000 - 3 * i as i16;
+            }
+            c.xa.ring_pos = 77;
+            c.xa.six = 4;
+            c.audio_head = (cdrom::AUDIO_FIFO - 3) as u16;
+            c.audio_len = 5;
+            for k in 0..5 {
+                let at = (c.audio_head as usize + k) % cdrom::AUDIO_FIFO;
+                c.audio[at] = [7 + k as i16, -9 - k as i16];
+            }
+        }
+
         psx
     }
 
@@ -1241,15 +1346,15 @@ mod tests {
 
         // Header, byte for byte.
         assert_eq!(&snap[0..8], MAGIC);
-        assert_eq!(&snap[8..10], &[0x0A, 0x00]);
+        assert_eq!(&snap[8..10], &[0x0B, 0x00]);
 
         // Total length, pinned to a literal, deliberately NOT compared against
         // `Psx::state_size()`, which would only compare the layout to itself.
-        assert_eq!(snap.len(), 3_679_045);
+        assert_eq!(snap.len(), 3_744_741);
 
         // Whole-buffer checksum: any added, removed, reordered or re-widened
         // field moves it.
-        assert_eq!(fnv1a64(&snap), 0x4E71_BF71_A881_4019);
+        assert_eq!(fnv1a64(&snap), 0x07AE_38BD_59B5_D0D9);
     }
 
     #[test]

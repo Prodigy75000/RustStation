@@ -452,10 +452,15 @@ fn parse_msf(s: &str) -> Option<u32> {
 
 /// An LBA as the absolute minute, second and frame the drive reports, in BCD.
 pub fn lba_to_msf_bcd(lba: u32) -> [u8; 3] {
-    let total = lba + LEAD_IN;
-    let m = total / (60 * 75);
-    let s = (total / 75) % 60;
-    let f = total % 75;
+    frames_to_msf_bcd(lba + LEAD_IN)
+}
+
+/// A plain count of frames as BCD minute, second and frame, with no lead-in
+/// added: what a position *within* a track is reported as.
+pub fn frames_to_msf_bcd(frames: u32) -> [u8; 3] {
+    let m = frames / (60 * 75);
+    let s = (frames / 75) % 60;
+    let f = frames % 75;
     [to_bcd(m as u8), to_bcd(s as u8), to_bcd(f as u8)]
 }
 

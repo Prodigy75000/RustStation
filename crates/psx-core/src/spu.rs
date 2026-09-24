@@ -24,9 +24,11 @@
 //! 3. The capture buffers at the bottom of sound RAM.
 //! 4. The mix, the main volume, and the output.
 //!
-//! **Not here yet:** reverb, and anything from the CD (CD-DA and XA-ADPCM).
-//! The CD capture buffers are written with silence so that software pacing
-//! itself off them still gets its interrupt.
+//! CD audio arrives one frame per sample from the drive, through the closure
+//! [`Spu::run_with_cd`] is given, already through the drive's own volume
+//! matrix. It is captured, then mixed at the CD volume if SPUCNT bit 0 allows.
+//!
+//! **Not here yet:** reverb.
 
 /// Registers, `0x1F801C00` to `0x1F801E80`. 640 bytes, addressed as 16-bit.
 pub const REG_BYTES: usize = 640;
@@ -534,12 +536,19 @@ impl Spu {
 
     // ---- time ------------------------------------------------------------
 
-    /// Advance by `cycles` CPU cycles, producing a sample for every 768.
+    /// Advance by `cycles` CPU cycles with no CD audio coming in.
     pub fn run(&mut self, cycles: u64) {
+        self.run_with_cd(cycles, &mut || [0, 0]);
+    }
+
+    /// Advance by `cycles` CPU cycles, producing a sample for every 768 and
+    /// taking one frame of CD audio from `cd` for each.
+    pub fn run_with_cd(&mut self, cycles: u64, cd: &mut impl FnMut() -> [i16; 2]) {
         let total = self.cycle_frac as u64 + cycles;
         self.cycle_frac = (total % CYCLES_PER_SAMPLE) as u32;
         for _ in 0..total / CYCLES_PER_SAMPLE {
-            self.tick();
+            let frame = cd();
+            self.tick(frame);
         }
     }
 
@@ -554,7 +563,7 @@ impl Spu {
         }
     }
 
-    fn tick(&mut self) {
+    fn tick(&mut self, cd: [i16; 2]) {
         self.apply_keys();
 
         let cnt = self.regs[SPUCNT / 2];
@@ -585,9 +594,6 @@ impl Spu {
         }
         self.step_noise(cnt);
 
-        // No CD audio yet: the drive delivers nothing, so it is silence that
-        // gets captured and mixed.
-        let cd = [0i16; 2];
         self.capture_sample(cd);
 
         if cnt & CNT_ENABLE == 0 || cnt & CNT_UNMUTE == 0 {

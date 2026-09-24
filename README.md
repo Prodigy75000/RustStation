@@ -92,6 +92,11 @@ Working, and confirmed against real hardware behaviour rather than asserted:
   through libretro, and `shot --wav` records it with peak, RMS and mean per
   channel. Crash Bandicoot and Crash Team Racing play their music through
   their title screens. See [`docs/notes/SPU.md`](docs/notes/SPU.md).
+- **CD audio**: CD-DA through `Play`, with reports, auto-pause and the end of
+  the disc, and XA-ADPCM decoded in the drive (4- and 8-bit, mono and stereo,
+  both rates) and resampled to 44 100 Hz with the documented zigzag filter.
+  Filtering by file and channel, the drive's volume matrix, and Mute. Tekken 3's
+  and Mega Man X5's intro videos, silent before, now have their sound.
 - **CD-ROM**: the controller, seeking, and reads that deliver a sector at a time
   through the data FIFO and DMA channel 3. Real games load through it: several
   read eight thousand sectors in the survey. **With a synthetic disc the BIOS
@@ -120,10 +125,7 @@ Working, and confirmed against real hardware behaviour rather than asserted:
 
 Not started:
 
-- **CD audio and reverb.** No CD-DA and no XA-ADPCM, so any game whose music
-  streams off the disc is silent where that music would be. The drive already
-  demultiplexes XA audio sectors out of a video stream correctly and then drops
-  them. No reverb, so everything is dry.
+- **Reverb**, so everything is dry.
 - Memory cards, CHD images, the CD-ROM's sub-channel.
 - Per-instruction cycle costs. Every instruction is one cycle and
   multiply/divide do not stall.
@@ -136,7 +138,7 @@ correctly, and that disagreement is the lead. Recorded in
 
 It is still early. Every one of the thirty-one discs on hand draws its own
 content and most play their intro video, but that means title screens and menus,
-not gameplay. Sound is the SPU's voices only, so far.
+not gameplay. Sound has everything but reverb.
 No game has been driven with **changing** input, so "playable" is not a claim
 being made. Homebrew and test binaries sideloaded as PSX-EXEs also run, and draw.
 `scripts/survey.sh` runs the whole library and writes the table in

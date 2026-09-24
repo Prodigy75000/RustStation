@@ -11,9 +11,10 @@ Implemented in `crates/psx-core/src/spu.rs`.
 **Status: 24 voices, and games make sound.** ADPCM decoding, the pitch counter
 and its interpolation, pitch modulation, noise, ADSR, volume sweeps, key-on and
 key-off, ENDX, the capture buffers, and the interrupt from all three of its
-sources. **Not here: reverb, CD-DA, XA-ADPCM.** Crash Bandicoot and Crash Team
-Racing play their title music; games whose music streams off the disc are
-silent where it would be.
+sources. CD audio, CD-DA and XA, comes in from the drive a frame per sample
+(see [`CDROM.md`](CDROM.md)). **Not here: reverb.** Crash Bandicoot and Crash
+Team Racing play their title music, and Tekken 3's and Mega Man X5's intro
+videos have their sound.
 
 ## What the hardware does
 

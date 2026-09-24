@@ -2,7 +2,10 @@
 
 Written from the public PlayStation hardware documentation (psx-spx and nocash's
 original PSX-SPX) for the CD-ROM register block, the command set, the response
-protocol and the interrupt path. No third-party emulator source consulted.
+protocol and the interrupt path. CD audio from psx-spx's "CDROM Controller
+Commands" (Play, Mute, Demute, Report, AutoPause), its audio volume registers,
+"Data/ADPCM Sector Filtering/Delivery", and "CDROM XA Audio ADPCM Compression".
+No third-party emulator source consulted.
 
 Implemented in `crates/psx-core/src/cdrom.rs`.
 
@@ -20,8 +23,13 @@ Two milestones, both reproducible:
   recognition sequence and draws the PlayStation licence screen, with the text
   on it read out of sector 4 of the disc.
 
-Not yet done: XA audio, CD-DA playback, sub-channel Q, and the region check
-against a real game.
+**CD audio plays**: CD-DA through `Play` and XA-ADPCM decoded from real-time
+audio sectors, both into a queue the SPU drains a frame per sample. The XA
+decoder is `crates/psx-core/src/xa.rs`. Tekken 3's and Mega Man X5's intro
+videos, silent before, have their sound.
+
+Not yet done: sub-channel Q, Forward and Backward, and the region check against
+a real game.
 
 ## What it is
 
@@ -163,45 +171,67 @@ A game reads that stream with the 2048-byte sector size, which hands it the user
 data and *not* the subheader. So it has no way at all to recognise an audio
 sector, and the drive has to keep them.
 
-`Setmode` bit 6 arms this. With it set, a sector that is Mode 2, and whose
-submode says real-time (bit 6) and audio (bit 2) and Form 2 (bit 5), is consumed
-by the drive: it goes to the ADPCM decoder, raises no `INT1`, and never reaches
-the data FIFO. From software's side that sector did not exist. With bit 6 clear
-the same sector is ordinary data, which is how a program that wants to look at
-the audio itself gets to.
+psx-spx gives the rule, and it is followed as written. A Mode 2 sector whose
+submode says real-time (bit 6) and audio (bit 2) goes to the ADPCM decoder when
+`Setmode` bit 6 enables XA-ADPCM and either filtering (`Setmode` bit 3) is off
+or the sector's file and channel match `Setfilter`. It raises no `INT1` and
+never reaches the data FIFO: from software's side it did not exist. With
+filtering on, a real-time audio sector that was *not* decoded is dropped, not
+reported. Everything else is data. Form 2 is not part of the test, though the
+code once required it.
 
-`Setfilter` and its mode bit are the second half on hardware and change nothing
-here. The filter chooses *which* of several interleaved audio streams reaches the
-decoder, and a sector it rejects is dropped rather than handed over, so filtered
-and unfiltered audio are both withheld either way. It will matter the day there
-is a decoder to route the accepted ones to.
+The count of kept sectors is reported separately from sectors read, because a
+sector that was fetched and then deliberately not reported is, from software's
+side, indistinguishable from one that was never read at all.
 
-There is none, so "routed to audio" means "dropped", and the difference is
-silence. The count is reported separately from sectors read, because a sector
-that was fetched and then deliberately not reported is, from software's side,
-indistinguishable from one that was never read at all.
+## XA-ADPCM
 
-## CD audio: accepted, not produced
+Eighteen 128-byte portions per sector, each a 16-byte header and 28 words of
+packed samples: 4-bit or 8-bit, mono or stereo, 37 800 or 18 900 Hz, all from
+the subheader's coding byte. The predictor is SPU-ADPCM's with four filters.
+Its state carries from sector to sector.
 
-`Play` (0x03) sets the drive's playing bit and does nothing else. There is no
-CD-DA output anywhere in this core yet.
+The 37 800 Hz stream becomes 44 100 Hz through the documented 7-phase "zigzag"
+filter: seven outputs for every six inputs, each a 29-tap sum. Two things about
+the tables are worth knowing before anyone "fixes" them. They sum to 0x73EB..
+0x741D, not 0x8000, so the resampler's gain is about 0.91. And the document
+divides each product by 0x8000 separately, which loses up to half an LSB per
+tap; at small amplitudes that is most of the signal (a constant 48 comes out as
+33). Both are the document's data, kept as it is.
 
-The bit is not decoration. Software polls for "playing", and a drive that
-accepts the command and then reports itself idle is a spin: it is the same
-mistake as a stubbed register that reads back zero. What is deliberately not
-pretended is *progress*, so the position `GetlocP` reports does not advance and
-anything that waits for a track to finish will wait forever. That trade is
-recorded here rather than hidden, because it is the sort of half-implementation
-that later looks like a timing bug.
+`ADPCTL` bit 0 mutes XA, and a muted sector still decodes and queues silence,
+so the timing does not change.
+
+## CD audio output
+
+`Play` (0x03) starts at the track in its parameter, at a pending `Setloc`, or
+where the head already is, and then runs on its own clock like a read that
+hands its sectors to the SPU: 588 stereo frames per sector, silence for a data
+track. With `Setmode` bit 2 it raises report interrupts every ten frames,
+alternating absolute time and time within the track (80h on the seconds). With
+bit 1 it pauses at the end of a track with INT4; off the end of the disc it
+stops the motor with INT4. `GetlocP` now advances with it.
+
+Everything from the drive passes through its own volume matrix, left-to-left,
+left-to-right, right-to-right and right-to-left, 0x80 being unity. Writes to it
+are held until `ADPCTL` bit 5 applies them. `Mute` zeroes the output without
+stopping anything. Then the SPU captures it, and mixes it at its CD volume when
+`SPUCNT` bit 0 allows.
+
+The queue is serialized oldest first and padded with zeros, so two machines
+with the same audio waiting write the same bytes wherever their ring starts.
+The SPU runs before the drive in each sync, and a sector is always a scheduled
+event, so the first sample to hear a new sector is the same at any sync
+granularity.
+
+## Other commands
 
 `ReadTOC` (0x1E) acknowledges and completes with nothing to do: the table of
 contents here is parsed from the cue sheet once and cannot go stale.
 
-`Setfilter` (0x0D) records the XA file and channel and filters nothing, and
-`Getparam` (0x0F) reports them back along with the mode. The filter is stored,
-and serialized, purely so that it reads back: software is entitled to check that
-what it set is what it gets, and a drive that answers zero to that is the same
-spin as a stubbed register reading zero. `Init` clears both, so a game that
+`Getparam` (0x0F) reports the mode and the `Setfilter` file and channel back:
+software is entitled to check that what it set is what it gets, and a drive that
+answers zero to that is the same spin as a stubbed register reading zero. `Init` clears both, so a game that
 reinitialises the drive is not told about settings it just threw away.
 
 All of these were found by games, not by tests. Crash Bash issued 1 117 commands
@@ -238,9 +268,12 @@ trustworthy.
    synthetic disc can prove it, which stops at "the BIOS likes this disc". The
    synthetic image has no filesystem, no `SYSTEM.CNF` and no executable, so
    everything past recognition is untested.
-3. **XA audio, CD-DA playback and the Q sub-channel do not exist.** `GetlocP`
-   derives its position arithmetically from the track table instead of reading
-   a sub-channel, which is right for a data track and approximate for audio.
+3. **The Q sub-channel does not exist.** `GetlocP` and the play reports derive
+   the position arithmetically from the track table instead of reading a
+   sub-channel, which is right for a data track and approximate for audio. The
+   time within a track used to be clamped to 00:02:00 for its first two
+   seconds, from a lead-in subtraction applied to a relative position; fixed,
+   and pinned by the `GetlocP` test.
 4. **Disc swapping is not wired up.** The shell-open bit latches correctly, but
    nothing yet opens the lid: there is no host-facing way to eject. That is what
    `cdrom/disc-swap` tests, and it also needs a person to open the tray part way
@@ -248,3 +281,15 @@ trustworthy.
 5. **The status byte for an empty tray with the lid closed** is reported here as
    motor off with the shell-open bit latched until first read. That is inferred
    from what makes the BIOS behave, not measured.
+6. **The 18 900 Hz resampler is a guess.** psx-spx gives only the 37 800 Hz
+   tables and says the half-rate filter is lower-pitched and wider. Each
+   half-rate sample is fed through the full-rate filter twice.
+7. **The report's peak is this sector's left-channel peak.** The document says
+   the drive reports a peak with an L/R flag that toggles every SUBQ read and
+   is reset after each, so nine of ten frames are lost; the flag is left at 0.
+8. **Reports are dropped, not queued, when an interrupt is outstanding.** So is
+   the INT4 at the end of a track or disc, which is the one that matters more.
+   A game that leaves an interrupt unacknowledged across a track end will not
+   see the pause.
+9. **An underrun is silence.** When the queue is empty the SPU gets zeros; the
+   hardware's behaviour there is not documented.

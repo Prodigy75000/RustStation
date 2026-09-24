@@ -245,9 +245,13 @@ impl Bus {
             let blank = (self.video.in_hblank(), self.video.in_vblank());
             self.timers.run(elapsed, &ticks, blank, &mut self.irq);
             self.sio.run(elapsed, &mut self.irq);
-            self.cdrom.run(elapsed, &mut self.irq);
-            self.spu.run(elapsed);
+            // The SPU before the drive. A CD sector is an event, so it always
+            // lands at the end of a sync window; running the SPU first means
+            // the samples before that point never see it, which is what a sync
+            // on every cycle would give too.
+            self.spu.run_with_cd(elapsed, &mut || self.cdrom.pop_audio());
             self.spu_irq();
+            self.cdrom.run(elapsed, &mut self.irq);
             self.synced_to = self.cycle;
         }
 

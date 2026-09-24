@@ -509,6 +509,7 @@ survey before this one had nineteen of twenty-one discs decoding nothing at all.
 | Tony Hawk's Pro Skater 2 | A loading or logo screen | 116 520 | 23 659 | 0 |
 | **Spyro the Dragon** | **Its title screen**, Spyro on the plinth, "press start" | 114 680 | 674 341 | 0 |
 | **Tomb Raider** | **Its title screen**, Lara posed, after the whole intro video | 110 428 | 17 610 | 46 860 |
+| **CTR: Crash Team Racing** | **Its main menu** (2026-09-24, from the SPU interrupt; was "something, barely") | 117 080 | 254 440 | 0 |
 | **Crash Bandicoot** | **Its main menu** | 106 415 | 1 073 262 | 0 |
 | Legacy of Kain: Soul Reaver | Its intro video | 103 059 | 6 920 | 95 700 |
 | **Need for Speed III** | **The "game setup" menu**, fully laid out | 100 952 | 558 571 | 480 |
@@ -529,7 +530,6 @@ survey before this one had nineteen of twenty-one discs decoding nothing at all.
 | **Metal Slug X** | Its attract-mode high score table | 31 727 | 763 283 | 0 |
 | Resident Evil 3 | Its intro video, the "NEMESIS" card mid-fade | 4 489 | 4 412 | 46 200 |
 | Crash Bash | Something, barely | 4 135 | 600 | 0 |
-| CTR: Crash Team Racing | Something, barely | 3 791 | 600 | 0 |
 | Dragon Ball GT | Black at the sampling instant, 4 800 macroblocks decoded | 0 | 22 728 | 4 800 |
 | Suikoden II | Black at the sampling instant, 84 560 macroblocks decoded | 0 | 2 478 | 84 560 |
 
@@ -540,6 +540,27 @@ clock doing what it is supposed to do rather than a fault.
 **Nothing regressed.** Crash Bandicoot's counters are identical to the previous
 survey to the pixel and the primitive, and so are Metal Slug X's and Dino
 Crisis 2's.
+
+### With sound, 2026-09-24
+
+The survey was re-run twice after the SPU gained its voices and again after CD
+audio, against the table above. **Nothing regressed**: 29 of 31 discs match to
+the pixel, the sector, the macroblock and the primitive, and the CD audio build
+matches the SPU build exactly on every disc.
+
+**One disc moved, a long way.** CTR went from 3 791 lit pixels and 600
+textured primitives to 117 080 and 254 440, and from a nearly black screen to
+its main menu. psx-spx names Crash Team Racing among the games that rely on
+the SPU interrupt and its capture buffers, which did not exist before. Its
+screenshot shows a strip of noise along the bottom edge, not yet looked at.
+
+Harry Potter reads 1 269 sectors instead of 1 343 and Need for Speed III 6 400
+instead of 6 248, both with the same picture, and Crash Bandicoot's primitive
+count moved by under 1%. Those are timing shifts from the SPU now taking sync
+points, not changes in what the games reach.
+
+What the survey does not measure is sound, and nothing here grades it. The
+recordings `shot --wav` makes are for a listener.
 
 ### What "gameplay" does and does not mean
 
