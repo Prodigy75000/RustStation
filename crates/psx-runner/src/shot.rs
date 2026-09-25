@@ -105,6 +105,7 @@ fn main() -> ExitCode {
     let mut gpulist = false;
     let mut pace = false;
     let mut noidle = false;
+    let mut card_path: Option<String> = None;
     let mut save_end: Option<String> = None;
 
     let mut i = 1;
@@ -153,6 +154,12 @@ fn main() -> ExitCode {
             "--gpulist" => gpulist = true,
             "--pace" => pace = true,
             "--noidle" => noidle = true,
+            "--card" => {
+                // A memory card in slot 1, read from PATH if it exists and
+                // written back to it at the end, as a frontend does.
+                i += 1;
+                card_path = args.get(i).cloned();
+            }
             "--save-end" => {
                 i += 1;
                 save_end = args.get(i).cloned();
@@ -256,6 +263,12 @@ fn main() -> ExitCode {
     }
 
     psx.skip_idle = !noidle;
+    if let Some(path) = &card_path {
+        match std::fs::read(path) {
+            Ok(image) => psx.bus.sio.cards[0].insert(&image),
+            Err(_) => psx.bus.sio.cards[0].connected = true,
+        }
+    }
 
     let history = if pace {
         run_pacing(&mut psx, steps);
@@ -293,6 +306,21 @@ fn main() -> ExitCode {
         report_gpu_list(&psx);
     }
     println!("idle: {} vsync-wait passes skipped", psx.idle_skipped);
+    if let Some(path) = &card_path {
+        let card = &psx.bus.sio.cards[0];
+        if let Err(e) = std::fs::write(path, &card.data) {
+            eprintln!("cannot write {path}: {e}");
+            return ExitCode::FAILURE;
+        }
+        println!(
+            "card: written back to {path}{}",
+            if card.written {
+                ", with new saves"
+            } else {
+                ", unchanged"
+            }
+        );
+    }
     if let Some(path) = &save_end {
         if let Err(e) = std::fs::write(path, psx.save_state()) {
             eprintln!("cannot write {path}: {e}");

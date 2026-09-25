@@ -46,6 +46,7 @@ pub mod gte;
 mod idle;
 pub mod irq;
 pub mod mdec;
+pub mod memcard;
 pub mod save;
 pub mod sio;
 pub mod spu;

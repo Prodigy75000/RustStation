@@ -703,7 +703,14 @@ its memory card prompt before its video, Resident Evil 3 goes into analog mode
 and is earlier in its intro at the snapshot, Dino Crisis is on a video rather
 than in-engine. No disc lost its picture or stopped reading.
 
-Where Beetle is still ahead: reverb, memory cards, and years of compatibility across far more than 31 discs.
+**Memory cards, 2026-09-25** (`docs/notes/SIO.md`). Every disc with a fresh card and 90 seconds
+of mashed input (`out/cardscan.sh`): Spyro wrote a real save, `BASCUS-94228SPYRO`, one block,
+checksummed directory entry, title "SPYRO THE DRAGON" and a three-frame icon; the BIOS
+memory card screen lists it with its gem icon. Tenchu 2, which stopped on "MEMORY CARD is
+not inserted", goes on into its intro and makes the dummy write to sector 3Fh that clears
+the new-card flag.
+
+Where Beetle is still ahead: reverb, and years of compatibility across far more than 31 discs.
 
 **Reading the next survey:** `node tools/survey-compare.mjs OLD NEW`. Lit-pixel
 counts moved on 2026-09-24 for an output-only reason: the display height now

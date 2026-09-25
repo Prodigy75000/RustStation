@@ -14,6 +14,7 @@
 //! asked for it. See `docs/notes/SIO.md`.
 
 use crate::irq::{self, Irq};
+use crate::memcard::MemoryCard;
 
 /// Cycles from the end of a byte to the device pulling `/ACK` low.
 ///
@@ -254,6 +255,7 @@ enum Target {
     /// Nothing addressed yet, or an address byte nothing recognised.
     None,
     Pad,
+    Card,
 }
 
 impl Target {
@@ -261,12 +263,14 @@ impl Target {
         match self {
             Target::None => 0,
             Target::Pad => 1,
+            Target::Card => 2,
         }
     }
 
     fn from_code(v: u8) -> Target {
         match v {
             1 => Target::Pad,
+            2 => Target::Card,
             _ => Target::None,
         }
     }
@@ -295,6 +299,8 @@ pub struct Sio {
 
     /// Port 1 and port 2. Host-facing: the frontend writes these directly.
     pub pads: [Pad; 2],
+    /// The memory card slots above them.
+    pub cards: [MemoryCard; 2],
 
     /// Bytes exchanged, and how many of those a device answered. Host-side
     /// observation only, never serialized: they exist so a harness can tell
@@ -329,6 +335,7 @@ impl Sio {
                 },
                 Pad::default(),
             ],
+            cards: [MemoryCard::new(), MemoryCard::new()],
             transfers: 0,
             acknowledged: 0,
         }
@@ -435,8 +442,10 @@ impl Sio {
             // Reset. Everything except the pads, which are the host's, and the
             // observation counters, which are the harness's.
             let (pads, transfers, acknowledged) = (self.pads, self.transfers, self.acknowledged);
+            let cards = std::mem::take(&mut self.cards);
             *self = Sio::new();
             self.pads = pads;
+            self.cards = cards;
             self.transfers = transfers;
             self.acknowledged = acknowledged;
             return;
@@ -473,25 +482,37 @@ impl Sio {
         if self.step == 0 {
             self.target = match tx {
                 0x01 => Target::Pad,
+                0x81 => Target::Card,
                 _ => Target::None,
             };
         }
 
-        let (rx, ack) = match self.target {
+        let step = self.step;
+        let slot = self.slot();
+        // The reply, and when /ACK comes, if it does. Nothing plugged in
+        // drives the line and nothing pulls /ACK: there is no "absent" status
+        // bit, and software finds out by timing out.
+        let (rx, ack_after) = match self.target {
             Target::Pad => {
-                let step = self.step;
-                let slot = self.slot();
                 let pad = &mut self.pads[slot];
                 if pad.connected {
-                    pad.exchange(step, tx)
+                    let (rx, ack) = pad.exchange(step, tx);
+                    (rx, ack.then_some(PAD_ACK_DELAY))
                 } else {
-                    // Nothing drives the line and nothing pulls /ACK. There is
-                    // no "absent" status bit; software finds out by timing out.
-                    (0xFF, false)
+                    (0xFF, None)
                 }
             }
-            Target::None => (0xFF, false),
+            Target::Card => {
+                let card = &mut self.cards[slot];
+                if card.connected {
+                    card.exchange(step, tx)
+                } else {
+                    (0xFF, None)
+                }
+            }
+            Target::None => (0xFF, None),
         };
+        let ack = ack_after.is_some();
 
         if trace_enabled() {
             eprintln!(
@@ -514,7 +535,7 @@ impl Sio {
             // of the old pulse instead of the assertion of the new one, so the
             // interrupt for that byte never fires at all. See docs/notes/SIO.md.
             self.ack_level = false;
-            self.ack_countdown = Some(PAD_ACK_DELAY);
+            self.ack_countdown = ack_after;
         } else {
             self.ack_countdown = None;
             self.step = 0;

@@ -68,7 +68,10 @@ pub const MAGIC: &[u8; 8] = b"RSTAPSX1";
 /// * 13: the pads became DualShocks, and each one's mode goes in: analog,
 ///   locked, config, the rumble mapping, and the command in progress. What
 ///   is held on them stays out, as before: that is the frontend's input.
-pub const FORMAT_VERSION: u16 = 13;
+/// * 14: memory cards. What each is doing mid-transfer and its flag byte go
+///   in; what is on it does not, being the frontend's like the disc, so that
+///   loading a state never takes back a save made since.
+pub const FORMAT_VERSION: u16 = 14;
 
 const HEADER_BYTES: usize = 8 + 2;
 const CPU_BYTES: usize = 32 * 4     // regs
@@ -138,7 +141,13 @@ const SIO_BYTES: usize = 2 * 3      // mode, ctrl, baud
     + 1                             // target
     + 8 + 1                         // /ACK countdown, and whether one is armed
     + 1  // ack level, interrupt latch
-    + 2 * PAD_BYTES;
+    + 2 * PAD_BYTES
+    + 2 * CARD_BYTES;
+
+/// One memory card's own state, added in format version 14.
+const CARD_BYTES: usize = 1 + 1 + 2 + 1 // flag, command, address, checksum
+    + crate::memcard::SECTOR            // a write's incoming sector
+    + 1; // the byte software sent last
 
 /// One pad's own state, added in format version 13.
 const PAD_BYTES: usize = 1 + 1 + 1 // analog, locked, config
@@ -615,6 +624,14 @@ fn write_sio(w: &mut Writer, s: &sio::Sio) {
         w.u8(pad.param);
         w.u8(pad.config_next);
     }
+    for card in &s.cards {
+        w.u8(card.flag);
+        w.u8(card.command);
+        w.u16(card.address);
+        w.u8(card.checksum);
+        w.bytes(&card.buffer);
+        w.u8(card.previous);
+    }
 }
 
 fn read_cpu(r: &mut Reader, cpu: &mut Cpu) -> Option<()> {
@@ -990,6 +1007,14 @@ fn read_sio(r: &mut Reader, s: &mut sio::Sio) -> Option<()> {
         pad.param = r.u8()?;
         // Canonicalized: only 0, 1 and 2 mean anything.
         pad.config_next = r.u8()?.min(2);
+    }
+    for card in s.cards.iter_mut() {
+        card.flag = r.u8()?;
+        card.command = r.u8()?;
+        card.address = r.u16()?;
+        card.checksum = r.u8()?;
+        card.buffer.copy_from_slice(r.take(crate::memcard::SECTOR)?);
+        card.previous = r.u8()?;
     }
     Some(())
 }
@@ -1386,6 +1411,18 @@ mod tests {
             q.param = 0x01;
             q.config_next = 1;
         }
+        // The cards: every field distinct, and the two cards different.
+        for (i, card) in psx.bus.sio.cards.iter_mut().enumerate() {
+            let k = i as u8;
+            card.flag = 0x08 >> i;
+            card.command = [b'R', b'W'][i];
+            card.address = 0x0123 + 0x100 * i as u16;
+            card.checksum = 0x5A ^ k;
+            for (j, b) in card.buffer.iter_mut().enumerate() {
+                *b = (j as u8).wrapping_mul(7) ^ k;
+            }
+            card.previous = 0xC0 | k;
+        }
 
         psx
     }
@@ -1404,15 +1441,15 @@ mod tests {
 
         // Header, byte for byte.
         assert_eq!(&snap[0..8], MAGIC);
-        assert_eq!(&snap[8..10], &[0x0D, 0x00]);
+        assert_eq!(&snap[8..10], &[0x0E, 0x00]);
 
         // Total length, pinned to a literal, deliberately NOT compared against
         // `Psx::state_size()`, which would only compare the layout to itself.
-        assert_eq!(snap.len(), 3_744_766);
+        assert_eq!(snap.len(), 3_745_034);
 
         // Whole-buffer checksum: any added, removed, reordered or re-widened
         // field moves it.
-        assert_eq!(fnv1a64(&snap), 0xF090_C40B_EB27_1BE6);
+        assert_eq!(fnv1a64(&snap), 0x0636_F998_4B5B_F3E1);
     }
 
     #[test]

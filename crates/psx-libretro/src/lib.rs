@@ -47,6 +47,7 @@ const RETRO_ENVIRONMENT_SET_DISK_CONTROL_EXT_INTERFACE: c_uint = 58;
 /// this wrong shows up as a colour-swapped picture rather than an error.
 const RETRO_PIXEL_FORMAT_XRGB8888: c_uint = 1;
 
+const RETRO_MEMORY_SAVE_RAM: c_uint = 0;
 const RETRO_MEMORY_SYSTEM_RAM: c_uint = 2;
 
 const RETRO_REGION_NTSC: c_uint = 0;
@@ -622,6 +623,12 @@ pub unsafe extern "C" fn retro_load_game(info: *const GameInfo) -> bool {
         }
     };
 
+    // A memory card in slot 1, which is the frontend's save RAM: it copies
+    // the player's card file over this one after load and saves it back, as
+    // it does a cartridge's battery RAM. Until then it is a formatted, empty
+    // card. Slot 2 stays empty.
+    psx.bus.sio.cards[0].connected = true;
+
     // A null info is "boot with no content", the BIOS menu. Valid on its own.
     if disc_set.is_some() {
         psx.bus.cdrom.disc = disc;
@@ -851,6 +858,12 @@ pub unsafe extern "C" fn retro_get_memory_data(id: c_uint) -> *mut c_void {
             Some(psx) => psx.bus.ram.as_mut_ptr() as *mut c_void,
             None => ptr::null_mut(),
         },
+        // The card in slot 1. Its buffer is allocated once and never resized,
+        // so the pointer stays good for the frontend to write into and read.
+        RETRO_MEMORY_SAVE_RAM => match psx_mut() {
+            Some(psx) => psx.bus.sio.cards[0].data.as_mut_ptr() as *mut c_void,
+            None => ptr::null_mut(),
+        },
         _ => ptr::null_mut(),
     }
 }
@@ -859,6 +872,7 @@ pub unsafe extern "C" fn retro_get_memory_data(id: c_uint) -> *mut c_void {
 pub unsafe extern "C" fn retro_get_memory_size(id: c_uint) -> usize {
     match id {
         RETRO_MEMORY_SYSTEM_RAM => psx_core::bus::RAM_SIZE,
+        RETRO_MEMORY_SAVE_RAM if psx_ref().is_some() => psx_core::memcard::CARD_SIZE,
         _ => 0,
     }
 }

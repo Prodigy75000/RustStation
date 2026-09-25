@@ -331,6 +331,7 @@ fn run() -> Result<(), String> {
     let mut mash = false;
     let mut save_at: Option<(u64, String)> = None;
     let mut swaps: Vec<(u64, c_uint)> = Vec::new();
+    let mut card: Option<String> = None;
 
     let mut i = 2;
     while i < args.len() {
@@ -372,6 +373,12 @@ fn run() -> Result<(), String> {
                     path.clone(),
                 ));
                 i += 2;
+            }
+            "--card" => {
+                // The core's save RAM, the memory card, loaded from PATH after
+                // the game and saved back at the end, as a frontend does.
+                i += 1;
+                card = args.get(i).cloned();
             }
             "--swap-at" => {
                 // FRAME DISC (1-based): open the lid, change the disc and close
@@ -465,6 +472,16 @@ fn run() -> Result<(), String> {
         unsafe extern "C" fn() -> usize
     );
     let unload = entry!(handle, "retro_unload_game", unsafe extern "C" fn());
+    let memory_data = entry!(
+        handle,
+        "retro_get_memory_data",
+        unsafe extern "C" fn(c_uint) -> *mut c_void
+    );
+    let memory_size = entry!(
+        handle,
+        "retro_get_memory_size",
+        unsafe extern "C" fn(c_uint) -> usize
+    );
     let deinit = entry!(handle, "retro_deinit", unsafe extern "C" fn());
 
     unsafe {
@@ -532,6 +549,21 @@ fn run() -> Result<(), String> {
             serialize_size()
         );
 
+        // Save RAM, id 0: what a frontend keeps as the .srm.
+        let save_ram = || {
+            let (p, n) = (memory_data(0) as *mut u8, memory_size(0));
+            (!p.is_null() && n > 0).then(|| std::slice::from_raw_parts_mut(p, n))
+        };
+        if let (Some(path), Some(ram)) = (&card, save_ram()) {
+            match std::fs::read(path) {
+                Ok(bytes) => {
+                    let n = bytes.len().min(ram.len());
+                    ram[..n].copy_from_slice(&bytes[..n]);
+                    println!("      save RAM: {} bytes from {path}", n);
+                }
+                Err(_) => println!("      save RAM: {} bytes, new", ram.len()),
+            }
+        }
         if let Some(dc) = DISK {
             let dc = &*dc;
             println!(
@@ -662,6 +694,11 @@ fn run() -> Result<(), String> {
         if let Some(path) = out {
             write_png(&path, frame, w, h)?;
             println!("wrote {path}");
+        }
+
+        if let (Some(path), Some(ram)) = (&card, save_ram()) {
+            std::fs::write(path, &*ram).map_err(|e| format!("{path}: {e}"))?;
+            println!("save RAM written to {path}");
         }
 
         unload();

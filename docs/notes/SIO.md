@@ -129,6 +129,35 @@ after config mode was used if nothing talks to it, rumble output, the Analog
 button from the frontend (`Pad::press_analog_button` exists, nothing calls it
 yet), and the ID change when rumble is mapped into digital-mode bytes.
 
+## Memory cards
+
+Since 2026-09-25 (`crates/psx-core/src/memcard.rs`), from psx-spx "Memory Card
+Read/Write Commands" and "Memory Card Data Format". The card shares its slot's
+select line with the pad and answers the address byte `81h`.
+
+- **Read (`52h`)**: flag, `5Ah 5Dh`, the address echoed, `5Ch 5Dh`, the
+  confirmed address, 128 bytes, a checksum (the address bytes and the data
+  XORed) and `47h`. A sector past 3FFh confirms as FFFFh and stops, as a
+  Sony card does.
+- **Write (`57h`)**: the address, 128 bytes and a checksum, each reply
+  echoing the byte before, then `5Ch 5Dh` and the end byte: `47h`, `4Eh` for
+  a bad checksum (nothing written), `FFh` for a bad sector. A good write
+  clears the flag's bit 3, which is set at power-on and insertion and tells
+  software the directory has not been read since; games clear it with a
+  dummy write to sector 3Fh.
+- **Get ID (`53h`)**: `5Ch 5Dh 04h 00h 00h 80h`. Any other command stops
+  after the command byte.
+- **Timing**: /ACK about 1500 cycles after each byte, and about 31 000 more
+  after the seventh byte of a read, which psx-spx says Sony's cards add.
+
+A new card is formatted as Sony's shipped: "MC" header, fifteen free directory
+entries, no broken sectors. **What is on a card is the frontend's**, like the
+disc image, and not in a save state: loading an old state never takes back a
+save. The card's transfer state and flag are in the state (format 14). In the
+libretro core, the card in slot 1 is the frontend's save RAM, so the app keeps
+it as a file as it does a cartridge's battery RAM; slot 2 is empty.
+`shot --card PATH` and `retrohost --card PATH` do the same for the harnesses.
+
 ## An absent device
 
 Nothing pulls the data line, so every byte reads back `0xFF`, and nothing pulls
