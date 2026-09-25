@@ -139,8 +139,13 @@ A PAL game repeated ten frames a second. `a_frame_is_one_vblank_to_the_next` in
 
 The rate is declared once. Following the GPU was tried: games and the BIOS
 reset it between screens, which puts it in NTSC for a second or two even on a
-PAL console, and Metal Gear Solid flipped four times in 20 seconds. Those
-stretches run slightly slow at the PAL rate instead.
+PAL console, and Metal Gear Solid flipped four times in 20 seconds. So while
+the video is in the other standard, a frame is instead exactly one declared
+frame of CPU time, remainder carried (`Psx::run_frame_at`): the machine and
+its sound keep real time, and only the pictures suffer, a repeat or a drop now
+and then on logos and blank screens. The first version ran vblank to vblank
+there too, and the owner heard the BIOS boot sound drag at 84% with an
+American BIOS and a European disc.
 
 ## Skipping the vsync wait
 

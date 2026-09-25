@@ -53,6 +53,13 @@ impl Standard {
         33_868_800.0 * GPU_CLOCK_NUM as f64 / (video_clocks * GPU_CLOCK_DEN) as f64
     }
 
+    /// One frame in CPU cycles, times [`GPU_CLOCK_NUM`]: exact, so a caller
+    /// can carry the remainder instead of drifting.
+    pub fn frame_cycles_scaled(self) -> (u64, u64) {
+        let video_clocks = self.cycles_per_line() * self.lines_per_frame() as u64;
+        (video_clocks * GPU_CLOCK_DEN, GPU_CLOCK_NUM)
+    }
+
     /// Video clocks in one scanline, including the horizontal blank.
     fn cycles_per_line(self) -> u64 {
         match self {

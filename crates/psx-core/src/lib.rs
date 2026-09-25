@@ -87,6 +87,10 @@ pub struct Psx {
     poll_seen: bool,
     /// Checked passes in a row at `poll_head` that were not idle.
     poll_misses: u32,
+    /// What is left over of a CPU cycle from `run_frame_at`'s fixed-length
+    /// frames, in units of 1/11. Host side: where frames begin and end never
+    /// changes what the machine does, so it is not serialized.
+    frame_frac: u64,
     /// Loop iterations skipped rather than stepped. Diagnostic.
     pub idle_skipped: u64,
     /// Whether to skip the vsync wait at all. On by default; off is for
@@ -120,6 +124,7 @@ impl Psx {
             poll_misses: 0,
             idle_skipped: 0,
             skip_idle: true,
+            frame_frac: 0,
         })
     }
 
@@ -259,6 +264,30 @@ impl Psx {
         self.bus.sync();
         let n = self.bus.video.cycles_to_vblank();
         self.run(n);
+    }
+
+    /// One frame for a frontend pacing at `standard`'s rate.
+    ///
+    /// While the video is in that standard this is [`Self::run_frame`], one
+    /// vblank to the next. While it is not, it is exactly one frame of
+    /// `standard` in CPU time, remainder carried, so that the machine, and so
+    /// its sound, keeps real time. Games and the BIOS reset the GPU between
+    /// screens, which puts a PAL console back in NTSC for a moment, and an
+    /// American BIOS boots a European disc in NTSC. Running a vblank to vblank
+    /// frame there, at the PAL pace, slowed everything to 84%: the owner heard
+    /// the boot sound and Metal Gear Solid's intro drag. Now only the pictures
+    /// suffer, a repeated or a dropped one now and then, on logos and blank
+    /// screens.
+    pub fn run_frame_at(&mut self, standard: video::Standard) {
+        if self.bus.video.standard() == standard {
+            self.frame_frac = 0;
+            self.run_frame();
+            return;
+        }
+        let (scaled, per) = standard.frame_cycles_scaled();
+        let total = scaled + self.frame_frac;
+        self.frame_frac = total % per;
+        self.run(total / per);
     }
 
     /// Everything the BIOS has printed so far.

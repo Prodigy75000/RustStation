@@ -107,7 +107,7 @@ const FB_WIDTH: usize = 640;
 const FB_HEIGHT: usize = 480;
 
 /// The video standard the frontend was told about, and so the frame rate it
-/// is pacing us at. A frame is one vblank to the next (`Psx::run_frame`), so
+/// is pacing us at. A frame is one vblank to the next (`Psx::run_frame_at`), so
 /// the rate is the console's: 59.29 Hz NTSC, 49.76 Hz PAL. Chosen from the
 /// disc's region at load, and not changed after. Games and the BIOS reset the
 /// GPU between screens, which puts it back in NTSC for a second or two even on
@@ -503,7 +503,7 @@ pub unsafe extern "C" fn retro_run() {
 
     if let Some(psx) = psx_mut() {
         poll_pads(psx);
-        psx.run_frame();
+        psx.run_frame_at(*ptr::addr_of!(DECLARED));
 
         // The GPU picks the resolution, and software changes it mid-game, so
         // the geometry is read per frame rather than fixed at load. It can only

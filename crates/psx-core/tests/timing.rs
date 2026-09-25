@@ -111,6 +111,30 @@ fn a_frame_is_one_vblank_to_the_next() {
     }
 }
 
+/// With the video in the other standard, a frame is that frame's length in
+/// CPU time, so the machine keeps real time: 600 PAL frames of an NTSC
+/// picture are 600 / 49.76 seconds, to the cycle, not 600 NTSC frames.
+#[test]
+fn a_frame_in_the_other_standard_keeps_real_time() {
+    let mut psx = machine(&[beq(0, 0, -1), nop()]);
+    let start = psx.bus.cycle;
+    for _ in 0..600 {
+        psx.run_frame_at(video::Standard::Pal);
+    }
+    // 314 lines of 3406 video clocks, 7/11 of a CPU cycle each, 600 times.
+    let exact = 600 * 314 * 3406 * 7 / 11;
+    let ran = psx.bus.cycle - start;
+    assert!(ran.abs_diff(exact) <= 1, "{ran} cycles, {exact} expected");
+
+    // And in its own standard it is still one vblank to the next.
+    psx.bus.video.set_standard(video::Standard::Pal);
+    for _ in 0..10 {
+        psx.run_frame_at(video::Standard::Pal);
+        psx.bus.sync();
+        assert_eq!(psx.bus.video.line(), 288);
+    }
+}
+
 #[test]
 fn the_declared_frame_rates_are_the_consoles() {
     let ntsc = video::Standard::Ntsc.frame_rate();
