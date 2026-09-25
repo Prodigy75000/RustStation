@@ -65,7 +65,10 @@ pub const MAGIC: &[u8; 8] = b"RSTAPSX1";
 ///   bytes do not depend on where the ring happens to start.
 /// * 12: the drive's lid, open or closed, for disc swapping. The shell-open
 ///   status bit it latches was already part of the drive status.
-pub const FORMAT_VERSION: u16 = 12;
+/// * 13: the pads became DualShocks, and each one's mode goes in: analog,
+///   locked, config, the rumble mapping, and the command in progress. What
+///   is held on them stays out, as before: that is the frontend's input.
+pub const FORMAT_VERSION: u16 = 13;
 
 const HEADER_BYTES: usize = 8 + 2;
 const CPU_BYTES: usize = 32 * 4     // regs
@@ -134,7 +137,13 @@ const SIO_BYTES: usize = 2 * 3      // mode, ctrl, baud
     + 4                             // step
     + 1                             // target
     + 8 + 1                         // /ACK countdown, and whether one is armed
-    + 1; // ack level, interrupt latch
+    + 1  // ack level, interrupt latch
+    + 2 * PAD_BYTES;
+
+/// One pad's own state, added in format version 13.
+const PAD_BYTES: usize = 1 + 1 + 1 // analog, locked, config
+    + 6                             // the rumble mapping
+    + 1 + 1 + 1; // this transfer's command, its parameter, config to come
 
 /// The SPU, added in format version 7: the register file, then sound RAM
 /// behind a length prefix, then the transfer pointer. Version 10 adds the
@@ -597,6 +606,15 @@ fn write_sio(w: &mut Writer, s: &sio::Sio) {
     w.u64(ack);
     w.u8(armed);
     w.u8(flags);
+    for pad in &s.pads {
+        w.bool(pad.analog);
+        w.bool(pad.locked);
+        w.bool(pad.config);
+        w.bytes(&pad.rumble);
+        w.u8(pad.command);
+        w.u8(pad.param);
+        w.u8(pad.config_next);
+    }
 }
 
 fn read_cpu(r: &mut Reader, cpu: &mut Cpu) -> Option<()> {
@@ -963,6 +981,16 @@ fn read_sio(r: &mut Reader, s: &mut sio::Sio) -> Option<()> {
     let armed = r.u8()?;
     let flags = r.u8()?;
     s.restore(mode, ctrl, baud, rx, step, target, ack, armed, flags);
+    for pad in s.pads.iter_mut() {
+        pad.analog = r.bool()?;
+        pad.locked = r.bool()?;
+        pad.config = r.bool()?;
+        pad.rumble.copy_from_slice(r.take(6)?);
+        pad.command = r.u8()?;
+        pad.param = r.u8()?;
+        // Canonicalized: only 0, 1 and 2 mean anything.
+        pad.config_next = r.u8()?.min(2);
+    }
     Some(())
 }
 
@@ -1341,6 +1369,24 @@ mod tests {
             c.lid_open = true;
         }
 
+        // The pads' own state, every field distinct and not its default. The
+        // two pads differ, so writing one twice would show.
+        {
+            let p = &mut psx.bus.sio.pads[0];
+            p.analog = true;
+            p.config = true;
+            p.rumble = [0x00, 0x01, 0xFF, 0x12, 0x34, 0x56];
+            p.command = 0x4D;
+            p.param = 0x07;
+            p.config_next = 2;
+            let q = &mut psx.bus.sio.pads[1];
+            q.locked = true;
+            q.rumble = [0x66, 0x55, 0x44, 0x33, 0x22, 0x11];
+            q.command = 0x44;
+            q.param = 0x01;
+            q.config_next = 1;
+        }
+
         psx
     }
 
@@ -1358,15 +1404,15 @@ mod tests {
 
         // Header, byte for byte.
         assert_eq!(&snap[0..8], MAGIC);
-        assert_eq!(&snap[8..10], &[0x0C, 0x00]);
+        assert_eq!(&snap[8..10], &[0x0D, 0x00]);
 
         // Total length, pinned to a literal, deliberately NOT compared against
         // `Psx::state_size()`, which would only compare the layout to itself.
-        assert_eq!(snap.len(), 3_744_742);
+        assert_eq!(snap.len(), 3_744_766);
 
         // Whole-buffer checksum: any added, removed, reordered or re-widened
         // field moves it.
-        assert_eq!(fnv1a64(&snap), 0x7E9C_23A2_0EB8_F267);
+        assert_eq!(fnv1a64(&snap), 0xF090_C40B_EB27_1BE6);
     }
 
     #[test]

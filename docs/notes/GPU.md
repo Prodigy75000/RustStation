@@ -116,10 +116,15 @@ Three things that each cost a debugging round:
    differs from the reference on about 5% of pixels, all by exactly one 5-bit
    step. That signature says the matrix orientation, sign, or the point at which
    it is applied is slightly off, rather than anything structural.
-5. **Fill-rule at polygon edges.** Around 0.19% of `triangle` and 0.3% of `quad`
-   differ by more than a rounding step, which is the edge pixels. The hardware
-   has a specific rule about which edge a shared boundary belongs to; this core
-   uses a plain `>= 0` test on all three edges.
+5. **Fill-rule at polygon edges: closed 2026-09-25.** psx-spx: polygons are
+   drawn "up to excluding their lower-right coordinates". A pixel on an edge
+   now belongs to the triangle only if the edge is a top or a left one, so two
+   polygons sharing an edge draw it once. `quad` went from 0.324% to
+   pixel-exact, `triangle`'s differences beyond a rounding step from 0.189% to
+   none, and `texture-flip` and `uv-interpolation` improved a little; no test
+   got worse. Found through Metal Gear Solid, whose title screens are two quads
+   meeting at x = 160: both drew that column, the left one last, sampling one
+   texel past its image, and a white line ran down the middle.
 6. **GPUSTAT's busy bits are always ready.** Commands execute the instant their
    last word arrives, so the core is never busy. That is a lie in the forgiving
    direction, but code that polls for *busy* before proceeding would spin.

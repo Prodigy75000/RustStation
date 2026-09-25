@@ -246,6 +246,21 @@ impl Psx {
         }
     }
 
+    /// Run to the start of the next vertical blank: one video frame, as the
+    /// console makes them.
+    ///
+    /// A frontend frame has to be exactly this. The libretro core used to run
+    /// a fixed 1/60 s of cycles, but an NTSC frame is 263 lines of 3413 video
+    /// clocks, about 571 212 CPU cycles (59.29 Hz), so about one frontend
+    /// frame in 84 held no vblank at all and showed the previous picture
+    /// again: a hitch every second and a half, which the owner saw in Final
+    /// Fantasy VIII's video. A PAL game lost ten frames a second the other way.
+    pub fn run_frame(&mut self) {
+        self.bus.sync();
+        let n = self.bus.video.cycles_to_vblank();
+        self.run(n);
+    }
+
     /// Everything the BIOS has printed so far.
     pub fn tty(&self) -> &[u8] {
         &self.tty

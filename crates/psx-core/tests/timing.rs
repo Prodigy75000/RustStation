@@ -11,7 +11,7 @@
 mod common;
 use common::*;
 
-use psx_core::{irq, Psx};
+use psx_core::{irq, video, Psx};
 
 /// CPU cycles in one NTSC frame: 263 lines x 3413 video clocks at 11/7 of the
 /// CPU clock. Derived in `video.rs`; restated here so a failure says which
@@ -74,6 +74,49 @@ fn vblank_does_not_drift_over_many_frames() {
     psx.run(FIRST_VBLANK_CYCLE + NTSC_FRAME_CYCLES * 10);
 
     assert_eq!(psx.bus.video.frames, 10);
+}
+
+/// Every frontend frame holds exactly one vertical blank, and ends at it.
+///
+/// A frame of a fixed 1/60 s used to be the unit, and one in about 84 of them
+/// held no blank at all: the frontend showed the same picture twice, a hitch
+/// every second and a half. Checked over 600 frames, NTSC and PAL, by where
+/// the beam is after each one and how many blanks the interrupt controller
+/// latched.
+#[test]
+fn a_frame_is_one_vblank_to_the_next() {
+    for standard in [video::Standard::Ntsc, video::Standard::Pal] {
+        let mut psx = machine(&[beq(0, 0, -1), nop()]);
+        psx.bus.video.set_standard(standard);
+        let vblank_line = if standard == video::Standard::Ntsc {
+            240
+        } else {
+            288
+        };
+        for frame in 0..600 {
+            psx.bus.irq.ack(!(1 << irq::VBLANK));
+            psx.run_frame();
+            psx.bus.sync();
+            assert_eq!(
+                psx.bus.video.line(),
+                vblank_line,
+                "{standard:?} frame {frame}"
+            );
+            assert_ne!(
+                psx.bus.irq.stat() & (1 << irq::VBLANK),
+                0,
+                "{standard:?} frame {frame} held no vblank"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_declared_frame_rates_are_the_consoles() {
+    let ntsc = video::Standard::Ntsc.frame_rate();
+    let pal = video::Standard::Pal.frame_rate();
+    assert!((ntsc - 59.29286).abs() < 0.00001, "{ntsc}");
+    assert!((pal - 49.76456).abs() < 0.00001, "{pal}");
 }
 
 /// The whole point of the slice: a device raises a request, the interrupt

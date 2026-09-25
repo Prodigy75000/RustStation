@@ -1038,6 +1038,20 @@ impl Gpu {
         // The edge functions are linear in x, so along a row each one moves by
         // a constant. Stepping them gives exactly the values `orient` would.
         let (d0, d1, d2) = (c.y - b.y, a.y - c.y, b.y - a.y);
+        // psx-spx: polygons are drawn "up to excluding their lower-right
+        // coordinates". So a pixel exactly on an edge belongs to the triangle
+        // only if that is a top or a left edge, and two polygons sharing an
+        // edge never both draw it. Metal Gear Solid's title screens are two
+        // quads meeting at x = 160, and drawing that column twice put a white
+        // line down the middle: the left quad, drawn second, sampled one texel
+        // past its image. With the winding fixed above (clockwise on screen),
+        // an edge is left if it goes up, and top if it is flat and goes right.
+        let top_left = |from: Vertex, to: Vertex| {
+            let (dx, dy) = (to.x - from.x, to.y - from.y);
+            dy < 0 || (dy == 0 && dx > 0)
+        };
+        let bias = |from: Vertex, to: Vertex| if top_left(from, to) { 0 } else { -1 };
+        let (b0, b1, b2) = (bias(b, c), bias(c, a), bias(a, b));
         for y in min_y..=max_y {
             let p = Vertex {
                 x: min_x,
@@ -1085,7 +1099,7 @@ impl Gpu {
                         lv.step();
                     }
                 }
-                if w0 < 0 || w1 < 0 || w2 < 0 {
+                if w0 + b0 < 0 || w1 + b1 < 0 || w2 + b2 < 0 {
                     continue;
                 }
 

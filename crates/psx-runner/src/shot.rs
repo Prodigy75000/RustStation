@@ -912,7 +912,7 @@ fn run_pacing(psx: &mut Psx, steps: u64) {
             flips += 1;
             last_start = start;
         }
-        if frame % 60 == 0 {
+        if frame.is_multiple_of(60) {
             println!(
                 "pace: frames {:>5}-{:>5}: {} vblanks, {} flips, {} cycles, {:.1} ms/frame, worst {:.1} ms",
                 frame - 60,

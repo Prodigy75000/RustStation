@@ -92,6 +92,43 @@ software the transfer is over. A device that acknowledges forever and one that
 is not there at all are distinguished by exactly this, so getting the last-byte
 case wrong makes the BIOS either hang or decide no pad is connected.
 
+## The pad is a DualShock
+
+Since 2026-09-25 the pad is a DualShock (SCPH-1200), not a digital pad. It
+powers up in digital mode, where the read above is byte for byte the same, so
+nothing that only reads buttons can tell. What changed is that it now answers
+the questions software asks to find out which pad it has.
+
+Metal Gear Solid never reads the buttons until it knows. It sends `43h` with
+`01h` (enter config mode) and then `45h` (what are you), and the old digital
+pad answered both as a button read. The game went on asking, every frame,
+and took no input at all: no skipping the intro, nothing on "press start".
+psx-spx documents the DualShock's side command by command and says the usual
+way to tell the two apart is exactly this `43h`; it does not document what a
+plain digital pad answers, so the DualShock is the one that can be built from
+the reference.
+
+From psx-spx "Controllers - Configuration Commands":
+
+- **Normal mode.** `42h` reads the buttons: ID `41h` and five bytes in digital
+  mode, `73h` and nine with the four stick bytes in analog mode. `43h` reads
+  them the same way and, with `01h` in its first parameter, enters config
+  mode when the transfer ends.
+- **Config mode.** Nine bytes every time, ID `F3h`. `42h` reads buttons and
+  sticks even in digital mode; `43h 00h` leaves; `44h` sets analog on or off
+  and can lock the Analog button; `45h` answers type 01h and the LED; `46h`,
+  `47h`, `48h` and `4Ch` return their documented constants; `4Dh` swaps in a
+  new rumble mapping and returns the old one.
+- **The sticks** come from the frontend's analog sticks, right X, right Y,
+  left X, left Y, 80h centred, and games see them only once they switch the
+  pad to analog.
+
+The pad's mode is in the save state from format 13; what is held on it is
+not, as before. Not modelled: the watchdog that resets a pad about a second
+after config mode was used if nothing talks to it, rumble output, the Analog
+button from the frontend (`Pad::press_analog_button` exists, nothing calls it
+yet), and the ID change when rumble is mapped into digital-mode bytes.
+
 ## An absent device
 
 Nothing pulls the data line, so every byte reads back `0xFF`, and nothing pulls
@@ -146,5 +183,7 @@ it: there is no "not connected" status bit to set.
 3. **The baud rate timer in `STAT` bits 11..31 reads as zero.** Software polls
    `STAT` for the ready bits and does not appear to read the timer, but that is
    an observation about the BIOS, not a guarantee about games.
-4. **Only the digital pad is implemented.** The analog pad, mouse and multitap
-   all sit behind the same address byte and differ from step 1 onward.
+4. **Only the DualShock is implemented.** The mouse and multitap sit behind
+   the same address byte and differ from step 1 onward. What a plain digital
+   pad answers to `43h`/`45h` is not documented, which is why the pad is a
+   DualShock rather than a digital pad with guessed answers.

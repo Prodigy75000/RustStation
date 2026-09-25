@@ -126,13 +126,13 @@ Sorted by the column that matters, which is the third one, not the second.
 | `texture-overflow` | **0.000%** | 0.000% | 6.246% | Pixel-exact |
 | `rectangles` | **0.000%** | 0.000% | 1.619% | Pixel-exact |
 | `clipping` | **0.000%** | 0.000% | 0.000% | Pixel-exact |
+| `quad` | **0.000%** | 0.000% | 0.324% | Pixel-exact since the fill rule, 2026-09-25 |
 | `lines` | 0.188% | 0.019% | 0.188% | Essentially correct |
 | `clut-cache` | 0.176% | 0.174% | 0.977% | |
-| `triangle` | 5.179% | 0.189% | 5.179% | Dither phase, plus edges |
-| `quad` | 0.324% | 0.300% | 0.324% | Polygon edges |
-| `texture-flip` | 25.635% | 0.849% | 52.782% | Structurally right, see below |
+| `triangle` | 4.990% | **0.000%** | 5.179% | Only the dither phase is left |
+| `texture-flip` | 25.586% | 0.800% | 52.782% | Structurally right, see below |
 | `vram-to-vram-overlap` | 1.441% | 1.224% | 8.778% | |
-| `uv-interpolation` | 4.699% | 3.220% | 7.900% | Affine interpolation precision |
+| `uv-interpolation` | 4.504% | 3.025% | 7.900% | Affine interpolation precision |
 | `transparency` | 85.352% | 85.352% | 85.352% | Background fill, see below |
 
 Two entries need reading rather than scanning.
@@ -658,7 +658,31 @@ whether the pad is read in time for a same-frame jump and spin. The quickest
 discriminator is a side-by-side against Beetle PSX on the same save state,
 timing one fixed stretch of a level in real seconds.
 
-Where Beetle is still ahead: reverb, analog sticks, memory cards, PAL timing, and years of compatibility across far more than 31 discs.
+**First run of the multi-disc build on the phone, 2026-09-25.** Final Fantasy
+VIII and Metal Gear Solid boot, and the Disc entry in the pause menu lists four
+and two discs with the first selected. Then, from the owner:
+
+- **Metal Gear Solid took no input**: nothing skipped the intro, nothing
+  worked on "press start". It asks the pad whether it is a DualShock (`43h`,
+  `45h`) and never reads the buttons until something says yes. The pad is a
+  DualShock now (`docs/notes/SIO.md`); the game reads its buttons and reaches
+  the difficulty menu. Resident Evil 3 now switches the pad to analog itself,
+  as it would on a console.
+- **A white line down the middle of the Konami logo**: two quads sharing the
+  column at x = 160, both drawing it. The polygon fill rule, which also made
+  the suite's `quad` test pixel-exact (`docs/notes/GPU.md`, item 5).
+- **Final Fantasy VIII's opening video hitched about once a second**: the fixed
+  1/60 s frame, one in 84 without a vblank (`docs/notes/TIMING.md`).
+- **Final Fantasy VIII stops on a white screen after its logo.** Not
+  investigated yet: there is no copy here.
+
+The survey after the pad change (`out/survey-base-633b.txt` against the new
+one) moved in the ways a game that finds a DualShock would: Tenchu 2 reaches
+its memory card prompt before its video, Resident Evil 3 goes into analog mode
+and is earlier in its intro at the snapshot, Dino Crisis is on a video rather
+than in-engine. No disc lost its picture or stopped reading.
+
+Where Beetle is still ahead: reverb, memory cards, and years of compatibility across far more than 31 discs.
 
 **Reading the next survey:** `node tools/survey-compare.mjs OLD NEW`. Lit-pixel
 counts moved on 2026-09-24 for an output-only reason: the display height now

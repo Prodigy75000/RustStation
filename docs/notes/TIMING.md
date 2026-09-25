@@ -125,6 +125,23 @@ Clock sources: timer 0 from the system clock or the dot clock, timer 1 from the
 system clock or HBlank, timer 2 from the system clock or the system clock over
 8. Two of those come out of the video timing, which is why it had to land first.
 
+## A frontend frame is one vblank to the next
+
+`Psx::run_frame` runs to the start of the next vertical blank, and the
+libretro core declares the console's own rate: 59.29 Hz NTSC, 49.76 Hz PAL
+(`Standard::frame_rate`), chosen from the disc's region at load. Until
+2026-09-25 each frontend frame was a fixed 564 480 cycles, a 60th of a second,
+against an NTSC frame of about 571 212: one frontend frame in 84 held no
+vblank, the frontend showed the same picture twice, and the owner saw Final
+Fantasy VIII's opening video hitch about once a second where Beetle PSX did not.
+A PAL game repeated ten frames a second. `a_frame_is_one_vblank_to_the_next` in
+`tests/timing.rs` fails on the fixed length.
+
+The rate is declared once. Following the GPU was tried: games and the BIOS
+reset it between screens, which puts it in NTSC for a second or two even on a
+PAL console, and Metal Gear Solid flipped four times in 20 seconds. Those
+stretches run slightly slow at the PAL rate instead.
+
 ## Skipping the vsync wait
 
 Most games end each frame spinning on a RAM counter that only the vblank

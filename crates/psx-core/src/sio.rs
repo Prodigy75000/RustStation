@@ -62,31 +62,189 @@ pub mod button {
     pub const SQUARE: u16 = 15;
 }
 
-/// A digital controller.
-#[derive(Clone, Copy, Default)]
+/// A DualShock (SCPH-1200), which powers up in digital mode and there answers
+/// the read command exactly as a digital pad does.
+///
+/// Emulated as a DualShock rather than a plain digital pad because software
+/// asks which one it has, and the digital pad's answer is the one psx-spx does
+/// not document. Metal Gear Solid sends 43h (enter config mode) and 45h (what
+/// are you) and never reads the buttons at all until something answers as a
+/// DualShock would; answering both as a button read left it asking forever,
+/// and the game took no input. The DualShock's side is documented command by
+/// command, in psx-spx "Controllers - Configuration Commands", which is what
+/// this follows.
+///
+/// Not modelled: the watchdog that resets the pad after about a second with no
+/// traffic once config mode has been used, rumble output (the mapping is kept,
+/// the motors do nothing), and the ID changing from 41h when rumble is mapped
+/// into the digital-mode bytes.
+#[derive(Clone, Copy)]
 pub struct Pad {
     pub connected: bool,
     /// One bit per [`button`], set while held.
     pub buttons: u16,
+    /// The sticks as the pad sends them: right X, right Y, left X, left Y.
+    /// 00h is left or up, 80h centre, FFh right or down. Host input, like
+    /// `buttons`, and read only in analog or config mode.
+    pub sticks: [u8; 4],
+
+    /// Analog mode, the red LED.
+    pub(crate) analog: bool,
+    /// The analog button locked by software (44h with key 3).
+    pub(crate) locked: bool,
+    /// Config mode, entered with 43h.
+    pub(crate) config: bool,
+    /// What the six bytes after the ID mean to the motors; FFh is nothing.
+    pub(crate) rumble: [u8; 6],
+    /// This transfer's command byte, and its first parameter.
+    pub(crate) command: u8,
+    pub(crate) param: u8,
+    /// Config mode as 43h left it, applied when the transfer ends: 0 for no
+    /// change, 1 to leave, 2 to enter.
+    pub(crate) config_next: u8,
+}
+
+impl Default for Pad {
+    fn default() -> Pad {
+        Pad {
+            connected: false,
+            buttons: 0,
+            sticks: [0x80; 4],
+            analog: false,
+            locked: false,
+            config: false,
+            rumble: [0xFF; 6],
+            command: 0,
+            param: 0,
+            config_next: 0,
+        }
+    }
 }
 
 impl Pad {
-    /// The reply to byte `step` of a transfer, and whether the pad acknowledges.
-    ///
-    /// The final byte is deliberately not acknowledged: the missing pulse is
-    /// the only signal software gets that the transfer is over.
-    fn reply(&self, step: u32) -> (u8, bool) {
-        // L3 and R3 are in the layout but a digital pad never asserts them.
-        let held = self.buttons & !((1 << button::L3) | (1 << button::R3));
-        let wire = !held;
-        match step {
-            0 => (0xFF, true),
-            1 => (0x41, true), // digital pad
-            2 => (0x5A, true),
-            3 => (wire as u8, true),
-            4 => ((wire >> 8) as u8, false),
-            _ => (0xFF, false),
+    /// Bytes in a transfer: five for a digital read, nine for analog mode and
+    /// for everything in config mode.
+    fn length(&self) -> u32 {
+        if self.config || self.analog {
+            9
+        } else {
+            5
         }
+    }
+
+    /// The buttons then the sticks, as bytes 3 to 8 of a read.
+    fn input(&self, analog: bool) -> [u8; 6] {
+        // L3 and R3 exist only in analog mode.
+        let held = if analog {
+            self.buttons
+        } else {
+            self.buttons & !((1 << button::L3) | (1 << button::R3))
+        };
+        let wire = !held;
+        let [rx, ry, lx, ly] = self.sticks;
+        [wire as u8, (wire >> 8) as u8, rx, ry, lx, ly]
+    }
+
+    /// Take byte `step` of a transfer, `tx`, and answer it: the reply, and
+    /// whether the pad acknowledges. The final byte is deliberately not
+    /// acknowledged: the missing pulse is the only signal software gets that
+    /// the transfer is over.
+    fn exchange(&mut self, step: u32, tx: u8) -> (u8, bool) {
+        let last = self.length() - 1;
+        let reply = match step {
+            0 => 0xFF,
+            1 => {
+                self.command = tx;
+                self.param = 0;
+                self.config_next = 0;
+                if self.config {
+                    0xF3
+                } else if self.analog {
+                    0x73
+                } else {
+                    0x41
+                }
+            }
+            2 => 0x5A,
+            _ => {
+                if step == 3 {
+                    self.param = tx;
+                }
+                self.data(step as usize - 3, tx)
+            }
+        };
+        if step >= last {
+            match self.config_next {
+                1 => self.config = false,
+                2 => self.config = true,
+                _ => {}
+            }
+            self.config_next = 0;
+        }
+        (reply, step < last)
+    }
+
+    /// Byte `i` after the ID, for this transfer's command.
+    fn data(&mut self, i: usize, tx: u8) -> u8 {
+        if i >= 6 {
+            return 0;
+        }
+        if !self.config {
+            // Normal mode: every command reads the buttons, and 43h also
+            // decides whether to go into config mode afterwards.
+            if self.command == 0x43 && i == 0 {
+                self.config_next = if tx == 1 { 2 } else { 0 };
+            }
+            return self.input(self.analog)[i];
+        }
+        let ii = self.param;
+        match self.command {
+            0x42 => self.input(true)[i],
+            0x43 => {
+                if i == 0 {
+                    self.config_next = if tx == 0 { 1 } else { 0 };
+                }
+                0
+            }
+            0x44 => {
+                match i {
+                    0 if tx <= 1 => self.analog = tx == 1,
+                    1 => self.locked = tx & 3 == 3,
+                    _ => {}
+                }
+                0
+            }
+            0x45 => [0x01, 0x02, u8::from(self.analog), 0x02, 0x01, 0x00][i],
+            0x46 => match ii {
+                0 => [0, 0, 0x01, 0x02, 0x00, 0x0A][i],
+                1 => [0, 0, 0x01, 0x01, 0x01, 0x14][i],
+                _ => 0,
+            },
+            0x47 => [0, 0, 0x02, 0x00, 0x01, 0x00][i],
+            0x48 => [0, 0, 0, 0, u8::from(ii <= 1), 0][i],
+            0x4C => match (i, ii) {
+                (3, 0) => 0x04,
+                (3, 1) => 0x07,
+                _ => 0,
+            },
+            0x4D => {
+                let old = self.rumble[i];
+                self.rumble[i] = tx;
+                old
+            }
+            _ => 0,
+        }
+    }
+
+    /// The Analog button, which switches mode unless software has locked it.
+    pub fn press_analog_button(&mut self) {
+        if !self.locked {
+            self.analog = !self.analog;
+        }
+    }
+
+    pub fn is_analog(&self) -> bool {
+        self.analog
     }
 }
 
@@ -167,7 +325,7 @@ impl Sio {
             pads: [
                 Pad {
                     connected: true,
-                    buttons: 0,
+                    ..Pad::default()
                 },
                 Pad::default(),
             ],
@@ -321,9 +479,11 @@ impl Sio {
 
         let (rx, ack) = match self.target {
             Target::Pad => {
-                let pad = self.pads[self.slot()];
+                let step = self.step;
+                let slot = self.slot();
+                let pad = &mut self.pads[slot];
                 if pad.connected {
-                    pad.reply(self.step)
+                    pad.exchange(step, tx)
                 } else {
                     // Nothing drives the line and nothing pulls /ACK. There is
                     // no "absent" status bit; software finds out by timing out.
@@ -471,6 +631,111 @@ mod tests {
         }
         sio.write(0x0A, 2, 0x1000); // drop select
         out
+    }
+
+    /// Send a whole command, one byte per /ACK, and return what came back.
+    /// Stops where the pad stops acknowledging, as software does.
+    fn command(sio: &mut Sio, irq: &mut Irq, bytes: &[u8]) -> Vec<u8> {
+        sio.write(0x0A, 2, 0x1003);
+        let mut out = Vec::new();
+        for &tx in bytes {
+            sio.write(0, 1, tx as u32);
+            let acked = sio.cycles_to_event().is_some();
+            sio.run(PAD_ACK_DELAY + ACK_WIDTH, irq);
+            out.push(sio.read(0, 1) as u8);
+            sio.write(0x0A, 2, 0x1013);
+            if !acked {
+                break;
+            }
+        }
+        sio.write(0x0A, 2, 0x1000);
+        out
+    }
+
+    const PAD9: [u8; 9] = [0; 9];
+
+    fn cmd9(sio: &mut Sio, irq: &mut Irq, c: u8, params: &[u8]) -> Vec<u8> {
+        let mut b = PAD9;
+        b[0] = 0x01;
+        b[1] = c;
+        b[3..3 + params.len()].copy_from_slice(params);
+        command(sio, irq, &b)
+    }
+
+    /// Metal Gear Solid's detection, byte for byte as psx-spx gives the
+    /// replies, then software switching the pad to analog and locking it.
+    #[test]
+    fn the_pad_answers_as_a_dualshock_when_asked() {
+        let mut sio = Sio::new();
+        let mut irq = Irq::new();
+        sio.pads[0].buttons = 1 << button::START;
+        sio.pads[0].sticks = [0x11, 0x22, 0x33, 0x44];
+
+        // 43h from normal mode reads the buttons, five bytes, then enters.
+        let r = cmd9(&mut sio, &mut irq, 0x43, &[0x01]);
+        assert_eq!(r, [0xFF, 0x41, 0x5A, !(1u8 << 3), 0xFF], "a digital read");
+
+        let r = cmd9(&mut sio, &mut irq, 0x45, &[]);
+        assert_eq!(
+            r,
+            [0xFF, 0xF3, 0x5A, 0x01, 0x02, 0x00, 0x02, 0x01, 0x00],
+            "type, LED off"
+        );
+        let r = cmd9(&mut sio, &mut irq, 0x46, &[0x01]);
+        assert_eq!(&r[5..], &[0x01, 0x01, 0x01, 0x14]);
+        let r = cmd9(&mut sio, &mut irq, 0x4C, &[0x01]);
+        assert_eq!(r[6], 0x07);
+
+        // Config-mode reads carry the sticks even in digital mode.
+        let r = cmd9(&mut sio, &mut irq, 0x42, &[]);
+        assert_eq!(
+            &r[1..],
+            &[0xF3, 0x5A, !(1u8 << 3), 0xFF, 0x11, 0x22, 0x33, 0x44]
+        );
+
+        // Analog on, locked; the LED shows it; then back to normal mode.
+        cmd9(&mut sio, &mut irq, 0x44, &[0x01, 0x03]);
+        assert_eq!(cmd9(&mut sio, &mut irq, 0x45, &[])[5], 0x01, "LED on");
+        cmd9(&mut sio, &mut irq, 0x43, &[0x00]);
+
+        let r = cmd9(&mut sio, &mut irq, 0x42, &[]);
+        assert_eq!(
+            r,
+            [0xFF, 0x73, 0x5A, !(1u8 << 3), 0xFF, 0x11, 0x22, 0x33, 0x44],
+            "analog"
+        );
+
+        // Locked: the Analog button does nothing.
+        sio.pads[0].press_analog_button();
+        assert!(sio.pads[0].is_analog());
+    }
+
+    #[test]
+    fn the_rumble_mapping_reads_back_what_it_replaced() {
+        let mut sio = Sio::new();
+        let mut irq = Irq::new();
+        cmd9(&mut sio, &mut irq, 0x43, &[0x01]);
+        let r = cmd9(
+            &mut sio,
+            &mut irq,
+            0x4D,
+            &[0x00, 0x01, 0xFF, 0xFF, 0xFF, 0xFF],
+        );
+        assert_eq!(&r[3..], &[0xFF; 6], "all unmapped at power-on");
+        let r = cmd9(&mut sio, &mut irq, 0x4D, &[0xFF; 6]);
+        assert_eq!(&r[3..], &[0x00, 0x01, 0xFF, 0xFF, 0xFF, 0xFF]);
+    }
+
+    #[test]
+    fn the_analog_button_switches_mode_until_locked() {
+        let mut sio = Sio::new();
+        let mut irq = Irq::new();
+        sio.pads[0].press_analog_button();
+        let r = command(&mut sio, &mut irq, &[0x01, 0x42, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(r.len(), 9, "nine bytes in analog mode");
+        assert_eq!(r[1], 0x73);
+        sio.pads[0].press_analog_button();
+        assert_eq!(read_pad(&mut sio, &mut irq)[1], 0x41, "and back");
     }
 
     #[test]

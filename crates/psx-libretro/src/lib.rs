@@ -27,6 +27,7 @@ use std::ptr;
 
 use psx_core::disc::{Disc, Region};
 use psx_core::sio::button;
+use psx_core::video::Standard;
 use psx_core::{exe::Exe, save, Psx};
 
 // ---------------------------------------------------------------------------
@@ -49,6 +50,7 @@ const RETRO_PIXEL_FORMAT_XRGB8888: c_uint = 1;
 const RETRO_MEMORY_SYSTEM_RAM: c_uint = 2;
 
 const RETRO_REGION_NTSC: c_uint = 0;
+const RETRO_REGION_PAL: c_uint = 1;
 
 #[repr(C)]
 pub struct SystemInfo {
@@ -104,9 +106,15 @@ type InputStateFn = unsafe extern "C" fn(c_uint, c_uint, c_uint, c_uint) -> i16;
 const FB_WIDTH: usize = 640;
 const FB_HEIGHT: usize = 480;
 
-/// 33.8688 MHz / 60 Hz. Instruction-accurate rather than cycle-accurate for
-/// now, so this is "instructions per frame". The name is the eventual meaning.
-const CYCLES_PER_FRAME: u64 = 564_480;
+/// The video standard the frontend was told about, and so the frame rate it
+/// is pacing us at. A frame is one vblank to the next (`Psx::run_frame`), so
+/// the rate is the console's: 59.29 Hz NTSC, 49.76 Hz PAL. Chosen from the
+/// disc's region at load, and not changed after. Games and the BIOS reset the
+/// GPU between screens, which puts it back in NTSC for a second or two even on
+/// a PAL console (Metal Gear Solid flips four times in its first 20 seconds),
+/// so following the GPU would have the frontend changing pace mid-game. Those
+/// stretches run slightly slow instead, and they are blank or loading screens.
+static mut DECLARED: Standard = Standard::Ntsc;
 
 const SAMPLE_RATE: f64 = 44_100.0;
 /// Stereo frames per video frame, at the rate above.
@@ -337,10 +345,14 @@ pub unsafe extern "C" fn retro_get_system_av_info(info: *mut SystemAvInfo) {
         max_height: FB_HEIGHT as c_uint,
         aspect_ratio: 4.0 / 3.0,
     };
-    (*info).timing = SystemTiming {
-        fps: 60.0,
+    (*info).timing = timing(*ptr::addr_of!(DECLARED));
+}
+
+fn timing(standard: Standard) -> SystemTiming {
+    SystemTiming {
+        fps: standard.frame_rate(),
         sample_rate: SAMPLE_RATE,
-    };
+    }
 }
 
 #[no_mangle]
@@ -369,6 +381,7 @@ pub unsafe extern "C" fn retro_reset() {
 /// the two layouts are rotated relative to each other and every core that gets
 /// this wrong gets it wrong in the same confidently-symmetrical way.
 const RETRO_DEVICE_JOYPAD: c_uint = 1;
+const RETRO_DEVICE_ANALOG: c_uint = 5;
 
 /// Indexed by `RETRO_DEVICE_ID_JOYPAD_*`, which run 0..16 with no gaps, so the
 /// id is the index and there is no pair to get out of step.
@@ -405,7 +418,17 @@ unsafe fn poll_pads(psx: &mut Psx) {
                 held |= 1 << bit;
             }
         }
-        psx.bus.sio.pads[port as usize].buttons = held;
+        let pad = &mut psx.bus.sio.pads[port as usize];
+        pad.buttons = held;
+        // The sticks, as the pad sends them: right X, right Y, left X, left Y.
+        // libretro's range is -32768..32767 with 0 centred, the pad's 00h..FFh
+        // with 80h centred, and both have up and left negative. Games read
+        // them only once they switch the pad to analog mode.
+        let axis = |index: c_uint, id: c_uint| {
+            let v = state(port, RETRO_DEVICE_ANALOG, index, id) as i32;
+            ((v + 0x8000) >> 8) as u8
+        };
+        pad.sticks = [axis(1, 0), axis(1, 1), axis(0, 0), axis(0, 1)];
     }
 }
 
@@ -480,7 +503,7 @@ pub unsafe extern "C" fn retro_run() {
 
     if let Some(psx) = psx_mut() {
         poll_pads(psx);
-        psx.run(CYCLES_PER_FRAME);
+        psx.run_frame();
 
         // The GPU picks the resolution, and software changes it mid-game, so
         // the geometry is read per frame rather than fixed at load. It can only
@@ -578,6 +601,11 @@ pub unsafe extern "C" fn retro_load_game(info: *const GameInfo) -> bool {
         }
     }
     let region = disc.as_mut().and_then(|d: &mut Disc| d.licence_region());
+    *ptr::addr_of_mut!(DECLARED) = if region == Some(Region::Europe) {
+        Standard::Pal
+    } else {
+        Standard::Ntsc
+    };
     let Some(bios) = load_bios(region) else {
         error!(
             "no BIOS found in the frontend's system directory. Expected one of: {}",
@@ -713,7 +741,10 @@ pub unsafe extern "C" fn retro_unload_game() {
 
 #[no_mangle]
 pub extern "C" fn retro_get_region() -> c_uint {
-    RETRO_REGION_NTSC
+    match unsafe { *ptr::addr_of!(DECLARED) } {
+        Standard::Ntsc => RETRO_REGION_NTSC,
+        Standard::Pal => RETRO_REGION_PAL,
+    }
 }
 
 /// Ask the frontend where its system directory is and look for a BIOS in it.

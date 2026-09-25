@@ -46,6 +46,13 @@ pub enum Standard {
 }
 
 impl Standard {
+    /// Frames per second: the CPU clock over one frame of video clocks, each
+    /// 7/11 of a CPU cycle. 59.29 for NTSC, 49.76 for PAL.
+    pub fn frame_rate(self) -> f64 {
+        let video_clocks = self.cycles_per_line() * self.lines_per_frame() as u64;
+        33_868_800.0 * GPU_CLOCK_NUM as f64 / (video_clocks * GPU_CLOCK_DEN) as f64
+    }
+
     /// Video clocks in one scanline, including the horizontal blank.
     fn cycles_per_line(self) -> u64 {
         match self {
