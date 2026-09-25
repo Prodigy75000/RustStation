@@ -227,10 +227,27 @@ fn find(d: &[u8], name: &[u8], want: u8) -> Option<usize> {
     (1..16).find(|&n| state(d, n) == want && wildcard(&entry_name(d, n), name))
 }
 
-/// A copy of the card's contents, if a card is in.
+/// A copy of the card's contents, if a card is in: the directory, read.
+///
+/// On the console, a file function reads the card through the kernel's
+/// own sector routine, and every sector it moves is reported like a game's
+/// `_card_read`, on F0000011h. Games wait on that: Metal Slug X runs
+/// firstfile on its "checking memory card" screen and then waits for the
+/// low-level event, and hung there until this reported one. Reported from
+/// the next vblank, as a sector read would complete.
 fn contents(p: &mut Psx, port: u32) -> Option<Vec<u8>> {
     let c = &p.bus.sio.cards[slot_of(port)];
-    c.connected.then(|| c.data.clone())
+    let d = c.connected.then(|| c.data.clone());
+    sector_io_done(p, d.is_some());
+    d
+}
+
+fn sector_io_done(p: &mut Psx, connected: bool) {
+    deliver_later(
+        p,
+        CLASS_HWCARD,
+        if connected { SPEC_IO_END } else { SPEC_TIMEOUT },
+    );
 }
 
 fn store(p: &mut Psx, port: u32, d: Vec<u8>) {
@@ -316,6 +333,7 @@ pub(super) fn read_write(p: &mut Psx, fd: u32, addr: u32, len: u32, write: bool)
         return ret(p, 0xFFFF_FFFF);
     }
     let slot = slot_of(port);
+    sector_io_done(p, true);
     let blocks = chain(&p.bus.sio.cards[slot].data, first as usize);
     for k in 0..len / 0x80 {
         let off = (pos + k * 0x80) as usize;

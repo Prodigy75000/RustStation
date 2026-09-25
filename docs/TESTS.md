@@ -333,6 +333,29 @@ byte late and Crash took no input). So the slowness belongs to the real-BIOS
 path, not to the emulator as a whole; the lead below is where to look if it
 matters for players who do have a BIOS.
 
+**The owner's verdict on his own library, HLE kernel on the S25 Ultra,
+2026-09-26** (the phone handles fast-forward up to 3x on this core):
+
+| Game | On HLE |
+|---|---|
+| Twisted Metal 2 | Works perfectly |
+| Grand Theft Auto 2 | Works perfectly (Beetle's HLE black-screens it) |
+| Crash Bandicoot | Works perfectly, full speed, controls fixed (1903e7a) |
+| Metal Gear Solid | Works perfectly; disc swap not yet reached |
+| Final Fantasy VIII | The known video stutter; white screen after the opening video |
+| Metal Slug X | Hung on "checking memory card"; fixed the same day |
+| Crash Bash | Hung on "Sony Computer Entertainment America presents"; fixed the same day |
+
+He also reports no new visual glitches since the Metal Gear Solid briefing fix.
+
+The two hangs were one bug, and only showed with a memory card in, which the
+phone always has and the PC survey did not. The kernel's card file functions
+work on the card image directly and reported nothing on the low-level card
+event (F0000011h); on the console they read the card through the kernel's own
+sector routine, which does. Metal Slug X runs firstfile and then waits for
+that event. Through the libretro core with a card and no BIOS, Metal Slug X
+now reaches its title screen and Crash Bash its game-type menu.
+
 **A lead for the pinned Crash slowness, found on the way and not followed.**
 Crash Bandicoot prints "VSync: timeout" about once a frame once it is running,
 and Final Fantasy VIII does too, on the real BIOS as much as on HLE (981 and 926

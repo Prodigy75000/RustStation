@@ -378,7 +378,18 @@ pub(crate) fn call(p: &mut Psx, id: u32) {
             _ => format!("stub {id:#X}"),
         };
         let (a0, a1, a2, a3, ra) = (reg(p, A0), reg(p, A1), reg(p, A2), reg(p, A3), reg(p, RA));
-        eprintln!("hle: {name} {a0:08X} {a1:08X} {a2:08X} {a3:08X} ra={ra:08X}");
+        // $a0 as text too, when it points at some: file names, printf.
+        let text = if (0x8000_0000..0x8020_0000).contains(&(a0 & 0xDFFF_FFFF)) {
+            let t = string(p, a0, 40);
+            if t.len() >= 3 && t.iter().all(|c| c.is_ascii_graphic() || *c == b' ') {
+                format!(" \"{}\"", String::from_utf8_lossy(&t))
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+        eprintln!("hle: {name} {a0:08X} {a1:08X} {a2:08X} {a3:08X} ra={ra:08X}{text}");
     }
     match id {
         T_BOOT => boot(p),

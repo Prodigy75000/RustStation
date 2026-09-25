@@ -183,6 +183,9 @@ laid out so each lands harmlessly or does what the game meant:
   steps through the block chain, firstfile/nextfile with "?" and "*", erase,
   undelete, rename, format. Asynchronous (bit 15) completes at once and is
   reported from the next vblank, fd and F4000001h, 4.
+- **Card file functions report sector work** on F0000011h, 4 (100h with no
+  card) from the next vblank, as the console's file functions do by going
+  through its sector routine. Metal Slug X waits for it after firstfile.
 - **Low-level card functions**: `_card_read`, `_card_write`, `_card_info`,
   `_card_load` queue one operation per slot, done by the pad and card handler
   on the next vblank. Reads and writes report on F0000011h, info and load on

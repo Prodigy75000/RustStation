@@ -659,3 +659,55 @@ fn the_pad_buffer_is_status_id_then_buttons() {
     let o2 = (b2 & 0x1F_FFFF) as usize;
     assert_eq!(psx.bus.ram[o2], 0xFF, "no pad in port 2");
 }
+
+/// A card file function reports its sector work on the low-level card event,
+/// from the next vblank, as the console's own sector reads do. Metal Slug X
+/// waits for it after firstfile, and hung on "checking memory card" without.
+#[test]
+fn a_card_directory_search_reports_the_low_level_card_event() {
+    let mut p = Prog::new();
+    let pattern = 0x8004_0000u32;
+    let dir = 0x8004_0100u32;
+    p.args(&[CLASS_HWCARD, SPEC_IO_END, MODE_READY, 0]);
+    p.b(0x08);
+    p.a.mov(S0, V0);
+    p.a.mov(A0, S0);
+    p.b(0x0C);
+    p.b(0x4B);
+    p.a.addiu(A0, ZERO, 2);
+    p.a.syscall();
+    p.args(&[pattern, dir]);
+    p.b(0x42);
+    // Nothing yet: it arrives with the vblank.
+    p.a.mov(A0, S0);
+    p.b(0x0B);
+    p.keep(0);
+    p.a.li(S1, 700_000);
+    p.a.label("wait");
+    p.a.addiu(S1, S1, -1);
+    p.a.bne(S1, ZERO, "wait");
+    p.a.nop();
+    p.a.mov(A0, S0);
+    p.b(0x0B);
+    p.keep(1);
+    let code = p.halt();
+    let text: Vec<u8> = code.iter().flat_map(|w| w.to_le_bytes()).collect();
+    let mut psx = Psx::new(rom()).unwrap();
+    psx.bus.sio.cards[0].connected = true;
+    let o = (pattern & 0x1F_FFFF) as usize;
+    psx.bus.ram[o..o + 7].copy_from_slice(b"bu00:*\0");
+    psx.sideload_exe(Exe {
+        initial_pc: ORG,
+        initial_gp: 0,
+        dest: ORG,
+        text,
+        memfill_start: 0,
+        memfill_size: 0,
+        sp_base: 0x801F_FF00,
+        sp_offset: 0,
+    });
+    psx.run(3_000_000);
+    assert_eq!(result(&mut psx, 0x3F), 0x600D);
+    assert_eq!(result(&mut psx, 0), 0);
+    assert_eq!(result(&mut psx, 1), 1);
+}
