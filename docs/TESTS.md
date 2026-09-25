@@ -674,7 +674,28 @@ and two discs with the first selected. Then, from the owner:
 - **Final Fantasy VIII's opening video hitched about once a second**: the fixed
   1/60 s frame, one in 84 without a vblank (`docs/notes/TIMING.md`).
 - **Final Fantasy VIII stops on a white screen after its logo.** Not
-  investigated yet: there is no copy here.
+  reproduced. With disc 1 here, the opening video ends in a fade to white of
+  about two seconds and the game goes on into the infirmary scene, untouched.
+  Needs a state from the phone taken on the white screen.
+- **Metal Gear Solid's briefing screen showed textures down its right side**
+  (second phone run): 320 pixels drawn in the 368 mode with a display range
+  to match, and the core showing all 368. The width now comes from GP1(06h)
+  the way the height already came from GP1(07h) (`docs/notes/GPU.md`).
+
+**Final Fantasy VIII's video still hitches once a second after the vblank fix,
+and this is why.** `RSTA_TIMELINE=1 shot --pace` prints every frame's flip,
+sectors and SPU interrupts; `RSTA_SPU_TRACE=1` the voice registers. The
+movie's audio is two SPU voices streamed from the data sectors (no XA), and
+it is on time: an interrupt every 2 940 samples, 1/15 s. The pictures are
+not tied to it. They come every 3 frames, 20 a second, until the buffer runs
+dry, the game pauses the audio (pitch 0) and waits about 18 frames, once a
+second. With every instruction charged 2 cycles instead of 1, as an
+experiment, they come every 4 frames with no gap at all. So the player shows
+a picture as soon as it is decoded, and on a console that takes four frames;
+this core's CPU is about twice as fast as one and its MDEC instant. A flat
+two cycles is not the fix (Crash drops to 20 frames a second with it): the
+fix is instruction timing, the I-cache and memory waits, which
+`cpu/access-time` in the hardware suite measures.
 
 The survey after the pad change (`out/survey-base-633b.txt` against the new
 one) moved in the ways a game that finds a DualShock would: Tenchu 2 reaches

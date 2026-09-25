@@ -125,6 +125,11 @@ Three things that each cost a debugging round:
    got worse. Found through Metal Gear Solid, whose title screens are two quads
    meeting at x = 160: both drew that column, the left one last, sampling one
    texel past its image, and a white line ran down the middle.
+6a. **Display width from GP1(06h): closed 2026-09-25.** psx-spx gives the pixels
+   shown as `((X2 - X1) / clocks_per_pixel + 2) AND NOT 3`. The usual ranges
+   give the nominal widths back; Metal Gear Solid's radio screen draws 320
+   pixels in the 368 mode with a range to match, and showing 368 put the
+   textures beside it in VRAM down the right of the screen.
 6. **GPUSTAT's busy bits are always ready.** Commands execute the instant their
    last word arrives, so the core is never busy. That is a lie in the forgiving
    direction, but code that polls for *busy* before proceeding would spin.

@@ -1290,7 +1290,32 @@ impl Gpu {
     // -- display ----------------------------------------------------------
 
     /// Horizontal resolution in pixels, from GP1(0x08).
+    ///
+    /// Not the nominal width of the mode: psx-spx gives the pixels shown as
+    /// `((X2 - X1) / clocks_per_pixel + 2) AND NOT 3` from GP1(06h), which for
+    /// the usual full-screen ranges is the nominal width again. Metal Gear
+    /// Solid's radio screen is 320 pixels drawn in the 368 mode, with a range
+    /// of 742 to 2968 clocks to match: 320. Showing all 368 put the textures
+    /// that sit beside the picture in VRAM down the right of the screen. The
+    /// horizontal twin of `display_height`. An empty range falls back to the
+    /// nominal width, and nothing is wider than a frontend was promised.
     pub fn display_width(&self) -> u32 {
+        let nominal = self.nominal_width();
+        let x1 = self.display_range_h & 0xFFF;
+        let x2 = (self.display_range_h >> 12) & 0xFFF;
+        if x2 <= x1 {
+            return nominal;
+        }
+        let pixels = ((x2 - x1) / self.dot_divider() as u32 + 2) & !3;
+        if pixels == 0 {
+            nominal
+        } else {
+            pixels.min(640)
+        }
+    }
+
+    /// Horizontal resolution of the mode, from GP1(0x08) alone.
+    pub fn nominal_width(&self) -> u32 {
         if self.display_mode & (1 << 6) != 0 {
             return 368;
         }
@@ -2162,6 +2187,35 @@ mod tests {
         g.gp1(0x0800_0001);
         g.framebuffer(&mut out);
         assert_eq!(out[0], from_rgb555(0x2211));
+    }
+
+    #[test]
+    fn the_display_shows_the_width_the_game_asked_for() {
+        let mut g = Gpu::new();
+        let range = |g: &mut Gpu, x1: u32, x2: u32| g.gp1(0x0600_0000 | (x2 << 12) | x1);
+        // The usual full-screen ranges give back the mode's own width.
+        for (mode, clocks, width) in [
+            (0x00, 10, 256),
+            (0x01, 8, 320),
+            (0x02, 5, 512),
+            (0x03, 4, 640),
+            (0x40, 7, 368),
+        ] {
+            g.gp1(0x0800_0000 | mode);
+            range(&mut g, 0x260, 0x260 + width * clocks);
+            assert_eq!(g.display_width(), width, "mode {mode:#04x}");
+        }
+        // Metal Gear Solid's radio screen: the 368 mode, 320 pixels of range.
+        g.gp1(0x0800_0048);
+        range(&mut g, 742, 2968);
+        assert_eq!(g.display_width(), 320);
+        // Rounded to a multiple of four, as the hardware does.
+        g.gp1(0x0800_0001);
+        range(&mut g, 0x260, 0x260 + 301 * 8);
+        assert_eq!(g.display_width(), 300);
+        // An empty range is a half-initialised GPU: the nominal width.
+        range(&mut g, 0x300, 0x300);
+        assert_eq!(g.display_width(), 320);
     }
 
     #[test]

@@ -271,6 +271,13 @@ fn clamp16(v: i32) -> i32 {
     v.clamp(-0x8000, 0x7FFF)
 }
 
+/// `RSTA_SPU_TRACE=1` logs the voice and interrupt registers as software
+/// writes them, and every interrupt, with the sample it happened at.
+fn trace_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("RSTA_SPU_TRACE").is_ok_and(|v| v != "0"))
+}
+
 #[derive(Clone)]
 pub struct Spu {
     regs: [u16; REGS],
@@ -311,6 +318,8 @@ pub struct Spu {
     pub bytes_written: u64,
     /// Key-ons applied. Host-side observation only.
     pub key_ons: u64,
+    /// Samples produced since power-on. Host-side, for traces.
+    pub samples: u64,
 }
 
 impl Default for Spu {
@@ -340,6 +349,7 @@ impl Spu {
             out: Vec::new(),
             bytes_written: 0,
             key_ons: 0,
+            samples: 0,
         }
     }
 
@@ -410,6 +420,26 @@ impl Spu {
     fn write16(&mut self, o: usize, val: u16) {
         if o / 2 >= REGS {
             return;
+        }
+        if trace_enabled() {
+            let what = match o {
+                _ if o < MVOLL => match (o % 16) / 2 {
+                    2 => Some(format!("voice {} pitch", o / 16)),
+                    3 => Some(format!("voice {} start", o / 16)),
+                    7 => Some(format!("voice {} repeat", o / 16)),
+                    _ => None,
+                },
+                KON => Some("KON".into()),
+                x if x == KON + 2 => Some("KON hi".into()),
+                KOFF => Some("KOFF".into()),
+                x if x == KOFF + 2 => Some("KOFF hi".into()),
+                IRQA => Some("IRQA".into()),
+                SPUCNT => Some("SPUCNT".into()),
+                _ => None,
+            };
+            if let Some(what) = what {
+                eprintln!("spu {what} = {val:04x} at sample {}", self.samples);
+            }
         }
         match o {
             _ if o < MVOLL && o % 16 == V_ENVX * 2 => {
@@ -487,6 +517,13 @@ impl Spu {
     }
 
     fn hit(&mut self) {
+        if trace_enabled() && self.irq_armed() && !self.irq_flag {
+            eprintln!(
+                "spu irq at {:05x}, sample {}",
+                self.irq_address(),
+                self.samples
+            );
+        }
         if self.irq_armed() && !self.irq_flag {
             self.irq_flag = true;
             self.irq_edge = true;
@@ -564,6 +601,7 @@ impl Spu {
     }
 
     fn tick(&mut self, cd: [i16; 2]) {
+        self.samples += 1;
         self.apply_keys();
 
         let cnt = self.regs[SPUCNT / 2];

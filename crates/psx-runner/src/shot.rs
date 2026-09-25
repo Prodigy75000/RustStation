@@ -902,15 +902,40 @@ fn run_pacing(psx: &mut Psx, steps: u64) {
     let mut frame = 0u64;
     let mut wall = std::time::Instant::now();
     let mut worst = std::time::Duration::ZERO;
+    // RSTA_TIMELINE=1: one line per frame, flip or not, sectors and SPU
+    // interrupts in it, to see what paces a video.
+    let timeline = std::env::var_os("RSTA_TIMELINE").is_some();
+    let (mut sectors0, mut spu0) = (
+        psx.bus.cdrom.sectors_read,
+        psx.bus.irq.raised[psx_core::irq::SPU as usize],
+    );
     while frame * RETRO_FRAME < steps {
         let t = std::time::Instant::now();
         psx.run(RETRO_FRAME);
         worst = worst.max(t.elapsed());
         frame += 1;
         let start = psx.bus.gpu.display_start();
+        if timeline {
+            let (sec, spu) = (
+                psx.bus.cdrom.sectors_read,
+                psx.bus.irq.raised[psx_core::irq::SPU as usize],
+            );
+            println!(
+                "tl {frame} {} {} {}",
+                u8::from(start != last_start),
+                sec - sectors0,
+                spu - spu0
+            );
+            sectors0 = sec;
+            spu0 = spu;
+        }
         if start != last_start {
             flips += 1;
             last_start = start;
+            if std::env::var_os("RSTA_FLIPS").is_some() {
+                // RSTA_FLIPS=1: the frame of every flip, to see the cadence.
+                print!("{frame} ");
+            }
         }
         if frame.is_multiple_of(60) {
             println!(
