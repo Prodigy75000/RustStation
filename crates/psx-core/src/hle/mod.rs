@@ -1041,15 +1041,17 @@ fn init_kernel(p: &mut Psx, tcbs: u32, evcbs: u32, stack: u32) {
     wr32(p, var(V_CONF + 4), evcbs);
     wr32(p, var(V_CONF + 8), stack);
     wr32(p, var(V_RAND), 0x24040001);
-    // Every handler acknowledges by itself. psx-spx does not say so; the
-    // games do. Psy-Q's libetc, which takes interrupts through the exception
-    // hook, turns off exactly the two that would take vblank from it,
-    // ChangeClearPAD(0) and ChangeClearRCnt(3, 0), and leaves the three root
-    // counters alone: Crash Bandicoot runs timer 2 through the kernel's
-    // events, and libetc gives up on a timer 2 interrupt nobody clears
-    // ("intr timeout(0040:004d)").
+    // Which handlers acknowledge by themselves. psx-spx does not say; the
+    // games do. The three root counters' handlers do: Crash Bandicoot runs
+    // timer 2 through the kernel's events, and Psy-Q's libetc gives up on a
+    // timer 2 interrupt nobody clears ("intr timeout(0040:004d)"). Vblank's
+    // does not, and leaves it to the pad handler after it in the chains,
+    // which does: otherwise no program using the kernel's pad functions
+    // without libetc would ever see a button. libetc, which takes interrupts
+    // through the exception hook, turns both of those off, ChangeClearPAD(0)
+    // and ChangeClearRCnt(3, 0), so either way it gets vblank.
     for t in 0..4 {
-        wr32(p, var(V_RCNT_CLEAR + t * 4), 1);
+        wr32(p, var(V_RCNT_CLEAR + t * 4), u32::from(t < 3));
     }
     wr32(p, var(V_PAD_CLEAR), 1);
     wr32(p, var(V_PAD_ENABLE), 1);
@@ -1933,8 +1935,10 @@ fn read_pads(p: &mut Psx) {
         pad.exchange(0, 0x01);
         let (id, _) = pad.exchange(1, 0x42);
         rx.push(id);
-        let (b, mut more) = pad.exchange(2, 0);
-        rx.push(b);
+        // The 5Ah after the ID is not kept: psx-spx's buffer is status, ID,
+        // then the data. Keeping it put every button one byte late, and
+        // Crash Bandicoot took no input at all.
+        let (_, mut more) = pad.exchange(2, 0);
         let mut step = 3;
         while more && rx.len() < 0x21 {
             let (b, ack) = pad.exchange(step, tx[step as usize - 3]);

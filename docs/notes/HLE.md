@@ -116,12 +116,19 @@ interrupts as already enabled**: without the 1Fh its first command timed out
 shell-open status bit is cleared, as the BIOS's own status read would.
 
 **Inferred from games.** Which kernel handlers acknowledge their interrupt by
-themselves: all of them, root counters, vblank and pad. Psy-Q's libetc takes
-interrupts through the exception hook (setjmp, then HookEntryInt), and before
-it does, it turns off exactly the two that would take vblank from it,
-ChangeClearPAD(0) and ChangeClearRCnt(3, 0). It leaves the three root counters
-alone, and Crash Bandicoot runs timer 2 through kernel events; with timer 2
-not acknowledged, libetc gave up on it every frame ("intr timeout(0040:004d)").
+themselves: the three root counters' and the pad handler's, and not vblank's,
+which leaves vblank to the pad handler behind it in the chains. Crash
+Bandicoot runs timer 2 through kernel events, and Psy-Q's libetc gave up on
+it every frame while nothing cleared it ("intr timeout(0040:004d)"). With
+vblank's handler clearing it too, the pad handler never saw a vblank, and a
+program using the kernel's pads without libetc never saw a button. libetc
+itself takes interrupts through the exception hook (setjmp, then
+HookEntryInt) and turns off both vblank acknowledges, ChangeClearPAD(0) and
+ChangeClearRCnt(3, 0), so it gets vblank either way.
+
+**The pad buffer is status, ID, then data.** The 5Ah a pad sends after its ID
+is not stored. Storing it put every button a byte late: on the owner's phone
+Crash Bandicoot ran on HLE and took no input at all.
 
 **Unresolved exceptions go through A(40h).** An exception no chain element
 takes delivers F0000010h, 1000h, then calls whatever the A table holds at

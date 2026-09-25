@@ -358,9 +358,11 @@ fn timing(standard: Standard) -> SystemTiming {
 
 #[no_mangle]
 pub extern "C" fn retro_set_controller_port_device(port: c_uint, device: c_uint) {
-    // Only the digital pad exists, so the one thing worth honouring is a port
-    // being emptied: a game that polls an absent controller must time out
-    // rather than read a pad that answers with nothing held.
+    // Every pad is a DualShock (see psx_core::sio), which answers as a plain
+    // digital pad until software or the Analog button switches it, so the
+    // one thing worth honouring here is a port being emptied: a game that
+    // polls an absent controller must time out rather than read a pad that
+    // answers with nothing held.
     if let Some(psx) = unsafe { psx_mut() } {
         if let Some(pad) = psx.bus.sio.pads.get_mut(port as usize) {
             pad.connected = device != 0;

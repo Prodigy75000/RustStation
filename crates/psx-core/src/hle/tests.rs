@@ -615,3 +615,47 @@ fn an_unhandled_exception_calls_whatever_the_a_table_holds_for_40h() {
         "and came back with the registers intact"
     );
 }
+
+/// InitPAD2's buffers, as psx-spx lays them out: status, the pad's ID, then
+/// its data, filled on vblank. The 5Ah the pad sends after its ID is not
+/// data; kept, it put every button a byte late, and Crash Bandicoot took no
+/// input at all.
+#[test]
+fn the_pad_buffer_is_status_id_then_buttons() {
+    let mut p = Prog::new();
+    let (b1, b2) = (0x8004_0000u32, 0x8004_0040u32);
+    p.args(&[b1, 0x22, b2, 0x22]);
+    p.b(0x12);
+    p.b(0x13);
+    p.a.addiu(A0, ZERO, 2);
+    p.a.syscall();
+    // Two frames and a bit.
+    p.a.li(S0, 700_000);
+    p.a.label("wait");
+    p.a.addiu(S0, S0, -1);
+    p.a.bne(S0, ZERO, "wait");
+    p.a.nop();
+    let code = p.halt();
+    let text: Vec<u8> = code.iter().flat_map(|w| w.to_le_bytes()).collect();
+    let mut psx = Psx::new(rom()).unwrap();
+    psx.bus.sio.pads[0].connected = true;
+    psx.bus.sio.pads[0].buttons = 1 << crate::sio::button::DOWN | 1 << crate::sio::button::CROSS;
+    psx.sideload_exe(Exe {
+        initial_pc: ORG,
+        initial_gp: 0,
+        dest: ORG,
+        text,
+        memfill_start: 0,
+        memfill_size: 0,
+        sp_base: 0x801F_FF00,
+        sp_offset: 0,
+    });
+    psx.run(3_000_000);
+    assert_eq!(result(&mut psx, 0x3F), 0x600D);
+    let o = (b1 & 0x1F_FFFF) as usize;
+    // Held buttons read as 0: Down is bit 6 of the first byte, Cross bit 6
+    // of the second.
+    assert_eq!(&psx.bus.ram[o..o + 4], &[0x00, 0x41, 0xBF, 0xBF]);
+    let o2 = (b2 & 0x1F_FFFF) as usize;
+    assert_eq!(psx.bus.ram[o2], 0xFF, "no pad in port 2");
+}
