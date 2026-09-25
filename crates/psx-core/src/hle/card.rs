@@ -357,9 +357,12 @@ pub(super) fn read_write(p: &mut Psx, fd: u32, addr: u32, len: u32, write: bool)
     wr32(p, f + F_POS, pos + len);
     if mode & 0x8000 != 0 {
         // Asynchronous: done already, but reported as the kernel reports
-        // it, from the next vblank.
+        // it, from the next vblank, and answered with 0, "accepted", not
+        // a byte count. Metal Slug X loops on read until it returns 0, and
+        // with a save on the card hung on "checking memory card".
         deliver_later(p, fd, SPEC_IO_END);
         deliver_later(p, CLASS_SWCARD, SPEC_IO_END);
+        return ret(p, 0);
     }
     ret(p, len);
 }

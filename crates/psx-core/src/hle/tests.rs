@@ -711,3 +711,53 @@ fn a_card_directory_search_reports_the_low_level_card_event() {
     assert_eq!(result(&mut psx, 0), 0);
     assert_eq!(result(&mut psx, 1), 1);
 }
+
+/// A card file opened asynchronously (mode bit 15) answers read with 0,
+/// "accepted", and the data is there. Metal Slug X loops on read until it
+/// gets 0, and with a save on the card hung on "checking memory card".
+#[test]
+fn an_asynchronous_card_read_answers_zero_and_delivers_the_data() {
+    let mut p = Prog::new();
+    let name = 0x8004_0000u32;
+    let src = 0x8004_0100u32;
+    let dst = 0x8004_0200u32;
+    p.args(&[name, 0x0001_0202]);
+    p.a(0x00);
+    p.a.mov(S0, V0);
+    p.args(&[0, src, 0x80]);
+    p.a.mov(A0, S0);
+    p.a(0x03);
+    p.a.mov(A0, S0);
+    p.a(0x04);
+    p.args(&[name, 0x8001]);
+    p.a(0x00);
+    p.a.mov(S0, V0);
+    p.args(&[0, dst, 0x80]);
+    p.a.mov(A0, S0);
+    p.a(0x02);
+    p.keep(0);
+    let code = p.halt();
+    let text: Vec<u8> = code.iter().flat_map(|w| w.to_le_bytes()).collect();
+    let mut psx = Psx::new(rom()).unwrap();
+    psx.bus.sio.cards[0].connected = true;
+    let o = (name & 0x1F_FFFF) as usize;
+    psx.bus.ram[o..o + 10].copy_from_slice(b"bu00:SAVE\0");
+    let data: Vec<u8> = (0..0x80u8).map(|i| i ^ 0x5A).collect();
+    let o = (src & 0x1F_FFFF) as usize;
+    psx.bus.ram[o..o + 0x80].copy_from_slice(&data);
+    psx.sideload_exe(Exe {
+        initial_pc: ORG,
+        initial_gp: 0,
+        dest: ORG,
+        text,
+        memfill_start: 0,
+        memfill_size: 0,
+        sp_base: 0x801F_FF00,
+        sp_offset: 0,
+    });
+    psx.run(400_000);
+    assert_eq!(result(&mut psx, 0x3F), 0x600D);
+    assert_eq!(result(&mut psx, 0), 0);
+    let o = (dst & 0x1F_FFFF) as usize;
+    assert_eq!(&psx.bus.ram[o..o + 0x80], &data[..]);
+}

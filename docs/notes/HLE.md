@@ -181,8 +181,9 @@ laid out so each lands harmlessly or does what the game meant:
 - **bu00: and bu10:** work on the card image's directory directly: create
   (bit 9 of the mode, blocks in bits 16 to 31), open, read and write in 80h
   steps through the block chain, firstfile/nextfile with "?" and "*", erase,
-  undelete, rename, format. Asynchronous (bit 15) completes at once and is
-  reported from the next vblank, fd and F4000001h, 4.
+  undelete, rename, format. Asynchronous (bit 15) completes at once, returns 0
+  ("accepted", which Metal Slug X loops on), and is reported from the next
+  vblank, fd and F4000001h, 4.
 - **Card file functions report sector work** on F0000011h, 4 (100h with no
   card) from the next vblank, as the console's file functions do by going
   through its sector routine. Metal Slug X waits for it after firstfile.

@@ -343,7 +343,7 @@ matters for players who do have a BIOS.
 | Crash Bandicoot | Works perfectly, full speed, controls fixed (1903e7a) |
 | Metal Gear Solid | Works perfectly; disc swap not yet reached |
 | Final Fantasy VIII | The known video stutter; white screen after the opening video |
-| Metal Slug X | Hung on "checking memory card"; fixed the same day |
+| Metal Slug X | Hung on "checking memory card"; fixed the next morning, in two steps |
 | Crash Bash | Hung on "Sony Computer Entertainment America presents"; fixed the same day |
 
 He also reports no new visual glitches since the Metal Gear Solid briefing fix.
@@ -355,6 +355,14 @@ event (F0000011h); on the console they read the card through the kernel's own
 sector routine, which does. Metal Slug X runs firstfile and then waits for
 that event. Through the libretro core with a card and no BIOS, Metal Slug X
 now reaches its title screen and Crash Bash its game-type menu.
+
+The owner then found Metal Slug X still hanging on his phone, where Crash Bash
+was fixed. The difference was the card: his holds the save he made on the real
+BIOS, and the PC runs used an empty one. With a save there, the game opens it
+asynchronously and loops on read until read returns 0: an asynchronous read
+answers "accepted", not a byte count, and the data comes with the event. His
+card, copied off the phone, reproduced the hang and now reaches the title
+screen, untouched. Lesson: test card paths with a card that has a save on it.
 
 **A lead for the pinned Crash slowness, found on the way and not followed.**
 Crash Bandicoot prints "VSync: timeout" about once a frame once it is running,
