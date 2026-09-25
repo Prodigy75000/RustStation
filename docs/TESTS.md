@@ -284,6 +284,67 @@ The BIOS does not reach its shell hand-over on its own, because it is waiting on
 a CD-ROM that does not exist. Sideloading a PSX-EXE works regardless: the
 harness runs until the hand-over point is reached and swaps the binary in there.
 
+## Without a BIOS: the HLE kernel, 2026-09-25
+
+The owner's priority, to catch Beetle PSX on players who have no BIOS file.
+Design and every finding in [`notes/HLE.md`](notes/HLE.md). What was measured:
+
+**The CPU and hardware suites give the same verdicts on HLE as on the
+SCPH-1001 BIOS**, folder by folder (cpu, gte, timers, dma, gpu, mdec, spu,
+cdrom, input), with `testrom hle`. Two needed work first. `cpu/cop` stopped
+after three of its seventeen checks until an unhandled exception went through
+the A table's entry 40h, which the test fills with its own handler.
+`cpu/code-in-io` gets further on HLE than on the BIOS only because it boots in
+fewer steps; it fails the same checks on both, a CPU gap (code run from the
+scratchpad should raise a bus error).
+
+**Kernel tests, seventeen, each proven by breaking what it covers**:
+events marked and consumed, callback events running guest code, the heap,
+psx-spx's documented memcmp and strstr bugs, setjmp and longjmp, an interrupt
+through a queued handler with every register of the interrupted code intact,
+ChangeTh there and back, a memory card file created, written, read back and
+found, the call gates and dispatchers word for word as the console's,
+InitHeap writing nothing, and an unhandled exception through A(40h).
+
+**Spyro saves on HLE** through the libretro core with an empty system
+directory: 90 s of mashed input left `BASCUS-94228SPYRO` on the card, its
+directory entry byte-identical to the one the same run writes on the real
+BIOS, and the same title.
+
+**Three games found three things**, each now in `notes/HLE.md`:
+
+- Crash Bandicoot's libcd timed out on its first command until the CD-ROM
+  controller's interrupts were left enabled, as a real BIOS leaves them; and
+  its timer 2 went unacknowledged until the kernel's root counter handlers
+  acknowledged by default.
+- Grand Theft Auto 2 jumped into its own heap: InitHeap wrote a block header
+  into memory the game keeps using. It now writes nothing until the first
+  malloc, and GTA 2 plays its DMA Design intro. The owner reports Beetle's
+  HLE black-screens on GTA 2.
+- Tony Hawk's Pro Skater 2 wrote a 1 through a null pointer into the B table,
+  then jumped to address 1 on its next OpenEvent. The tables now sit where the
+  console's do, and it draws exactly the picture the BIOS run draws.
+
+**A lead for the pinned Crash slowness, found on the way and not followed.**
+Crash Bandicoot prints "VSync: timeout" about once a frame once it is running,
+and Final Fantasy VIII does too, on the real BIOS as much as on HLE (981 and 926
+in the runs above). That is Psy-Q's libetc saying its VSync wait ran out
+without seeing the vblank count move, which is exactly where a game's pace
+comes from. It is an emulator question, not a kernel one.
+
+**The library, 2 billion steps with Start held, HLE against the SCPH-1001
+BIOS** (`SURVEY_HLE=1 scripts/survey.sh`, compared with
+`tools/survey-compare.mjs`): all thirty-four discs boot on HLE, and not one
+logs a kernel complaint. None has an unmapped access or an unknown CD command.
+Most are further along, having skipped a 200-million-step intro: 22 read more
+sectors, and every one that decodes video decodes more of it (Dragon Ball GT
+went from a black screen to 276 000 macroblocks). Grand Theft Auto 2 and Tony
+Hawk's Pro Skater 2 draw exactly the picture the BIOS run does. The rows with
+fewer lit pixels (Crash, Final Fantasy VIII, Tarzan, Ace Combat 2) were each
+looked at: a loading screen, the black between two credits, and two videos
+caught mid-fade, not failures. Final Fantasy VIII's CD commands on the two
+kernels are the same sequence, HLE's just further on.
+
 ## Controllers, as of 2026-08-16
 
 `input/pad` prints the name of every button it currently sees held, so it grades

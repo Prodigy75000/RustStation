@@ -204,6 +204,18 @@ impl Cpu {
         self.out_regs[0] = 0;
     }
 
+    /// Land the load in flight now, for the host taking over between
+    /// instructions (the HLE kernel), which must see the value a load in
+    /// the call's delay slot brought in.
+    pub(crate) fn settle(&mut self) {
+        let (r, v) = self.load;
+        if r != 0 {
+            self.regs[r as usize] = v;
+            self.out_regs[r as usize] = v;
+        }
+        self.load = (0, 0);
+    }
+
     /// Full register file, for the debugger and the serializer.
     pub fn regs(&self) -> &[u32; 32] {
         &self.regs

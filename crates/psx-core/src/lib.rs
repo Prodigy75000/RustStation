@@ -27,12 +27,13 @@
 //!   and XA-ADPCM. No reverb yet.
 //! * BIOS TTY capture, so a conformance binary's own verdict is readable.
 //! * PSX-EXE sideload at the BIOS shell hook.
+//! * An HLE kernel ([`hle`]), for booting a disc with no BIOS file.
 //! * Save states that satisfy the in-house byte-identical contract.
 //!
 //! ## What does not exist yet
 //!
-//! Reverb, memory cards, CHD images. No per-instruction timing
-//! model: every instruction costs one cycle.
+//! Reverb, CHD images. No per-instruction timing model: every instruction
+//! costs one cycle.
 
 pub mod bus;
 pub mod cdrom;
@@ -43,6 +44,7 @@ pub mod dma;
 pub mod exe;
 pub mod gpu;
 pub mod gte;
+pub mod hle;
 mod idle;
 pub mod irq;
 pub mod mdec;
@@ -75,6 +77,9 @@ pub struct Psx {
     pending_exe: Option<Exe>,
     /// Set once `pending_exe` has been applied.
     pub exe_loaded: bool,
+    /// The BIOS is [`hle::rom`]: kernel functions run in Rust. Fixed by the
+    /// image, so not serialized.
+    hle: bool,
     /// Where the game's vsync wait loop starts, once one has been seen. Host
     /// side and never serialized: it only decides where [`idle`] looks, and
     /// the skip it enables is exact, so a state is the same with or without it.
@@ -112,7 +117,9 @@ const MAX_TTY_STRING: usize = 4096;
 impl Psx {
     /// Build a machine around a 512 KB BIOS image.
     pub fn new(bios: Vec<u8>) -> Result<Psx, BiosError> {
+        let hle = hle::is_hle(&bios);
         Ok(Psx {
+            hle,
             cpu: Cpu::new(),
             bus: Bus::new(bios)?,
             tty: Vec::new(),
@@ -160,10 +167,15 @@ impl Psx {
     #[inline(always)]
     pub fn step(&mut self) {
         // Every hook lives at a call gate (physical 0xA0, 0xB0, 0xC0, in any
-        // segment) or at the shell hook, so anywhere else there is nothing to
-        // look at. Checking on every instruction was 5% of the time.
+        // segment), at the shell hook, or in the HLE kernel's stub window,
+        // so anywhere else there is nothing to look at. Checking on every
+        // instruction was 5% of the time.
         let pc = self.cpu.pc;
-        if pc & 0x1FFF_FFFF < 0x100 || pc == exe::SHELL_HOOK {
+        let phys = pc & 0x1FFF_FFFF;
+        if phys < 0x100
+            || pc == exe::SHELL_HOOK
+            || phys.wrapping_sub(hle::TRAP_PHYS) < hle::TRAP_PHYS_END - hle::TRAP_PHYS
+        {
             self.service_hooks();
         }
         self.cpu.step(&mut self.bus);
@@ -306,6 +318,20 @@ impl Psx {
     fn service_hooks(&mut self) {
         let pc = self.cpu.pc;
 
+        if self.hle {
+            let phys = pc & 0x1FFF_FFFF;
+            if (hle::TRAP_PHYS..hle::TRAP_PHYS_END).contains(&phys) {
+                // Only a stub's first word: its second is the jump's delay
+                // slot, which runs on the way back round.
+                if phys.is_multiple_of(8) {
+                    hle::call(self, (phys - hle::TRAP_PHYS) / 8);
+                }
+                return;
+            }
+            // The kernel's own functions write the TTY themselves.
+            return;
+        }
+
         if !self.exe_loaded && pc == exe::SHELL_HOOK && self.pending_exe.is_some() {
             let exe = self.pending_exe.take().expect("checked above");
             self.apply_exe(&exe);
@@ -317,6 +343,24 @@ impl Psx {
         // The call gates are reached through KUSEG/KSEG0/KSEG1 alike, so match
         // on the physical address.
         let func = self.cpu.reg(9);
+        if hle::tracing()
+            && matches!(
+                bus::mask_region(pc),
+                CALL_GATE_A | CALL_GATE_B | CALL_GATE_C
+            )
+        {
+            // The same line the HLE kernel's trace prints, so the two diff.
+            let t = ["A", "B", "C"][((bus::mask_region(pc) - CALL_GATE_A) / 0x10) as usize];
+            let r = |i| self.cpu.reg(i);
+            eprintln!(
+                "hle: {t}({func:02X}h) {:08X} {:08X} {:08X} {:08X} ra={:08X}",
+                r(4),
+                r(5),
+                r(6),
+                r(7),
+                r(31)
+            );
+        }
         match (bus::mask_region(pc), func) {
             // A(3Ch) / B(3Dh) std_out_putchar
             (CALL_GATE_A, 0x3C) | (CALL_GATE_B, 0x3D) => {

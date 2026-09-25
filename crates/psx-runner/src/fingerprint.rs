@@ -46,7 +46,11 @@ fn main() -> ExitCode {
         eprintln!("no BIOS path given");
         return ExitCode::FAILURE;
     };
-    let bios = match std::fs::read(&bios_path) {
+    let bios = match if bios_path == "hle" {
+        Ok(psx_core::hle::rom())
+    } else {
+        std::fs::read(&bios_path)
+    } {
         Ok(b) => b,
         Err(e) => {
             eprintln!("cannot read BIOS {bios_path}: {e}");

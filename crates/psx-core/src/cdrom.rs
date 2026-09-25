@@ -512,6 +512,16 @@ impl Cdrom {
 
     /// The status byte as this command reports it, clearing the latched
     /// shell-open bit on the way out.
+    /// The drive as a BIOS leaves it for the game: the power-on shell-open
+    /// bit read and so cleared, and the motor running if there is a disc.
+    /// For the HLE kernel, which never talks to the drive.
+    pub(crate) fn as_after_boot(&mut self) {
+        self.take_stat();
+        if self.disc.is_some() && !self.lid_open {
+            self.stat |= STAT_MOTOR;
+        }
+    }
+
     fn take_stat(&mut self) -> u8 {
         let s = self.stat;
         if !self.lid_open {

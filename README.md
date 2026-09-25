@@ -113,6 +113,11 @@ Working, and confirmed against real hardware behaviour rather than asserted:
 - **BIOS TTY capture** through the A/B call gates, so a test binary's own verdict
   is readable without a screen.
 - **PSX-EXE sideload** at the BIOS shell hand-over point.
+- **An HLE kernel**, for booting without a BIOS file: the kernel's A, B and C
+  functions, exceptions, events, threads, pads, memory card files and the
+  CD-ROM file system, written from psx-spx and kept in guest RAM where games
+  look for it. No intro and no shell. See
+  [`docs/notes/HLE.md`](docs/notes/HLE.md).
 - **Save states** meeting the in-house contract: golden-bytes, round-trip,
   cross-instance determinism and reject tests, with the golden test's
   sensitivity proven rather than assumed.
@@ -164,7 +169,9 @@ accident, and only our own markdown is tracked under `docs/`.
 
 ## Running it
 
-Everything needs a BIOS you supply. See [`bios/README.md`](bios/README.md).
+A BIOS you supply is the reference. See [`bios/README.md`](bios/README.md).
+Anywhere a BIOS path goes, `hle` boots the built-in kernel instead, and the
+libretro core falls back to it when the system directory has no BIOS.
 
 ```bash
 # Boot the BIOS and see how far it gets.
@@ -182,6 +189,9 @@ cargo run --release --bin fingerprint -- bios/scph5501.bin --steps 1000000
 
 # Boot a disc.
 cargo run --release --bin shot -- bios/scph5501.bin --disc game.cue --steps 400000000
+
+# The same with no BIOS file, and what the game and the kernel printed.
+cargo run --release --bin shot -- hle --disc game.cue --steps 400000000 --tty
 
 # Build the libretro core and drive it the way a frontend would. The system
 # directory must hold a BIOS under a name the core looks for (scph1001.bin and

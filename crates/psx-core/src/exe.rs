@@ -91,10 +91,15 @@ impl Exe {
         let initial_gp = le32(image, 0x14);
         let dest = le32(image, 0x18);
         let size = le32(image, 0x1C);
-        let memfill_start = le32(image, 0x30);
-        let memfill_size = le32(image, 0x34);
-        let sp_base = le32(image, 0x38);
-        let sp_offset = le32(image, 0x3C);
+        // psx-spx "CDROM File Playstation EXE and SYSTEM.CNF": the BSS at
+        // 28h, the stack at 30h. Until 2026-09-25 these were read eight
+        // bytes later, from the words the kernel's Exec keeps the caller's
+        // registers in, which are zero in a file: so a sideloaded EXE never
+        // had its BSS cleared or its stack set.
+        let memfill_start = le32(image, 0x28);
+        let memfill_size = le32(image, 0x2C);
+        let sp_base = le32(image, 0x30);
+        let sp_offset = le32(image, 0x34);
 
         let available = image.len() - HEADER_SIZE;
         // Some dumps are padded past their declared size; that is fine. Coming
@@ -122,5 +127,40 @@ impl Exe {
             sp_base,
             sp_offset,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// psx-spx's header: BSS at 28h and 2Ch, stack at 30h and 34h, and 38h
+    /// to 4Bh left for the kernel. Every field gets a different value, so a
+    /// field read from its neighbour's offset shows.
+    #[test]
+    fn each_header_field_comes_from_its_own_offset() {
+        let mut image = vec![0u8; HEADER_SIZE + 4];
+        image[..8].copy_from_slice(MAGIC);
+        let put = |image: &mut Vec<u8>, at: usize, v: u32| {
+            image[at..at + 4].copy_from_slice(&v.to_le_bytes())
+        };
+        put(&mut image, 0x10, 0x8001_0010);
+        put(&mut image, 0x14, 0x8001_0014);
+        put(&mut image, 0x18, 0x8001_0000);
+        put(&mut image, 0x1C, 4);
+        put(&mut image, 0x28, 0x8001_0028);
+        put(&mut image, 0x2C, 0x0000_002C);
+        put(&mut image, 0x30, 0x801F_0030);
+        put(&mut image, 0x34, 0x0000_0034);
+        put(&mut image, 0x38, 0xDEAD_0038);
+        put(&mut image, 0x3C, 0xDEAD_003C);
+        let exe = Exe::parse(&image).expect("a valid header");
+        assert_eq!(exe.initial_pc, 0x8001_0010);
+        assert_eq!(exe.initial_gp, 0x8001_0014);
+        assert_eq!(exe.dest, 0x8001_0000);
+        assert_eq!(exe.memfill_start, 0x8001_0028);
+        assert_eq!(exe.memfill_size, 0x2C);
+        assert_eq!(exe.sp_base, 0x801F_0030);
+        assert_eq!(exe.sp_offset, 0x34);
     }
 }

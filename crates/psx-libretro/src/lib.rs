@@ -607,12 +607,26 @@ pub unsafe extern "C" fn retro_load_game(info: *const GameInfo) -> bool {
     } else {
         Standard::Ntsc
     };
-    let Some(bios) = load_bios(region) else {
-        error!(
-            "no BIOS found in the frontend's system directory. Expected one of: {}",
-            BIOS_CANDIDATES.join(", ")
-        );
-        return false;
+    let bios = match load_bios(region) {
+        Some(bios) => bios,
+        // No BIOS file: the built-in kernel boots the game instead. It has
+        // no shell, so with nothing to boot there is still nothing to show.
+        None if !info.is_null() => {
+            warn!(
+                "no BIOS found in the frontend's system directory (expected one of: {}); \
+                 booting with the built-in HLE kernel",
+                BIOS_CANDIDATES.join(", ")
+            );
+            psx_core::hle::rom()
+        }
+        None => {
+            error!(
+                "no BIOS found in the frontend's system directory, and no content: the \
+                 built-in kernel has no BIOS menu to show. Expected one of: {}",
+                BIOS_CANDIDATES.join(", ")
+            );
+            return false;
+        }
     };
 
     let mut psx = match Psx::new(bios) {

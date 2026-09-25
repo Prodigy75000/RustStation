@@ -150,7 +150,7 @@ impl Pad {
     /// whether the pad acknowledges. The final byte is deliberately not
     /// acknowledged: the missing pulse is the only signal software gets that
     /// the transfer is over.
-    fn exchange(&mut self, step: u32, tx: u8) -> (u8, bool) {
+    pub(crate) fn exchange(&mut self, step: u32, tx: u8) -> (u8, bool) {
         let last = self.length() - 1;
         let reply = match step {
             0 => 0xFF,

@@ -28,6 +28,7 @@ Structure that works:
 | [`CDROM.md`](CDROM.md) | The CD-ROM controller |
 | [`DISC.md`](DISC.md) | Disc images: cue sheets, tracks and raw sectors |
 | [`SPU.md`](SPU.md) | The SPU: voices, ADPCM, envelopes, the mixer and its interrupt |
+| [`HLE.md`](HLE.md) | The HLE kernel: booting without a BIOS file |
 
 Still to write: memory cards, which share `SIO.md`'s port and will be added to
 it.

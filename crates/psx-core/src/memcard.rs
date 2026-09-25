@@ -27,7 +27,7 @@ const SECTORS: u16 = (CARD_SIZE / SECTOR) as u16;
 /// FLAG bit 3: the directory has not been read since the card went in. Set at
 /// power-on and insertion, and (oddly, per psx-spx) cleared by a write, not a
 /// read; games write sector 3Fh to clear it.
-const FLAG_NEW: u8 = 0x08;
+pub(crate) const FLAG_NEW: u8 = 0x08;
 
 /// Cycles from a byte to the card's /ACK: "circa 1500".
 pub(crate) const ACK_DELAY: u64 = 1500;

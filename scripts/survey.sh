@@ -10,6 +10,10 @@
 #
 #   scripts/survey.sh [steps]
 #
+# SURVEY_HLE=1 boots every disc on the HLE kernel instead of a BIOS file, and
+# SURVEY_OUT=dir writes somewhere other than out/survey, so the two can be
+# compared with tools/survey-compare.mjs.
+#
 # **Relative paths throughout, on purpose.** Under Git Bash on Windows the shell
 # rewrites `/c/...` arguments into `C:\...` on the way to a native binary, and
 # it declines to do that for arguments containing brackets. One disc here is
@@ -22,7 +26,7 @@ STEPS="${1:-2000000000}"
 cd "$(dirname "$0")/.." || exit 1
 
 SHOT="./target/release/shot.exe"
-OUT="out/survey"
+OUT="${SURVEY_OUT:-out/survey}"
 NTSC="bios/Sony PlayStation SCPH-1001 - DTLH-3000 BIOS v2.2 (1995-12-04)(Sony)(US).bin"
 PAL="bios/Sony PlayStation SCPH-1002 BIOS v2.0 (1995-05-10)(Sony)(EU).bin"
 
@@ -37,6 +41,9 @@ find dumps -name '*.cue' | sort | while read -r cue; do
         *SCES*|*SLES*|*-e-*) bios="$PAL"; region="PAL" ;;
         *) bios="$NTSC"; region="NTSC" ;;
     esac
+    if [ -n "${SURVEY_HLE:-}" ]; then
+        bios="hle"
+    fi
     echo "== $name ($region)" | tee -a "$OUT/survey.txt"
 
     # Keep the whole output, then filter for display. Grepping the pipe

@@ -105,6 +105,7 @@ fn main() -> ExitCode {
     let mut gpulist = false;
     let mut pace = false;
     let mut noidle = false;
+    let mut show_tty = false;
     let mut card_path: Option<String> = None;
     let mut save_end: Option<String> = None;
 
@@ -154,6 +155,7 @@ fn main() -> ExitCode {
             "--gpulist" => gpulist = true,
             "--pace" => pace = true,
             "--noidle" => noidle = true,
+            "--tty" => show_tty = true,
             "--card" => {
                 // A memory card in slot 1, read from PATH if it exists and
                 // written back to it at the end, as a frontend does.
@@ -197,7 +199,11 @@ fn main() -> ExitCode {
         eprintln!("no BIOS path given");
         return ExitCode::FAILURE;
     };
-    let bios = match std::fs::read(&bios_path) {
+    let bios = match if bios_path == "hle" {
+        Ok(psx_core::hle::rom())
+    } else {
+        std::fs::read(&bios_path)
+    } {
         Ok(b) => b,
         Err(e) => {
             eprintln!("cannot read BIOS {bios_path}: {e}");
@@ -306,6 +312,11 @@ fn main() -> ExitCode {
         report_gpu_list(&psx);
     }
     println!("idle: {} vsync-wait passes skipped", psx.idle_skipped);
+    if show_tty {
+        // What the game and the kernel printed, which with the HLE kernel
+        // includes its own "[hle]" notes.
+        print!("{}", psx.take_tty());
+    }
     if let Some(path) = &card_path {
         let card = &psx.bus.sio.cards[0];
         if let Err(e) = std::fs::write(path, &card.data) {
