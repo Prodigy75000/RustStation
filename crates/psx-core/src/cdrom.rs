@@ -44,6 +44,7 @@ const INT5_ERROR: u8 = 5;
 /// Drive status bits.
 const STAT_ERROR: u8 = 1 << 0;
 const STAT_MOTOR: u8 = 1 << 1;
+const STAT_SEEK_ERROR: u8 = 1 << 2;
 const STAT_SHELL_OPEN: u8 = 1 << 4;
 const STAT_READING: u8 = 1 << 5;
 const STAT_SEEKING: u8 = 1 << 6;
@@ -178,6 +179,12 @@ pub struct Cdrom {
     /// way the BIOS image is not: a save state records that a disc was present,
     /// not the disc itself.
     pub disc: Option<Disc>,
+    /// The lid is open. While it is, the drive has no disc as far as any
+    /// command can tell, whatever `disc` holds, and the shell-open status bit
+    /// cannot be cleared. Closing it leaves the bit latched until software
+    /// reads the status, which is how a game notices a disc was changed even
+    /// when the frontend opens and closes the lid in the same instant.
+    pub(crate) lid_open: bool,
 
     /// Commands seen, and commands this core does not recognise. Host-side
     /// observation only, never serialized.
@@ -255,6 +262,7 @@ impl Cdrom {
             data_len: 0,
             data_pos: 0,
             disc: None,
+            lid_open: false,
             commands: 0,
             unknown_commands: 0,
             sectors_read: 0,
@@ -506,8 +514,45 @@ impl Cdrom {
     /// shell-open bit on the way out.
     fn take_stat(&mut self) -> u8 {
         let s = self.stat;
-        self.stat &= !STAT_SHELL_OPEN;
+        if !self.lid_open {
+            self.stat &= !STAT_SHELL_OPEN;
+        }
         s
+    }
+
+    // ---- the lid ----------------------------------------------------------
+
+    /// Open the lid, as for a disc change. psx-spx: INT5 fires whether or not
+    /// a command was running, with error byte 08h ("drive door became
+    /// opened", reported with the seek-error bit), and every status bit but
+    /// shell open and error is cleared: the disc stops.
+    pub fn open_lid(&mut self) {
+        if self.lid_open {
+            return;
+        }
+        self.lid_open = true;
+        self.reading = false;
+        self.playing = false;
+        self.stat = STAT_SHELL_OPEN;
+        self.queue(
+            INT5_ERROR,
+            &[STAT_SHELL_OPEN | STAT_SEEK_ERROR, 0x08],
+            ACK_DELAY,
+        );
+    }
+
+    /// Close it again. The motor spins the new disc up; the shell-open bit
+    /// stays set until the next status read.
+    pub fn close_lid(&mut self) {
+        if !self.lid_open {
+            return;
+        }
+        self.lid_open = false;
+        self.stat |= STAT_MOTOR;
+    }
+
+    pub fn lid_is_open(&self) -> bool {
+        self.lid_open
     }
 
     fn command(&mut self, cmd: u8) {
@@ -566,7 +611,10 @@ impl Cdrom {
                 self.mode = 0;
                 self.filter = [0; 2];
                 self.playing = false;
-                self.stat = (self.stat & !STAT_SHELL_OPEN) | STAT_MOTOR;
+                self.stat |= STAT_MOTOR;
+                if !self.lid_open {
+                    self.stat &= !STAT_SHELL_OPEN;
+                }
                 let s = self.stat;
                 self.queue(INT3_ACK, &[s], ACK_DELAY);
                 self.queue(INT2_COMPLETE, &[s], COMPLETE_DELAY);
@@ -586,6 +634,11 @@ impl Cdrom {
                 self.queue(INT2_COMPLETE, &[done], COMPLETE_DELAY);
             }
             0x19 => self.test(),
+            0x1A if self.lid_open => {
+                // GetID with the lid open fails at once, per psx-spx's table:
+                // shell open and error in the status, and "cannot respond yet".
+                self.queue(INT5_ERROR, &[STAT_SHELL_OPEN | STAT_ERROR, 0x80], ACK_DELAY);
+            }
             0x1A => {
                 // GetID: acknowledge, then say what is in the drive.
                 let s = self.take_stat();
@@ -636,7 +689,7 @@ impl Cdrom {
     }
 
     fn seek(&mut self) {
-        if self.disc.is_none() {
+        if self.lid_open || self.disc.is_none() {
             return self.no_disc();
         }
         let s = self.take_stat() | STAT_SEEKING;
@@ -655,7 +708,7 @@ impl Cdrom {
     }
 
     fn start_read(&mut self) {
-        if self.disc.is_none() {
+        if self.lid_open || self.disc.is_none() {
             return self.no_disc();
         }
         self.read_lba = self.seek_target;
@@ -672,7 +725,7 @@ impl Cdrom {
     /// head is. The first parameter, when there is one and it is not zero, is a
     /// track number in BCD; one past the last restarts the current track.
     fn play(&mut self) {
-        let Some(d) = self.disc.as_ref() else {
+        let Some(d) = self.disc.as_ref().filter(|_| !self.lid_open) else {
             return self.no_disc();
         };
         let track = if self.params_len > 0 {
@@ -715,7 +768,7 @@ impl Cdrom {
     /// and the end of the track or the disc.
     fn play_sector(&mut self, irq: &mut Irq) {
         let lba = self.read_lba;
-        let Some(d) = self.disc.as_mut() else {
+        let Some(d) = self.disc.as_mut().filter(|_| !self.lid_open) else {
             self.playing = false;
             return;
         };
@@ -813,7 +866,7 @@ impl Cdrom {
     /// Returns false past the end of the disc, which is how a read runs off the
     /// lead-out rather than looping forever.
     fn fetch_sector(&mut self, lba: u32) -> bool {
-        let Some(disc) = self.disc.as_mut() else {
+        let Some(disc) = self.disc.as_mut().filter(|_| !self.lid_open) else {
             return false;
         };
         let mut raw = [0u8; RAW_SECTOR];
@@ -872,7 +925,7 @@ impl Cdrom {
     /// Taken from the sector's own header rather than from where we believe the
     /// head is, which is the entire point of the command.
     fn getloc_l(&mut self) {
-        if self.disc.is_none() {
+        if self.lid_open || self.disc.is_none() {
             return self.no_disc();
         }
         let mut out = [0u8; 8];
@@ -883,7 +936,7 @@ impl Cdrom {
     /// `GetlocP`: track, index, and the position both within the track and on
     /// the disc as a whole.
     fn getloc_p(&mut self) {
-        let Some(d) = self.disc.as_ref() else {
+        let Some(d) = self.disc.as_ref().filter(|_| !self.lid_open) else {
             return self.no_disc();
         };
         let lba = self.read_lba;
@@ -913,7 +966,7 @@ impl Cdrom {
 
     /// `GetTN`: the first and last track numbers, in BCD.
     fn get_tn(&mut self) {
-        let Some(d) = self.disc.as_ref() else {
+        let Some(d) = self.disc.as_ref().filter(|_| !self.lid_open) else {
             return self.no_disc();
         };
         let first = d.tracks.first().map(|t| t.number).unwrap_or(1);
@@ -927,7 +980,7 @@ impl Cdrom {
     /// lead-out, which is where the disc ends.
     fn get_td(&mut self) {
         let n = disc::from_bcd(self.param(0));
-        let Some(d) = self.disc.as_ref() else {
+        let Some(d) = self.disc.as_ref().filter(|_| !self.lid_open) else {
             return self.no_disc();
         };
         let lba = if n == 0 {
@@ -956,7 +1009,7 @@ impl Cdrom {
     /// there is no disc here to try it against, so the fallback matters, and
     /// the fallback is to report the disc as licensed rather than to reject it.
     fn region(&mut self) -> Option<[u8; 4]> {
-        let disc = self.disc.as_mut()?;
+        let disc = self.disc.as_mut().filter(|_| !self.lid_open)?;
         // A disc with no readable system area still reports as licensed, the
         // fallback this has always had.
         Some(
@@ -1768,20 +1821,39 @@ mod tests {
         );
     }
 
+    /// The licence text exactly as the dumps have it, gaps and all: every
+    /// disc in the library splits its region word ("Amer  ica", "Euro pe").
+    /// Written with the gaps after a whole-word search had taken every
+    /// European disc for an American one, while a test with "Europe" unsplit
+    /// passed all along.
     #[test]
     fn the_region_comes_from_the_disc_not_from_a_guess() {
-        let cue = "FILE \"x.bin\" BINARY\n TRACK 01 MODE2/2352\n INDEX 01 00:00:00\n";
-        let mut image = vec![0u8; RAW_SECTOR * 32];
-        let text = b"Licensed  by          Sony Computer Entertainment Europe";
-        image[4 * RAW_SECTOR + 24..4 * RAW_SECTOR + 24 + text.len()].copy_from_slice(text);
+        for (text, want) in [
+            (
+                &b"Licensed  by          Sony Computer Entertainment Euro pe   "[..],
+                b"SCEE",
+            ),
+            (
+                &b"Licensed  by          Sony Computer Entertainment Amer  ica "[..],
+                b"SCEA",
+            ),
+            (
+                &b"Licensed  by          Sony Computer Entertainment Inc.      "[..],
+                b"SCEI",
+            ),
+        ] {
+            let cue = "FILE \"x.bin\" BINARY\n TRACK 01 MODE2/2352\n INDEX 01 00:00:00\n";
+            let mut image = vec![0u8; RAW_SECTOR * 32];
+            image[4 * RAW_SECTOR + 24..4 * RAW_SECTOR + 24 + text.len()].copy_from_slice(text);
 
-        let mut c = enabled();
-        c.disc = Disc::from_memory(cue, vec![image]).ok();
-        let mut irq = Irq::new();
-        issue(&mut c, 0x1A, &[]);
-        let _ = take(&mut c, &mut irq);
-        let (_, data) = take(&mut c, &mut irq);
-        assert_eq!(&data[4..8], b"SCEE");
+            let mut c = enabled();
+            c.disc = Disc::from_memory(cue, vec![image]).ok();
+            let mut irq = Irq::new();
+            issue(&mut c, 0x1A, &[]);
+            let _ = take(&mut c, &mut irq);
+            let (_, data) = take(&mut c, &mut irq);
+            assert_eq!(&data[4..8], want, "{}", String::from_utf8_lossy(text));
+        }
     }
 
     #[test]
@@ -2159,5 +2231,119 @@ mod tests {
         while c.audio_queued() > 0 {
             assert_eq!(c.pop_audio(), [0, 0]);
         }
+    }
+
+    /// A one-track data disc whose user data starts with the LBA and then
+    /// `marker`, so two discs can be told apart by what a read returns.
+    fn marked_disc(marker: u8) -> Disc {
+        let cue = "FILE \"x.bin\" BINARY
+ TRACK 01 MODE2/2352
+ INDEX 01 00:00:00
+";
+        let mut image = vec![0u8; RAW_SECTOR * 32];
+        for lba in 0..32 {
+            let base = lba * RAW_SECTOR;
+            image[base + 12..base + 15].copy_from_slice(&disc::lba_to_msf_bcd(lba as u32));
+            image[base + 15] = 2;
+            image[base + 24] = lba as u8;
+            image[base + 25] = marker;
+        }
+        Disc::from_memory(cue, vec![image]).unwrap()
+    }
+
+    /// The first two bytes of the next sector a running read delivers.
+    fn next_sector(c: &mut Cdrom, irq: &mut Irq) -> (u8, [u8; 2]) {
+        let (code, _) = take(c, irq);
+        c.write(0, 0);
+        c.write(3, 0x80);
+        let bytes = [c.pop_data(), c.pop_data()];
+        c.write(3, 0x00);
+        (code, bytes)
+    }
+
+    #[test]
+    fn opening_the_lid_stops_the_drive_with_int5_08h() {
+        let mut c = with_disc();
+        let mut irq = Irq::new();
+        seek_and_read(&mut c, &mut irq, 10);
+        assert_eq!(next_sector(&mut c, &mut irq).0, INT1_DATA, "reading before");
+
+        c.open_lid();
+        let (code, data) = take(&mut c, &mut irq);
+        assert_eq!(code, INT5_ERROR);
+        assert_eq!(
+            data,
+            vec![0x14, 0x08],
+            "shell open and seek error, door opened"
+        );
+
+        // Nothing more arrives, and the status says why.
+        issue(&mut c, 0x01, &[]);
+        let (code, data) = take(&mut c, &mut irq);
+        assert_eq!(
+            (code, data),
+            (INT3_ACK, vec![STAT_SHELL_OPEN]),
+            "stopped, motor off"
+        );
+        assert_eq!(c.sectors_read, 1);
+    }
+
+    #[test]
+    fn with_the_lid_open_there_is_no_disc_and_the_bit_stays_set() {
+        let mut c = with_disc();
+        let mut irq = Irq::new();
+        c.open_lid();
+        let _ = take(&mut c, &mut irq);
+
+        for _ in 0..3 {
+            issue(&mut c, 0x01, &[]);
+            let (_, data) = take(&mut c, &mut irq);
+            assert_ne!(data[0] & STAT_SHELL_OPEN, 0, "cannot be cleared while open");
+        }
+        issue(&mut c, 0x1A, &[]);
+        let (code, data) = take(&mut c, &mut irq);
+        assert_eq!(
+            (code, data),
+            (INT5_ERROR, vec![0x11, 0x80]),
+            "GetID, door open"
+        );
+
+        issue(&mut c, 0x15, &[]);
+        let _ = take(&mut c, &mut irq);
+        let (code, data) = take(&mut c, &mut irq);
+        assert_eq!(code, INT5_ERROR, "a seek finds nothing to seek on");
+        assert_eq!(data[1], 0x80);
+    }
+
+    #[test]
+    fn a_swap_in_one_instant_is_still_seen_and_reads_the_new_disc() {
+        let mut c = with_disc();
+        let mut irq = Irq::new();
+        c.disc = Some(marked_disc(0x11));
+        seek_and_read(&mut c, &mut irq, 10);
+        assert_eq!(next_sector(&mut c, &mut irq).1, [10, 0x11]);
+
+        // Open, change, close, with no time passing: what a frontend does.
+        c.open_lid();
+        c.disc = Some(marked_disc(0x22));
+        c.close_lid();
+        let (code, _) = take(&mut c, &mut irq);
+        assert_eq!(code, INT5_ERROR, "the opening is still reported");
+
+        // The latch: set on the first status read after closing, then clear.
+        issue(&mut c, 0x01, &[]);
+        let (_, first) = take(&mut c, &mut irq);
+        issue(&mut c, 0x01, &[]);
+        let (_, second) = take(&mut c, &mut irq);
+        assert_ne!(first[0] & STAT_SHELL_OPEN, 0, "is/was open");
+        assert_eq!(second[0] & STAT_SHELL_OPEN, 0, "cleared by reading it");
+        assert_ne!(second[0] & STAT_MOTOR, 0, "spinning again");
+
+        seek_and_read(&mut c, &mut irq, 12);
+        assert_eq!(
+            next_sector(&mut c, &mut irq),
+            (INT1_DATA, [12, 0x22]),
+            "the new disc"
+        );
     }
 }

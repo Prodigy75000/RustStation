@@ -131,6 +131,11 @@ impl Disc {
     /// America, Europe or Inc. (Japan). `None` for a disc with no readable
     /// system area; a disc that has one but names neither Europe nor Japan is
     /// taken as American, which is the licence text's own default form.
+    ///
+    /// **The words are laid out with gaps in them.** Every real disc here reads
+    /// "Amer  ica" or "Euro pe", so the text is compared as letters only. Until
+    /// 2026-09-25 it was searched for "Europe" whole, which no disc contains,
+    /// and every European disc was taken as American.
     pub fn licence_region(&mut self) -> Option<Region> {
         let mut raw = [0u8; RAW_SECTOR];
         let mut text = String::new();
@@ -149,9 +154,14 @@ impl Disc {
         if text.is_empty() {
             return None;
         }
-        Some(if text.contains("Europe") {
+        let letters: String = text.chars().filter(|c| c.is_ascii_alphabetic()).collect();
+        let after = letters
+            .find("SonyComputerEntertainment")
+            .map(|at| &letters[at + "SonyComputerEntertainment".len()..])
+            .unwrap_or("");
+        Some(if after.starts_with("Europe") {
             Region::Europe
-        } else if text.contains("Japan") {
+        } else if after.starts_with("Inc") || letters.contains("Japan") {
             Region::Japan
         } else {
             Region::America

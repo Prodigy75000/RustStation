@@ -127,6 +127,36 @@ when asked what the disc is.
 With a disc, the second response is a completion instead, carrying `02h, 00h,
 20h, 00h` and the four region bytes.
 
+The region bytes come from the licence text in sectors 4 to 15, and **the text
+has gaps in it**: every disc in the library reads "Amer  ica" or "Euro pe".
+It is matched as letters only, after "Sony Computer Entertainment": Europe,
+Inc (Japan), otherwise America. A whole-word search for "Europe" had taken
+every European disc for an American one until 2026-09-25.
+
+## The lid, and changing discs
+
+psx-spx: opening the lid raises INT5 whether or not a command is running,
+with error byte `08h` ("drive door became opened", reported with the
+seek-error bit), and clears every status bit but shell open and error. While
+it is open there is no disc as far as any command can tell (`GetID` answers
+`INT5(11h, 80h)` at once), and the shell-open bit cannot be cleared. After it
+closes the bit stays latched, reading "is or was open", until the next status
+read.
+
+That latch is what makes a swap work at all here. The TrophyHub host opens
+the lid, changes the image and closes it in one instant with no frame in
+between, so a game polling for the lid never sees it open. It sees the latched
+bit on its next `Getstat`, which is how a game waiting for "insert disc 2"
+learns that one was. `Cdrom::open_lid` / `close_lid`; the lid is in the save
+state from format 12. Which image is in the drive is the frontend's, like the
+image itself.
+
+Not modelled: the seconds a real lid spends open, the spin-up and TOC read
+after closing (the motor is simply on again), and the SCEx unlock window.
+Most commands, not only `Getstat`, clear the latch once the lid is closed,
+which psx-spx says is `Getstat`'s alone; that predates the lid and is left for
+when a game shows it matters.
+
 ## Reading
 
 `ReadN` does not return sectors. It starts the drive, and sectors then arrive on

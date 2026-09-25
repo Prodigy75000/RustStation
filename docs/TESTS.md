@@ -619,8 +619,13 @@ The owner's own comparison, flipping the toggle on the same discs:
 - **No long black waits before a game starts**; Beetle has them.
 - The real Sony boot sequence, where Beetle without a BIOS shows its own.
 - Every disc tried plays at 60 fps, except the two multi-disc games (Final
-  Fantasy VIII, Metal Gear Solid), which do not load: there is no .m3u or
-  disc-swap support yet.
+  Fantasy VIII, Metal Gear Solid), which did not load: there was no .m3u or
+  disc-swap support. **Added 2026-09-25**: `.m3u` playlists and the libretro
+  disk-control interface, with the drive's lid (`docs/notes/CDROM.md`).
+  Metal Gear Solid (Europe) boots from a two-disc playlist like the Android app
+  writes, and `retrohost --swap-at FRAME DISC` swaps the way the TrophyHub host
+  does. What is not tested: a game's own "insert disc 2" prompt, which is
+  hours into both games and cannot be reached without memory cards.
 
 Crash Bash, which stalled on the "SCEA presents" screen, was an anti-modchip
 check (CD Test 04h/05h, now answered with zero SCEx counts). It reaches its
@@ -653,8 +658,7 @@ whether the pad is read in time for a same-frame jump and spin. The quickest
 discriminator is a side-by-side against Beetle PSX on the same save state,
 timing one fixed stretch of a level in real seconds.
 
-Where Beetle is still ahead: reverb, analog sticks, memory cards, multi-disc,
-PAL timing, and years of compatibility across far more than 31 discs.
+Where Beetle is still ahead: reverb, analog sticks, memory cards, PAL timing, and years of compatibility across far more than 31 discs.
 
 **Reading the next survey:** `node tools/survey-compare.mjs OLD NEW`. Lit-pixel
 counts moved on 2026-09-24 for an output-only reason: the display height now

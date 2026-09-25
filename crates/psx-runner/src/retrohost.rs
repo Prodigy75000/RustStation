@@ -159,6 +159,19 @@ const ENV_GET_SYSTEM_DIRECTORY: c_uint = 9;
 const ENV_SET_PIXEL_FORMAT: c_uint = 10;
 const ENV_SET_INPUT_DESCRIPTORS: c_uint = 11;
 const PIXEL_FORMAT_XRGB8888: c_uint = 1;
+const ENV_SET_DISK_CONTROL_INTERFACE: c_uint = 13;
+const ENV_SET_DISK_CONTROL_EXT_INTERFACE: c_uint = 58;
+
+/// The leading fields of `retro_disk_control_(ext_)callback`, which are all a
+/// swap needs.
+#[repr(C)]
+struct DiskControl {
+    set_eject_state: unsafe extern "C" fn(bool) -> bool,
+    get_eject_state: unsafe extern "C" fn() -> bool,
+    get_image_index: unsafe extern "C" fn() -> c_uint,
+    set_image_index: unsafe extern "C" fn(c_uint) -> bool,
+    get_num_images: unsafe extern "C" fn() -> c_uint,
+}
 
 /// RetroPad ids by name, for `--hold`. The frontend's side of the mapping the
 /// core is being tested on, written independently of it on purpose.
@@ -194,6 +207,7 @@ static mut FRAMES_SEEN: u64 = 0;
 static mut AUDIO_FRAMES: u64 = 0;
 static mut DESCRIPTORS: Vec<(c_uint, String)> = Vec::new();
 static mut PIXEL_FORMAT_OK: bool = false;
+static mut DISK: Option<*const DiskControl> = None;
 
 unsafe extern "C" fn environment(cmd: c_uint, data: *mut c_void) -> bool {
     match cmd {
@@ -224,6 +238,10 @@ unsafe extern "C" fn environment(cmd: c_uint, data: *mut c_void) -> bool {
                 }
                 p = p.add(1);
             }
+            true
+        }
+        ENV_SET_DISK_CONTROL_INTERFACE | ENV_SET_DISK_CONTROL_EXT_INTERFACE => {
+            DISK = Some(data as *const DiskControl);
             true
         }
         // Everything else unsupported, which a core must cope with.
@@ -312,6 +330,7 @@ fn run() -> Result<(), String> {
     let mut hold: u32 = 0;
     let mut mash = false;
     let mut save_at: Option<(u64, String)> = None;
+    let mut swaps: Vec<(u64, c_uint)> = Vec::new();
 
     let mut i = 2;
     while i < args.len() {
@@ -351,6 +370,18 @@ fn run() -> Result<(), String> {
                 save_at = Some((
                     n.parse().map_err(|e| format!("--save-at: {e}"))?,
                     path.clone(),
+                ));
+                i += 2;
+            }
+            "--swap-at" => {
+                // FRAME DISC (1-based): open the lid, change the disc and close
+                // it, all before that frame, the way the TrophyHub host does.
+                let n = args.get(i + 1).ok_or("--swap-at needs FRAME DISC")?;
+                let d = args.get(i + 2).ok_or("--swap-at needs FRAME DISC")?;
+                let d: c_uint = d.parse().map_err(|e| format!("--swap-at: {e}"))?;
+                swaps.push((
+                    n.parse().map_err(|e| format!("--swap-at: {e}"))?,
+                    d.max(1) - 1,
                 ));
                 i += 2;
             }
@@ -501,6 +532,14 @@ fn run() -> Result<(), String> {
             serialize_size()
         );
 
+        if let Some(dc) = DISK {
+            let dc = &*dc;
+            println!(
+                "      disc control: {} image(s), disc {} in the drive",
+                (dc.get_num_images)(),
+                (dc.get_image_index)() + 1
+            );
+        }
         let descs = &*std::ptr::addr_of!(DESCRIPTORS);
         if descs.is_empty() {
             println!("      no input descriptors published");
@@ -548,6 +587,23 @@ fn run() -> Result<(), String> {
                 let press = (f % 30) < 6;
                 let id = mash_ids[((f / 30) as usize) % mash_ids.len()];
                 HELD = hold | if press { 1 << id } else { 0 };
+            }
+            for (n, disc) in &swaps {
+                if f == *n {
+                    let Some(dc) = DISK else {
+                        return Err("the core published no disc control".into());
+                    };
+                    let dc = &*dc;
+                    let ok = (dc.set_eject_state)(true)
+                        && (dc.set_image_index)(*disc)
+                        && (dc.set_eject_state)(false);
+                    println!(
+                        "frame {f}: swap to disc {} of {}: {}",
+                        disc + 1,
+                        (dc.get_num_images)(),
+                        if ok { "ok" } else { "REFUSED" }
+                    );
+                }
             }
             // --save-at: the state before frame N runs, so a slow or hung
             // frame can be replayed in the direct harness with its diagnostics.

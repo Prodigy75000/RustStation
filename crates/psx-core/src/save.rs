@@ -63,7 +63,9 @@ pub const MAGIC: &[u8; 8] = b"RSTAPSX1";
 ///   playback, the XA decoder's predictor and resampler, and the frames waiting
 ///   for the SPU. Those are written oldest first and padded with zeros, so the
 ///   bytes do not depend on where the ring happens to start.
-pub const FORMAT_VERSION: u16 = 11;
+/// * 12: the drive's lid, open or closed, for disc swapping. The shell-open
+///   status bit it latches was already part of the drive status.
+pub const FORMAT_VERSION: u16 = 12;
 
 const HEADER_BYTES: usize = 8 + 2;
 const CPU_BYTES: usize = 32 * 4     // regs
@@ -184,7 +186,8 @@ const CD_AUDIO_BYTES: usize = 4 + 4   // the volume matrix, applied and pending
     + 1 + 8 + 1                   // playing, cycles to the next sector, Setloc pending
     + 2 * 2 * 2                   // XA predictor, both channels
     + 2 * 32 * 2 + 1 + 1          // the resampler ring, its position, the six-step count
-    + 2 + cdrom::AUDIO_FIFO * 4; // frames queued, then the queue, oldest first
+    + 2 + cdrom::AUDIO_FIFO * 4  // frames queued, then the queue, oldest first
+    + 1; // the lid, added in format version 12
 
 /// Exact serialized length for [`FORMAT_VERSION`]. Derived from the field
 /// widths above rather than from `save_state().len()`, so a test that pins it
@@ -555,6 +558,7 @@ fn write_cdrom(w: &mut Writer, c: &cdrom::Cdrom) {
         w.u16(l as u16);
         w.u16(r as u16);
     }
+    w.bool(c.lid_open);
 }
 
 fn write_mdec(w: &mut Writer, m: &mdec::Mdec) {
@@ -944,6 +948,7 @@ fn read_cdrom(r: &mut Reader, c: &mut cdrom::Cdrom) -> Option<()> {
     for frame in c.audio.iter_mut() {
         *frame = [r.u16()? as i16, r.u16()? as i16];
     }
+    c.lid_open = r.bool()?;
     Some(())
 }
 
@@ -1333,6 +1338,7 @@ mod tests {
                 let at = (c.audio_head as usize + k) % cdrom::AUDIO_FIFO;
                 c.audio[at] = [7 + k as i16, -9 - k as i16];
             }
+            c.lid_open = true;
         }
 
         psx
@@ -1352,15 +1358,15 @@ mod tests {
 
         // Header, byte for byte.
         assert_eq!(&snap[0..8], MAGIC);
-        assert_eq!(&snap[8..10], &[0x0B, 0x00]);
+        assert_eq!(&snap[8..10], &[0x0C, 0x00]);
 
         // Total length, pinned to a literal, deliberately NOT compared against
         // `Psx::state_size()`, which would only compare the layout to itself.
-        assert_eq!(snap.len(), 3_744_741);
+        assert_eq!(snap.len(), 3_744_742);
 
         // Whole-buffer checksum: any added, removed, reordered or re-widened
         // field moves it.
-        assert_eq!(fnv1a64(&snap), 0x07AE_38BD_59B5_D0D9);
+        assert_eq!(fnv1a64(&snap), 0x7E9C_23A2_0EB8_F267);
     }
 
     #[test]

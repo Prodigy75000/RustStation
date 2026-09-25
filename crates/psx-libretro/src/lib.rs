@@ -39,6 +39,8 @@ const RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY: c_uint = 9;
 const RETRO_ENVIRONMENT_GET_LOG_INTERFACE: c_uint = 27;
 const RETRO_ENVIRONMENT_SET_PIXEL_FORMAT: c_uint = 10;
 const RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS: c_uint = 11;
+const RETRO_ENVIRONMENT_SET_DISK_CONTROL_INTERFACE: c_uint = 13;
+const RETRO_ENVIRONMENT_SET_DISK_CONTROL_EXT_INTERFACE: c_uint = 58;
 
 /// `RETRO_PIXEL_FORMAT_XRGB8888`. It is **1**, not 2 (2 is RGB565), and getting
 /// this wrong shows up as a colour-swapped picture rather than an error.
@@ -127,7 +129,7 @@ const LIBRARY_VERSION: &[u8] = b"0.1.0\0";
 /// point, and a core that does not list them cannot be handed one however well
 /// it would cope. `exe` and `psexe` stay for the conformance suites, which ship
 /// as PSX-EXEs.
-const VALID_EXTENSIONS: &[u8] = b"cue|bin|img|iso|exe|psexe\0";
+const VALID_EXTENSIONS: &[u8] = b"cue|bin|img|iso|m3u|exe|psexe\0";
 
 /// BIOS images to look for in the frontend's system directory, best first.
 /// A PlayStation core cannot do anything at all without one.
@@ -285,9 +287,11 @@ fn log_line(level: c_uint, line: &str) {
     }
 }
 
-macro_rules! info { ($($t:tt)*) => { log_line(LOG_INFO, &format!($($t)*)) } }
-macro_rules! warn { ($($t:tt)*) => { log_line(LOG_WARN, &format!($($t)*)) } }
-macro_rules! error { ($($t:tt)*) => { log_line(LOG_ERROR, &format!($($t)*)) } }
+macro_rules! info { ($($t:tt)*) => { $crate::log_line($crate::LOG_INFO, &format!($($t)*)) } }
+macro_rules! warn { ($($t:tt)*) => { $crate::log_line($crate::LOG_WARN, &format!($($t)*)) } }
+macro_rules! error { ($($t:tt)*) => { $crate::log_line($crate::LOG_ERROR, &format!($($t)*)) } }
+
+mod discs;
 
 #[no_mangle]
 pub unsafe extern "C" fn retro_init() {
@@ -533,15 +537,47 @@ unsafe fn send_audio(batch: AudioSampleBatchFn, samples: &[i16]) {
 
 #[no_mangle]
 pub unsafe extern "C" fn retro_load_game(info: *const GameInfo) -> bool {
-    // The disc's region decides which BIOS to prefer, so look at it first.
-    let region = if info.is_null() {
-        None
-    } else {
-        content_disc_path(&*info)
-            .and_then(|p| Disc::open(std::path::Path::new(p)).ok())
-            .and_then(|mut d| d.licence_region())
-    };
     fetch_logger();
+    // The discs first: a playlist names several, and the one going in the
+    // drive decides the region, which decides which BIOS to prefer.
+    let mut disc_set = None;
+    let mut disc = None;
+    if !info.is_null() {
+        if let Some(path) = content_disc_path(&*info) {
+            let mut set = match discs::Discs::for_content(path) {
+                Ok(set) => set,
+                Err(e) => {
+                    error!("{e}");
+                    return false;
+                }
+            };
+            if let Some((index, want)) = (*ptr::addr_of_mut!(discs::INITIAL)).take() {
+                if set
+                    .paths
+                    .get(index)
+                    .is_some_and(|p| p.to_string_lossy() == want)
+                {
+                    set.index = index;
+                }
+            }
+            disc = match set.open(set.index) {
+                Ok(d) => d,
+                Err(e) => {
+                    error!("{e}");
+                    return false;
+                }
+            };
+            if set.paths.len() > 1 {
+                info!(
+                    "{} discs, starting with disc {}",
+                    set.paths.len(),
+                    set.index + 1
+                );
+            }
+            disc_set = Some(set);
+        }
+    }
+    let region = disc.as_mut().and_then(|d: &mut Disc| d.licence_region());
     let Some(bios) = load_bios(region) else {
         error!(
             "no BIOS found in the frontend's system directory. Expected one of: {}",
@@ -559,7 +595,9 @@ pub unsafe extern "C" fn retro_load_game(info: *const GameInfo) -> bool {
     };
 
     // A null info is "boot with no content", the BIOS menu. Valid on its own.
-    if !info.is_null() && !load_content(&mut psx, &*info) {
+    if disc_set.is_some() {
+        psx.bus.cdrom.disc = disc;
+    } else if !info.is_null() && !load_content(&mut psx, &*info) {
         return false;
     }
 
@@ -576,7 +614,27 @@ pub unsafe extern "C" fn retro_load_game(info: *const GameInfo) -> bool {
 
     publish_input_descriptors();
     PSX = Some(psx);
+    if let Some(set) = disc_set {
+        *ptr::addr_of_mut!(discs::DISCS) = Some(set);
+        publish_disk_control();
+    }
     true
+}
+
+/// Offer the frontend disc swapping. Published per game, because the host
+/// drops a game's disc callbacks when it unloads. A single disc gets it too:
+/// one image is a valid list, and a frontend's disc menu then shows it.
+unsafe fn publish_disk_control() {
+    let Some(env) = ENV_CB else {
+        return;
+    };
+    let cb = &discs::CALLBACKS as *const discs::DiskControlExt as *mut c_void;
+    // The basic interface is the extended one's leading fields, in order.
+    if !env(RETRO_ENVIRONMENT_SET_DISK_CONTROL_EXT_INTERFACE, cb)
+        && !env(RETRO_ENVIRONMENT_SET_DISK_CONTROL_INTERFACE, cb)
+    {
+        warn!("the frontend has no disc control: discs cannot be changed");
+    }
 }
 
 /// Put the frontend's content into the machine: a disc in the drive, or a
@@ -650,6 +708,7 @@ pub unsafe extern "C" fn retro_load_game_special(
 #[no_mangle]
 pub unsafe extern "C" fn retro_unload_game() {
     PSX = None;
+    *ptr::addr_of_mut!(discs::DISCS) = None;
 }
 
 #[no_mangle]
@@ -665,7 +724,7 @@ unsafe fn content_disc_path(info: &GameInfo) -> Option<&str> {
     }
     let p = CStr::from_ptr(info.path).to_str().ok()?;
     let lower = p.to_ascii_lowercase();
-    [".cue", ".bin", ".iso", ".img"]
+    [".cue", ".bin", ".iso", ".img", ".m3u"]
         .iter()
         .any(|ext| lower.ends_with(ext))
         .then_some(p)
@@ -695,8 +754,9 @@ unsafe fn load_bios(region: Option<Region>) -> Option<Vec<u8>> {
                     info!("BIOS {} for a {region:?} disc", candidate.display());
                     if region.is_some() && rank >= matching {
                         warn!(
-                            "{name} is not a {region:?} BIOS: expect the BIOS shell \
-                             rather than the game"
+                            "{name} is not a {region:?} BIOS. Some BIOSes refuse a disc \
+                             from another region (scph5500 does) and drop to their shell; \
+                             scph1001 has been seen to boot a European disc"
                         );
                     }
                     return Some(image);
