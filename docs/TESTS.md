@@ -710,6 +710,12 @@ memory card screen lists it with its gem icon. Tenchu 2, which stopped on "MEMOR
 not inserted", goes on into its intro and makes the dummy write to sector 3Fh that clears
 the new-card flag.
 
+**Confirmed on the owner's phone the same day:** Metal Slug X saved manually from its
+options, the game was quit and restarted, and it loaded the save back ("load complete").
+The card survives a relaunch through the app's save RAM path, which writes it on every
+pause and on quit (not periodically, so a crash mid-session loses what was saved since
+the last pause).
+
 Where Beetle is still ahead: reverb, and years of compatibility across far more than 31 discs.
 
 **Reading the next survey:** `node tools/survey-compare.mjs OLD NEW`. Lit-pixel
