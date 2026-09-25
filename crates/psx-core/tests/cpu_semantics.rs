@@ -28,7 +28,7 @@ fn branch_delay_slot_executes() {
         addiu(2, 0, 9),
         addiu(3, 0, 11),
     ]);
-    psx.run(3);
+    steps(&mut psx, 3);
 
     assert_eq!(psx.cpu.reg(1), 7, "delay slot did not execute");
     assert_eq!(
@@ -44,7 +44,7 @@ fn branch_delay_slot_executes() {
 fn jal_links_past_the_delay_slot() {
     let target = RESET + 0x40;
     let mut psx = machine(&[jal(target), addiu(1, 0, 7)]);
-    psx.run(2);
+    steps(&mut psx, 2);
 
     assert_eq!(psx.cpu.reg(31), RESET + 8);
     assert_eq!(psx.cpu.reg(1), 7);
@@ -63,7 +63,7 @@ fn load_delay_slot_hides_the_result() {
         addiu(2, 1, 0),      // delay slot: sees the OLD r1
         addiu(3, 1, 0),      // sees the loaded value
     ]);
-    psx.run(7);
+    steps(&mut psx, 7);
 
     assert_eq!(
         psx.cpu.reg(2),
@@ -87,7 +87,7 @@ fn explicit_write_in_the_delay_slot_beats_the_load() {
         addiu(1, 0, 0x0CCC), // ... but this writes r1 in the same slot
         nop(),
     ]);
-    psx.run(6);
+    steps(&mut psx, 6);
 
     assert_eq!(psx.cpu.reg(1), 0x0CCC);
 }
@@ -118,7 +118,7 @@ fn a_second_load_cancels_the_first() {
         addiu(2, 1, 0),      // $2 = $1
         nop(),
     ]);
-    psx.run(10);
+    steps(&mut psx, 10);
 
     assert_eq!(
         psx.cpu.reg(2),
@@ -126,7 +126,7 @@ fn a_second_load_cancels_the_first() {
         "the first load's value became visible; it should have been discarded"
     );
 
-    psx.run(1);
+    steps(&mut psx, 1);
     assert_eq!(
         psx.cpu.reg(1),
         0x0BBB_0000,
@@ -160,7 +160,7 @@ fn lwl_merges_with_a_pending_load() {
         nop(),
         nop(),
     ]);
-    psx.run(14);
+    steps(&mut psx, 14);
 
     // Top byte from [8], the rest from the load that was still in flight. If
     // the in-flight value had not reached the merge at all, the low bytes would
@@ -200,7 +200,7 @@ fn lwl_delay_slot_sees_the_cancelled_load() {
         addiu(2, 1, 0),    // reads $1 in lwl's delay slot: which value?
         nop(),
     ]);
-    psx.run(14);
+    steps(&mut psx, 14);
 
     // This core currently produces 0x11223344 here. The alternative reading is
     // 0x99999999, the value from before the cancelled load.
@@ -225,7 +225,7 @@ fn unaligned_load_pair_merges() {
         lwl(3, 4, 4),
         nop(),
     ]);
-    psx.run(10);
+    steps(&mut psx, 10);
 
     assert_eq!(psx.cpu.reg(3), 0x8811_2233);
 }
@@ -242,7 +242,7 @@ fn divide_by_zero_returns_hardware_junk() {
         mfhi(4),
         nop(),
     ]);
-    psx.run(6);
+    steps(&mut psx, 6);
 
     assert_eq!(
         psx.cpu.reg(3),
@@ -262,7 +262,7 @@ fn addi_traps_on_overflow_and_addiu_does_not() {
         addi(2, 1, 1),     // overflow -> exception
         nop(),
     ]);
-    psx.run(3);
+    steps(&mut psx, 3);
 
     assert_eq!(
         psx.cpu.reg(2),
@@ -282,7 +282,7 @@ fn addi_traps_on_overflow_and_addiu_does_not() {
     );
 
     let mut psx = machine(&[lui(1, 0x7FFF), ori(1, 1, 0xFFFF), addiu(2, 1, 1), nop()]);
-    psx.run(4);
+    steps(&mut psx, 4);
     assert_eq!(psx.cpu.reg(2), 0x8000_0000);
     assert_eq!(psx.cpu.pc, RESET + 0x10);
 }
@@ -298,7 +298,7 @@ fn exception_in_a_delay_slot_backs_up_to_the_branch() {
         addi(2, 1, 1), // delay slot: overflows
         nop(),
     ]);
-    psx.run(4);
+    steps(&mut psx, 4);
 
     assert_eq!(psx.cpu.cop0.epc, RESET + 8, "EPC should name the branch");
     assert_ne!(psx.cpu.cop0.cause & (1 << 31), 0, "Cause BD not set");
@@ -320,7 +320,7 @@ fn isolated_cache_swallows_stores() {
         nop(),
         nop(),
     ]);
-    psx.run(9);
+    steps(&mut psx, 9);
 
     assert_eq!(psx.cpu.reg(2), 0, "an isolated-cache store reached RAM");
     assert_eq!(psx.bus.ram[0], 0);
@@ -338,7 +338,7 @@ fn coprocessor_usability_follows_the_status_bit() {
 
     // CU1 clear at reset: traps, and BEV is set so it vectors into ROM.
     let mut psx = machine(&[COP1_OP, nop()]);
-    psx.run(1);
+    steps(&mut psx, 1);
     assert_eq!(psx.cpu.pc, 0xBFC0_0180);
     assert_eq!(
         (psx.cpu.cop0.cause >> 2) & 0x1F,
@@ -348,7 +348,7 @@ fn coprocessor_usability_follows_the_status_bit() {
 
     // CU1 set (Status bit 29): accepted, and execution simply continues.
     let mut psx = machine(&[lui(5, 0x2000), mtc0(5, 12), COP1_OP, nop()]);
-    psx.run(4);
+    steps(&mut psx, 4);
     assert_eq!(
         psx.cpu.pc,
         RESET + 0x10,
@@ -365,7 +365,7 @@ fn coprocessor_usability_follows_the_status_bit() {
 #[test]
 fn unknown_cop0_subopcode_does_not_trap() {
     let mut psx = machine(&[(0x10 << 26) | (0x08 << 21), nop()]);
-    psx.run(1);
+    steps(&mut psx, 1);
     assert_eq!(psx.cpu.pc, RESET + 4);
 }
 

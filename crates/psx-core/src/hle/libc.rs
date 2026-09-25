@@ -518,6 +518,13 @@ pub(super) fn printf(p: &mut Psx) {
             width = width * 10 + (f[i] - b'0') as usize;
             i += 1;
         }
+        // The kernel's printf also takes '-' after the width: the suite's
+        // access-time prints "%2-d", and on the console that is the number
+        // left-justified in two columns.
+        while i < f.len() && f[i] == b'-' {
+            left = true;
+            i += 1;
+        }
         let mut prec: Option<usize> = None;
         if i < f.len() && f[i] == b'.' {
             i += 1;

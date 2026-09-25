@@ -163,11 +163,10 @@ These are unsettled. Each names what would settle it.
    and so is not reachable uncached. The bus currently serves it through every
    segment. Serving an access that hardware would fault makes a real bug look
    like working code.
-4. **Instruction cycle costs.** Every instruction is one cycle, and
-   multiply/divide do not stall `MFHI`/`MFLO`. The scheduler itself now exists
-   and runs off a real master clock, so this is the remaining axis rather than
-   the whole gap. See [`TIMING.md`](TIMING.md), which also explains why
-   `cpu/access-time` cannot pass until there is an I-cache.
+4. **Instruction cycle costs** landed 2026-09-26: the I-cache, what loads
+   cost by region, and the multiplier's and the GTE's waits
+   (`crates/psx-core/src/timing.rs`, [`TIMING.md`](TIMING.md)). Not yet: the
+   write queue, the load shadow as its own mechanism, and DMA taking the bus.
 5. **COP0 register reads on unassigned indices** return zero here for r16 to
    r31. Deterministic, which save states require; the documented model is "the
    last value read from a valid COP0 register". The r0/r1/r2/r4/r10 case should

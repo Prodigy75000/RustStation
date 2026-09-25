@@ -71,7 +71,10 @@ pub const MAGIC: &[u8; 8] = b"RSTAPSX1";
 /// * 14: memory cards. What each is doing mid-transfer and its flag byte go
 ///   in; what is on it does not, being the frontend's like the disc, so that
 ///   loading a state never takes back a save made since.
-pub const FORMAT_VERSION: u16 = 14;
+/// * 15: instructions cost what they cost on the console, so the CPU gains
+///   what that depends on: the I-cache's tags, and the cycles at which the
+///   multiplier and the GTE are done.
+pub const FORMAT_VERSION: u16 = 15;
 
 const HEADER_BYTES: usize = 8 + 2;
 const CPU_BYTES: usize = 32 * 4     // regs
@@ -79,7 +82,9 @@ const CPU_BYTES: usize = 32 * 4     // regs
     + 4 * 5                         // hi, lo, pc, next_pc, current_pc
     + 1 + 4                         // pending load: register, value
     + 1 + 1                         // branch, delay_slot
-    + 8; // cycles
+    + 8                             // cycles
+    + crate::timing::ICACHE_LINES * 4 // I-cache tags
+    + 8 + 8; // multiplier and GTE ready
 const COP0_BYTES: usize = 11 * 4;
 /// The GTE's logical state, not its 64 register slots. See `write_cpu`.
 const GTE_BYTES: usize = 9 * 2      // V0..V2
@@ -325,6 +330,9 @@ fn write_cpu(w: &mut Writer, cpu: &Cpu) {
     w.bool(cpu.branch);
     w.bool(cpu.delay_slot);
     w.u64(cpu.cycles);
+    w.u32s(&cpu.icache.tags);
+    w.u64(cpu.muldiv_ready);
+    w.u64(cpu.gte_ready);
 
     // COP0
     w.u32(cpu.cop0.bpc);
@@ -649,6 +657,9 @@ fn read_cpu(r: &mut Reader, cpu: &mut Cpu) -> Option<()> {
     cpu.branch = r.bool()?;
     cpu.delay_slot = r.bool()?;
     cpu.cycles = r.u64()?;
+    r.u32s(&mut cpu.icache.tags)?;
+    cpu.muldiv_ready = r.u64()?;
+    cpu.gte_ready = r.u64()?;
 
     cpu.cop0.bpc = r.u32()?;
     cpu.cop0.bda = r.u32()?;
@@ -1128,6 +1139,11 @@ mod tests {
         psx.cpu.branch = true;
         psx.cpu.delay_slot = true;
         psx.cpu.cycles = 0x0102_0304_0506_0708;
+        for (i, t) in psx.cpu.icache.tags.iter_mut().enumerate() {
+            *t = 0x8001_0000 ^ ((i as u32) << 12) | (i as u32 & 0xF);
+        }
+        psx.cpu.muldiv_ready = 0x1122_3344_5566_7788;
+        psx.cpu.gte_ready = 0x99AA_BBCC_DDEE_FF00;
 
         psx.cpu.cop0.sr = 0x0040_0002;
         psx.cpu.cop0.cause = 0x0000_0020;
@@ -1441,15 +1457,15 @@ mod tests {
 
         // Header, byte for byte.
         assert_eq!(&snap[0..8], MAGIC);
-        assert_eq!(&snap[8..10], &[0x0E, 0x00]);
+        assert_eq!(&snap[8..10], &[0x0F, 0x00]);
 
         // Total length, pinned to a literal, deliberately NOT compared against
         // `Psx::state_size()`, which would only compare the layout to itself.
-        assert_eq!(snap.len(), 3_745_034);
+        assert_eq!(snap.len(), 3_746_074);
 
         // Whole-buffer checksum: any added, removed, reordered or re-widened
         // field moves it.
-        assert_eq!(fnv1a64(&snap), 0x0636_F998_4B5B_F3E1);
+        assert_eq!(fnv1a64(&snap), 0xF1DE_BE4C_ADFF_30D0);
     }
 
     #[test]

@@ -158,8 +158,8 @@ and on the test tablet it was the difference between 17 ms per frame (over the
 stack timeout that Crash, Spyro and Twisted Metal 2 share, by its exact
 instructions. At its head, with nothing in flight and no interrupt waiting, it
 runs every whole pass that fits before the next scheduled device event: the
-clock goes up by 14 per pass, the timeout word down by one, and nothing else
-changes. That is exactly what stepping them does, so it is an optimisation and
+clock goes up by what a pass costs (see below), the timeout word down by
+one, and nothing else changes. That is exactly what stepping them does, so it is an optimisation and
 not an approximation. The unit tests check it byte for byte through a save
 state, and so did 20 seconds of each of Crash, Twisted Metal 2 and Spyro
 (`shot --noidle --save-end` against the default). `Psx::run` now counts
@@ -175,6 +175,9 @@ skipped. Its tests include a loop that differs from an idle one only by a
 store, which must not be skipped. It does not help Crash Bash, whose wait
 calls `VSync(-1)`, which reads a root counter: a device, so never idle by this
 test, and correctly so.
+
+With instruction costs (below) the pass costs 26 cycles, not 14, and the skip
+steps a pass normally until the loop is in the I-cache.
 
 **The average frame is not the budget; the worst one is.** Crash does its game
 work in one frame and idles through the next. With the skip the pair averaged
@@ -203,20 +206,78 @@ on the host for per-line costs.
 Other games wait with other loops (Tekken 3 and Metal Slug X skip nothing).
 They are cheap to add one at a time, each with the same byte-identical check.
 
+## What an instruction costs (2026-09-26)
+
+Until this date every instruction cost one cycle, and the CPU ran about twice
+as fast as a console's. `crates/psx-core/src/timing.rs` now charges what
+psx-spx and the suite's `cpu/access-time` log say:
+
+* **Fetch.** KUSEG and KSEG0 go through the I-cache when the cache control
+  register (FFFE0130h) has it on: 256 lines of four words, a tag of physical
+  address bits 31 to 12 and a valid bit per word, filled from the word asked
+  for to the end of the line. A hit costs nothing more. A miss from RAM costs
+  6, the first word's latency (the CPU runs the rest as they stream in); a
+  fetch from KSEG1 RAM costs the same 6, and from the BIOS ROM 28, since it is
+  an 8-bit chip read four times a word. Only the tags are kept, which is all
+  timing needs. The BIOS flushes the cache by writing tags with the cache
+  isolated, and that is modelled; the HLE kernel's FlushCache clears them.
+* **Loads**, by region and by the bytes they take, from the access-time log:
+  RAM 4 more, the scratchpad nothing, the on-die I/O 2, the CD-ROM 7 to 25,
+  the SPU 17 to 38, the BIOS 7 to 24. LWL and LWR take only the bytes they
+  need, which the SPU's row in that log shows: its "32-bit" read of a 16-bit
+  register at an odd halfword is compiled to such a pair and costs two
+  halfword reads.
+* **MFHI and MFLO wait for the multiplier**: 6, 9 or 13 cycles by the size of
+  the first operand, 36 for a divide.
+* **The GTE**: a command takes psx-spx's cycles, and MFC2, CFC2, SWC2 or the
+  next command wait for it.
+
+Stores still cost one cycle, however slow the device (the write queue is not
+modelled), and DMA still takes no time from the CPU.
+
+`cpu/access-time` against the console, SCPH-1001 BIOS:
+
+| Region | 8 | 16 | 32 | Console 8 / 16 / 32 |
+|---|---|---|---|---|
+| RAM | 5.1 | 5.1 | 5.7 | 5.21 / 5.3 / 5.14 |
+| BIOS | 8.13 | 13.7 | 25.1 | 7.6 / 12.94 / 24.94 |
+| Scratchpad | 0.99 | 0.99 | 0.99 | 1.5 / 1.1 / 0.94 |
+| Expansion 1 | 7.1 | 14.1 | 26.7 | 6.94 / 13.7 / 25.7 |
+| Expansion 2 | 11.6 | 26.0 | 56.0 | 10.99 / 25.99 / 55.98 |
+| Expansion 3 | 7.19 | 6.1 | 10.7 | 6.7 / 6.1 / 9.95 |
+| I/O registers | 3.0 to 3.6 | | | 2.92 to 3.8 |
+| CD-ROM | 8.0 | 14.0 | 26.0 | 8.0 / 14.0 / 25.93 |
+| SPU | 18.6 | 18.0 | 36.6 | 17.99 / 17.99 / 38.94 |
+| Cache control | 1.1 | 2.7 | 2.1 | 0.95 / 1.9 / 1.9 |
+
+Before, every row read about 1.0.
+
+**What it changed.** Final Fantasy VIII's opening video, which showed a
+picture every three frames and then stood still for about seventeen, once a
+second, now shows one every four frames without a gap: its player shows each
+picture as soon as it is decoded, and the decoding is CPU work. And
+the real BIOS's libetc stopped printing "VSync: timeout" about once a frame
+in the suite's tests: its VSync wait counts passes of a loop, and at one
+cycle an instruction the count ran out before the blank came.
+
+`Psx::run(n)` counts cycles, and now stops at the end of the instruction
+that reaches `n`, which can be tens of cycles past it. `run_frame` goes
+vblank to vblank so it does not care; `run_frame_at` in the other standard
+carries the overshoot into the next frame, so the machine keeps real time
+(`a_frame_in_the_other_standard_keeps_real_time` runs from the uncached ROM,
+29 cycles an instruction, to hold that). The vsync-wait skip charges a pass
+what it costs, 14 instructions and three RAM loads, and only once the loop is
+in the cache.
+
 ## Open questions
 
-1. **Instruction cycle costs.** Every instruction is one cycle
-   (`CYCLES_PER_INSTRUCTION`). Real ones cost roughly 1 to 40 depending on where
-   they fetch from and what they touch. Everything downstream is written against
-   the master clock rather than against that constant, so making it real is a
-   change to one function.
-
-   This is also why `cpu/access-time` cannot pass yet. It measures cycles per
-   access per memory region, and those numbers are dominated by **instruction
-   fetch**, so they are not meaningful until there is an I-cache. Calibrating
-   region wait states before then would be fitting constants to the wrong model.
-2. **`MULT`/`DIV` do not stall `MFHI`/`MFLO`.** One of the standard causes of a
-   core running too fast.
+1. **The rest of the timing model**: the write queue, back-to-back loads
+   costing more than the log's figures (which have independent work after
+   each load), DRAM refresh, and DMA stealing the bus. Each is a place a game
+   can still run faster than on a console.
+2. **The I-cache's contents.** Only its tags are kept. A game that relies on
+   running code the cache still holds after RAM under it changed (psx-spx
+   names Formula One 2001) runs the new code here.
 3. **Synchronisation modes** (`MODE` bits 0 to 2) are unverified for timers 0
    and 1, and are applied at scheduler granularity rather than at the exact
    cycle. Timer 2's behaviour (sync modes 0 and 3 stop the counter, 1 and 2 free

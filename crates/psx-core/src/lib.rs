@@ -28,12 +28,14 @@
 //! * BIOS TTY capture, so a conformance binary's own verdict is readable.
 //! * PSX-EXE sideload at the BIOS shell hook.
 //! * An HLE kernel ([`hle`]), for booting a disc with no BIOS file.
+//! * Instruction timing ([`timing`]): the I-cache, what loads cost by region,
+//!   and the multiplier's and the GTE's waits.
 //! * Save states that satisfy the in-house byte-identical contract.
 //!
 //! ## What does not exist yet
 //!
-//! Reverb, CHD images. No per-instruction timing model: every instruction
-//! costs one cycle.
+//! Reverb, CHD images. Stores cost one cycle however slow the device (no
+//! write queue), and DMA takes no time from the CPU.
 
 pub mod bus;
 pub mod cdrom;
@@ -53,6 +55,7 @@ pub mod save;
 pub mod sio;
 pub mod spu;
 pub mod timers;
+pub mod timing;
 pub mod video;
 pub mod xa;
 
@@ -97,6 +100,10 @@ pub struct Psx {
     /// frames, in units of 1/11. Host side: where frames begin and end never
     /// changes what the machine does, so it is not serialized.
     frame_frac: u64,
+    /// Cycles `run_frame_at`'s frames have run past where they should have
+    /// ended: a run stops after the instruction that reaches its end, and one
+    /// instruction can cost tens of cycles. Carried, like `frame_frac`.
+    frame_over: u64,
     /// Loop iterations skipped rather than stepped. Diagnostic.
     pub idle_skipped: u64,
     /// Whether to skip the vsync wait at all. On by default; off is for
@@ -133,6 +140,7 @@ impl Psx {
             idle_skipped: 0,
             skip_idle: true,
             frame_frac: 0,
+            frame_over: 0,
         })
     }
 
@@ -181,12 +189,12 @@ impl Psx {
         self.cpu.step(&mut self.bus);
     }
 
-    /// Run for `n` master-clock cycles.
+    /// Run for at least `n` master-clock cycles: up to the end of the
+    /// instruction that reaches it.
     ///
-    /// Every instruction costs one cycle, so this is also `n` instructions,
-    /// except where the game is spinning in its vsync wait: those iterations
-    /// are skipped in bulk by [`idle`], which lands on exactly the state that
-    /// stepping them would have, and ends on the same cycle.
+    /// Where the game is spinning in its vsync wait, iterations are skipped in
+    /// bulk by [`idle`], which lands on exactly the state that stepping them
+    /// would have, and ends on the same cycle.
     pub fn run(&mut self, n: u64) {
         let target = self.bus.cycle + n;
         while self.bus.cycle < target {
@@ -294,13 +302,22 @@ impl Psx {
     pub fn run_frame_at(&mut self, standard: video::Standard) {
         if self.bus.video.standard() == standard {
             self.frame_frac = 0;
+            self.frame_over = 0;
             self.run_frame();
             return;
         }
         let (scaled, per) = standard.frame_cycles_scaled();
         let total = scaled + self.frame_frac;
         self.frame_frac = total % per;
-        self.run(total / per);
+        let want = total / per;
+        if self.frame_over >= want {
+            self.frame_over -= want;
+            return;
+        }
+        let n = want - self.frame_over;
+        let start = self.bus.cycle;
+        self.run(n);
+        self.frame_over = self.bus.cycle - start - n;
     }
 
     /// Everything the BIOS has printed so far.

@@ -71,6 +71,40 @@ pub const RESET: u32 = 0xBFC0_0000;
 /// Where an exception vectors with Status BEV set, which is the reset default.
 pub const BEV_HANDLER: u32 = 0xBFC0_0180;
 
+/// Run `n` instructions, however many cycles they take. `Psx::run` counts
+/// cycles, and an instruction fetched from the ROM costs 29 of them.
+pub fn steps(psx: &mut Psx, n: u64) {
+    for _ in 0..n {
+        psx.step();
+    }
+}
+
+pub fn jr(rs: u32) -> u32 {
+    r_type(rs, 0, 0, 0, 0x08)
+}
+
+/// A machine that turns the I-cache on, as a BIOS does, and runs `program`
+/// from the ROM's cached mirror, so a loop in it costs a cycle an
+/// instruction once its first pass has filled the cache. From the ROM
+/// itself every instruction costs 29, which hides a cycle-exact event.
+pub fn cached(program: &[u32]) -> Psx {
+    const PROLOGUE: u32 = 9;
+    let mut words = vec![
+        lui(1, 0xFFFE),
+        ori(1, 1, 0x0130),
+        lui(2, 0x0001),
+        ori(2, 2, 0xE988),
+        sw(2, 0, 1),
+        lui(3, 0x9FC0),
+        ori(3, 3, PROLOGUE * 4),
+        jr(3),
+        nop(),
+    ];
+    assert_eq!(words.len() as u32, PROLOGUE);
+    words.extend_from_slice(program);
+    machine(&words)
+}
+
 /// A machine whose BIOS is the given program, starting at the reset vector.
 pub fn machine(program: &[u32]) -> Psx {
     let mut bios = vec![0u8; bus::BIOS_SIZE];

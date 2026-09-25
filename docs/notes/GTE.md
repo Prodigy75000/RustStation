@@ -129,11 +129,12 @@ Two habits made that enough to work from:
 
 ## Open questions
 
-1. **Command timing.** Each command takes a documented number of cycles and
-   stalls the CPU if a result is read too early. Here every command completes
-   instantly, so a game that relies on the stall sees results sooner than it
-   should. Harmless in isolation, but it interacts with the cycle-cost work in
-   [`TIMING.md`](TIMING.md).
+1. **Command timing** is the CPU's side of it, since 2026-09-26: a command
+   takes psx-spx's cycles, and MFC2, CFC2, SWC2 or the next command wait for
+   it to finish (`timing::gte_cycles`). MTC2 and CTC2 do not wait, as the
+   pipeline page says. What is not modelled is the other half of that page:
+   an input register overwritten while a command is still running changes
+   nothing here, because the command has already run.
 2. **`gte-fuzz` needs a controller.** It waits on Start before it will run, so
    it could not be used until the SIO0 port existed. Now that it can, it is the
    better of the two oracles: `test-all` is a hand-written list of cases and

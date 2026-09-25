@@ -33,7 +33,7 @@ harness also reports whether our output matches it.
 | Test | Verdict | Note |
 |---|---|---|
 | `cpu/cop` | **PASS** 17/17 | See below |
-| `cpu/access-time` | UNGRADED | Now measures; every region reads a flat ~1.0 because instructions cost one cycle and there are no wait states. See below |
+| `cpu/access-time` | UNGRADED | Within about a cycle of the console's log in every region since 2026-09-26, but its figures are where the load costs came from. See below |
 | `cpu/io-access-bitwidth` | UNGRADED | Prints no verdict lines. Differs from the reference: needs real I/O devices, which are all stubbed |
 | `cpu/code-in-io` | **FAIL** 2 of 3 | Executing code out of the scratchpad and out of I/O space. Needs the scratchpad's real access rules |
 
@@ -84,27 +84,26 @@ dot-clock delay counts from wrong to exact. A constant picked to make a
 remembered figure come out right is a constant fitted to the wrong evidence;
 the hardware log was the thing worth fitting to all along.
 
-### Why `access-time` still cannot pass
+### `access-time`, and what matching it does and does not show
 
 It measures CPU cycles per access to each memory region. Before the timing work
-it printed `0.0` everywhere, because it had no working timer to measure with.
-It now measures correctly and reports a flat ~1.0:
+it printed `0.0` everywhere, because it had no working timer to measure with;
+then a flat ~1.0, every instruction costing one cycle.
 
-| Region | Ours | Hardware |
-|---|---|---|
-| RAM | 1.1 | 5.14-5.21 |
-| BIOS | 1.1 | 7.6 / 12.94 / 24.94 |
-| Scratchpad | 0.99 | 0.94-1.5 |
-| SPUCNT | 1.0 / 1.0 / 2.0 | 17.99 / 17.99 / 38.94 |
+Since 2026-09-26 (the I-cache, load costs, multiplier and GTE waits,
+`docs/notes/TIMING.md`) every region is within about a cycle of the log:
+RAM 5.1 / 5.1 / 5.7 against 5.21 / 5.3 / 5.14, BIOS 8.13 / 13.7 / 25.1 against
+7.6 / 12.94 / 24.94, the SPU 18.6 / 18.0 / 36.6 against 17.99 / 17.99 / 38.94,
+the full table in TIMING.md. **This is not independent evidence**: the load
+costs were read off this same log. What it does show is that the costs reach
+the clock at all, that the test's loop runs from the I-cache at a cycle an
+instruction (the figure is a difference of two loops, so a wrong fetch cost
+would show), and that LWL and LWR cost by the bytes they take, which the SPU
+row's word read, compiled to such a pair, needed.
 
-That is the honest picture of a machine where every instruction costs one cycle
-and no region has wait states. Scratchpad is close because it genuinely has
-none.
-
-Calibrating the rest is **blocked on the instruction cache**, not on effort:
-these numbers are dominated by instruction fetch, so fitting per-region wait
-states now would be fitting constants to the wrong model. See
-`docs/notes/TIMING.md`.
+The independent checks are elsewhere: Final Fantasy VIII's video cadence
+(below, and TIMING.md) and libetc's "VSync: timeout", which the suite's own
+tests printed about once a frame on the real BIOS and no longer print.
 
 ## GPU, as of 2026-08-15
 
@@ -796,6 +795,15 @@ this core's CPU is about twice as fast as one and its MDEC instant. A flat
 two cycles is not the fix (Crash drops to 20 frames a second with it): the
 fix is instruction timing, the I-cache and memory waits, which
 `cpu/access-time` in the hardware suite measures.
+
+**Fixed by instruction timing, 2026-09-26.** From the same point in the
+video (a state about 770 frames in, reached on the HLE kernel by pressing
+Cross, Up, Cross with `retrohost --press`), 3 600 frames: before, 884 pictures, every 3
+frames with a stall of up to 19 once a second; after, 900, every 4 frames
+(now and then 5) and no stall. Crash Bandicoot keeps its
+30 pictures a second in the same run, and both take less host time than
+before (Crash 2.4 ms a frame against 2.8 on the PC), because fewer
+instructions fit in an emulated frame.
 
 The survey after the pad change (`out/survey-base-633b.txt` against the new
 one) moved in the ways a game that finds a DualShock would: Tenchu 2 reaches

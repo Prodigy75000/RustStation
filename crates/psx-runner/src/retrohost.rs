@@ -329,6 +329,8 @@ fn run() -> Result<(), String> {
     let mut out: Option<String> = None;
     let mut hold: u32 = 0;
     let mut mash = false;
+    let mut mash_offset: u64 = 0;
+    let mut presses: Vec<(u64, u32)> = Vec::new();
     let mut save_at: Option<(u64, String)> = None;
     let mut swaps: Vec<(u64, c_uint)> = Vec::new();
     let mut card: Option<String> = None;
@@ -365,6 +367,32 @@ fn run() -> Result<(), String> {
                 hold |= 1 << id;
             }
             "--mash" => mash = true,
+            // --press FRAME BUTTON: hold BUTTON for six frames from FRAME.
+            // Repeatable, for driving a menu to one place every run.
+            "--press" => {
+                let n = args.get(i + 1).ok_or("--press needs FRAME BUTTON")?;
+                let name = args
+                    .get(i + 2)
+                    .ok_or("--press needs FRAME BUTTON")?
+                    .to_ascii_lowercase();
+                let (_, id) = BUTTON_NAMES
+                    .iter()
+                    .find(|(m, _)| *m == name)
+                    .ok_or_else(|| format!("unknown button {name}"))?;
+                presses.push((n.parse().map_err(|e| format!("--press: {e}"))?, *id));
+                i += 2;
+            }
+            // --mash-offset N: start the mash cycle N frames in, for when the
+            // cycle lands on a menu at the wrong button.
+            "--mash-offset" => {
+                mash = true;
+                mash_offset = args
+                    .get(i + 1)
+                    .ok_or("--mash-offset needs a number")?
+                    .parse()
+                    .map_err(|e| format!("--mash-offset: {e}"))?;
+                i += 1;
+            }
             "--save-at" => {
                 let n = args.get(i + 1).ok_or("--save-at needs FRAME PATH")?;
                 let path = args.get(i + 2).ok_or("--save-at needs FRAME PATH")?;
@@ -615,9 +643,16 @@ fn run() -> Result<(), String> {
         let (mut slowest, mut slowest_at) = (std::time::Duration::ZERO, 0u64);
         let mut total = std::time::Duration::ZERO;
         for f in 0..frames {
+            if !presses.is_empty() {
+                HELD = presses
+                    .iter()
+                    .filter(|(at, _)| (*at..*at + 6).contains(&f))
+                    .fold(hold, |h, (_, id)| h | 1 << id);
+            }
             if mash {
-                let press = (f % 30) < 6;
-                let id = mash_ids[((f / 30) as usize) % mash_ids.len()];
+                let m = f + mash_offset;
+                let press = (m % 30) < 6;
+                let id = mash_ids[((m / 30) as usize) % mash_ids.len()];
                 HELD = hold | if press { 1 << id } else { 0 };
             }
             for (n, disc) in &swaps {

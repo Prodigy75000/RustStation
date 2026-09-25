@@ -550,6 +550,8 @@ pub(super) fn load_and_exec(p: &mut Psx, name: &str, stack: u32, offset: u32, ra
     put_header(p, buf, &header);
     let dest = rd32(p, buf + 8);
     copy_in(p, dest, &body);
+    // New code where old code may be cached, as LoadExec does.
+    p.cpu.icache.flush();
     wr32(p, buf + 0x20, stack);
     wr32(p, buf + 0x24, offset);
     wr32(p, var(V_BOOT_STACK), stack);

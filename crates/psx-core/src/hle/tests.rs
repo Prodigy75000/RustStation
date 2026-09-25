@@ -761,3 +761,24 @@ fn an_asynchronous_card_read_answers_zero_and_delivers_the_data() {
     let o = (dst & 0x1F_FFFF) as usize;
     assert_eq!(&psx.bus.ram[o..o + 0x80], &data[..]);
 }
+
+/// The kernel's printf takes '-' after the width as well as before it. The
+/// suite's access-time prints its figures with "%2-d", and on the console
+/// that is the number left-justified in two columns.
+#[test]
+fn printf_takes_a_minus_after_the_width() {
+    const FMT: u32 = ORG + 0x1000;
+    let mut p = Prog::new();
+    p.args(&[FMT, 5, 3]);
+    p.a(0x3F);
+    let mut code = p.halt();
+    code.resize(0x400, 0);
+    let fmt = b"%2d.%2-d|\0\0\0";
+    code.extend(
+        fmt.chunks(4)
+            .map(|c| u32::from_le_bytes(c.try_into().unwrap())),
+    );
+    let mut psx = boot(&code, 200_000);
+    let tty = psx.take_tty();
+    assert!(tty.contains(" 5.3 |"), "printed {tty:?}");
+}

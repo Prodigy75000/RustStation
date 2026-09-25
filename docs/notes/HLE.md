@@ -109,6 +109,7 @@ needs the BIOS file):
 | SPUCNT | C085h, main volume 3FFFh, reverb volume 5EBCh, reverb base E128h |
 | Memory control 1F801000h-20h, 1F801060h | The delays and sizes a BIOS writes; RAM size B88h |
 | Root counters | Mode 0, target 0 |
+| Cache control (FFFE0130h) | 0001E988h: I-cache on, scratchpad on |
 
 Two of these mattered at once. **libcd's CdInit takes the CD-ROM controller's
 interrupts as already enabled**: without the 1Fh its first command timed out
@@ -207,6 +208,9 @@ laid out so each lands harmlessly or does what the game meant:
 - The CardSpecificIrq element: card work is done on vblank without SIO
   interrupts, so nothing needs it.
 - TTY input: getchar and gets return at once.
+- The I-cache's contents. FlushCache and LoadExec invalidate its tags, which
+  is all the timing model keeps; code in the cache that RAM has since
+  overwritten is not served stale.
 - What several functions return where psx-spx does not say (InitPAD2,
   `_bu_init`, SysEnqIntRP): 1 or 0 as seemed natural.
 

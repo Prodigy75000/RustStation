@@ -27,11 +27,11 @@
 //! `FLAG` bit 31 is not stored: it is the OR of the bits that matter, and is
 //! recomputed on every write.
 //!
-//! ## What is not modelled
+//! ## Timing
 //!
-//! Command timing. Each command takes a documented number of cycles and stalls
-//! the CPU if it reads a result too early; here every command completes
-//! instantly. See `docs/notes/GTE.md`.
+//! A command runs at once here; the time it takes on the console is charged
+//! by the CPU, which waits before reading a result or starting another
+//! command (`crate::timing::gte_cycles`). See `docs/notes/GTE.md`.
 
 /// Reciprocal seed table for the Newton-Raphson divider.
 ///

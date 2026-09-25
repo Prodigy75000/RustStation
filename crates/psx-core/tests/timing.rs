@@ -33,7 +33,7 @@ const FIRST_VBLANK_CYCLE: u64 = 521_259;
 /// IM2 (bit 10) which is the single hardware line the interrupt controller
 /// drives, and BEV (bit 22) so the handler is the one in ROM.
 fn spin_with_vblank_enabled() -> Psx {
-    machine(&[
+    cached(&[
         lui(1, 0x1F80),
         ori(1, 1, 0x1074), // I_MASK
         addiu(2, 0, 1),    // bit 0 = VBlank
@@ -48,7 +48,7 @@ fn spin_with_vblank_enabled() -> Psx {
 
 #[test]
 fn vblank_latches_on_the_right_cycle() {
-    let mut psx = machine(&[beq(0, 0, -1), nop()]);
+    let mut psx = cached(&[beq(0, 0, -1), nop()]);
 
     psx.run(FIRST_VBLANK_CYCLE - 1);
     assert_eq!(
@@ -113,7 +113,9 @@ fn a_frame_is_one_vblank_to_the_next() {
 
 /// With the video in the other standard, a frame is that frame's length in
 /// CPU time, so the machine keeps real time: 600 PAL frames of an NTSC
-/// picture are 600 / 49.76 seconds, to the cycle, not 600 NTSC frames.
+/// picture are 600 / 49.76 seconds, to the cycle, not 600 NTSC frames. The
+/// spin runs from the uncached ROM, 29 cycles an instruction, so every frame
+/// ends past its cycle and the overshoot has to be carried.
 #[test]
 fn a_frame_in_the_other_standard_keeps_real_time() {
     let mut psx = machine(&[beq(0, 0, -1), nop()]);
@@ -124,7 +126,10 @@ fn a_frame_in_the_other_standard_keeps_real_time() {
     // 314 lines of 3406 video clocks, 7/11 of a CPU cycle each, 600 times.
     let exact = 600 * 314 * 3406 * 7 / 11;
     let ran = psx.bus.cycle - start;
-    assert!(ran.abs_diff(exact) <= 1, "{ran} cycles, {exact} expected");
+    assert!(
+        ran >= exact && ran - exact < 29,
+        "{ran} cycles, {exact} expected"
+    );
 
     // And in its own standard it is still one vblank to the next.
     psx.bus.video.set_standard(video::Standard::Pal);
@@ -173,7 +178,12 @@ fn vblank_reaches_the_cpu_as_an_exception() {
     // asserted, and EPC should point back into the spin loop.
     assert_eq!((psx.cpu.cop0.cause >> 2) & 0x1F, 0, "wrong exception code");
     assert_ne!(psx.cpu.cop0.cause & (1 << 10), 0, "Cause bit 10 not set");
-    assert!(psx.cpu.cop0.epc >= RESET, "EPC is not in the program");
+    // The program runs from the ROM's cached mirror, 9FC00000h up.
+    assert_eq!(
+        psx.cpu.cop0.epc & 0xFFF0_0000,
+        0x9FC0_0000,
+        "EPC is not in the program"
+    );
 }
 
 /// A masked source must not interrupt, however long it runs.
@@ -235,7 +245,7 @@ fn run_granularity_does_not_change_the_state() {
     let mut stepped = machine(program);
 
     burst.run(50_000);
-    for _ in 0..50_000 {
+    while stepped.bus.cycle < 50_000 {
         stepped.step();
     }
 
@@ -409,4 +419,69 @@ fn timer1_counts_scanlines_over_a_real_frame() {
         (260..=264).contains(&lines),
         "expected about one NTSC frame of scanlines, got {lines}"
     );
+}
+
+/// Cycles one pass of a loop costs once the cache is warm: `body` runs from
+/// the ROM's cached mirror, then `beq` back to its first word. Timed from the
+/// head's third arrival to its fourth.
+fn warm_pass(body: &[u32]) -> u64 {
+    let mut program = body.to_vec();
+    program.push(beq(0, 0, -(body.len() as i32) - 1));
+    program.push(nop());
+    let mut psx = cached(&program);
+    let head = 0x9FC0_0024;
+    let mut arrivals = Vec::new();
+    for _ in 0..10_000 {
+        psx.step();
+        if psx.cpu.pc == head {
+            arrivals.push(psx.bus.cycle);
+            if arrivals.len() == 4 {
+                return arrivals[3] - arrivals[2];
+            }
+        }
+    }
+    panic!("the loop never came round");
+}
+
+fn mult(rs: u32, rt: u32) -> u32 {
+    r_type(rs, rt, 0, 0, 0x18)
+}
+
+/// A load costs what the suite's access-time measured on a console, with the
+/// loop around it costing a cycle an instruction from the I-cache: 4 more
+/// for RAM, nothing more for the scratchpad.
+#[test]
+fn a_pass_pays_for_its_loads() {
+    let ram = warm_pass(&[lui(4, 0x8000), lw(6, 0, 4)]);
+    assert_eq!(ram, 4 + 4, "RAM load");
+    let scratch = warm_pass(&[lui(4, 0x1F80), lw(6, 0, 4)]);
+    assert_eq!(scratch, 4, "scratchpad load");
+}
+
+/// MFLO waits for the multiplier: psx-spx gives 6 cycles for a small first
+/// operand, 13 for a large one, and 36 for any divide.
+#[test]
+fn mflo_waits_for_the_multiplier() {
+    // mult at cycle c, mflo at c + 1, the result at c + 6: 5 more.
+    let small = warm_pass(&[mult(0, 0), mflo(2)]);
+    assert_eq!(small, 4 + 5);
+    let large = warm_pass(&[lui(4, 0x7FFF), mult(4, 4), mflo(2)]);
+    assert_eq!(large, 5 + 12);
+    let divide = warm_pass(&[div(0, 0), mflo(2)]);
+    assert_eq!(divide, 4 + 35);
+    // With the time filled by other work, nothing more.
+    let mut hidden = vec![mult(0, 0)];
+    hidden.extend([nop(); 6]);
+    hidden.push(mflo(2));
+    assert_eq!(warm_pass(&hidden), 10);
+}
+
+/// Reading the GTE waits for its command: RTPS takes 15 cycles.
+#[test]
+fn mfc2_waits_for_the_gte() {
+    const RTPS: u32 = 0x4A18_0001;
+    let mfc2 = |rt: u32, rd: u32| (0x12 << 26) | (rt << 16) | (rd << 11);
+    // CU2 on, then RTPS at c and MFC2 at c + 1, done at c + 15: 14 more.
+    let pass = warm_pass(&[lui(3, 0x4000), mtc0(3, 12), RTPS, mfc2(2, 14)]);
+    assert_eq!(pass, 6 + 14);
 }

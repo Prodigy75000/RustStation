@@ -14,7 +14,9 @@
 //! event, runs as many whole iterations as fit in one go. That is only sound
 //! because the loop's effect over `k` iterations is known exactly:
 //!
-//! * the clock and the retired-instruction count advance by 14 per iteration;
+//! * the retired-instruction count advances by 14 per iteration, and the
+//!   clock by what those cost: 14, and three RAM loads, with every word of
+//!   the loop in the I-cache (a pass that would miss is stepped instead);
 //! * the timeout word on the stack goes down by one per iteration;
 //! * every register comes back to the value it had at the head.
 //!
@@ -43,6 +45,7 @@
 //! ```
 
 use crate::bus::{mask_region, RAM_SIZE};
+use crate::timing::{self, BCC_IS1};
 use crate::Psx;
 
 /// Steps between looks for a loop, while none is known.
@@ -50,6 +53,9 @@ pub(crate) const PROBE_INTERVAL: u32 = 4096;
 
 /// Instructions in one iteration.
 const ITERATION: u64 = 14;
+
+/// The words one iteration runs, relative to the head.
+const EXECUTED: [u32; 14] = [0, 1, 2, 3, 4, 5, 6, 7, 19, 20, 21, 22, 23, 24];
 
 /// Words of the loop that must match, as `(word offset, value, mask)`. The
 /// counter's address is the only part that differs between games.
@@ -159,13 +165,25 @@ pub(crate) fn skip(psx: &mut Psx, target: u64) -> Option<u64> {
         return Some(0);
     }
 
+    // What a pass costs. Only a pass whose every fetch hits costs the same
+    // each time; until then, one is stepped and fills the cache.
+    let cached = head < 0xA000_0000 && psx.bus.cache_ctrl & BCC_IS1 != 0;
+    if !cached
+        || !EXECUTED
+            .iter()
+            .all(|&w| psx.cpu.icache.hits(head.wrapping_add(4 * w)))
+    {
+        return Some(0);
+    }
+    let pass = ITERATION + 2 * timing::load_stall(slot, 4) + timing::load_stall(counter, 4);
+
     // Iterations before a device needs attention: stepping ticks after every
     // instruction and syncs the moment the clock reaches the event, so the
     // skip has to stop strictly short of it. Nor may it cross the end of the
     // caller's run, or the timeout reaching -1, which takes the other exit.
     let now = psx.bus.cycle;
-    let until_event = psx.bus.next_event().saturating_sub(now + 1) / ITERATION;
-    let until_target = target.saturating_sub(now) / ITERATION;
+    let until_event = psx.bus.next_event().saturating_sub(now + 1) / pass;
+    let until_target = target.saturating_sub(now) / pass;
     let timeout = ram_word(psx, slot_at) as u64;
     let k = until_event.min(until_target).min(timeout);
     if k == 0 {
@@ -174,7 +192,7 @@ pub(crate) fn skip(psx: &mut Psx, target: u64) -> Option<u64> {
 
     let left = (ram_word(psx, slot_at) as u64 - k) as u32;
     psx.bus.ram[slot_at..slot_at + 4].copy_from_slice(&left.to_le_bytes());
-    psx.bus.cycle += k * ITERATION;
+    psx.bus.cycle += k * pass;
     psx.cpu.cycles = psx.cpu.cycles.wrapping_add(k * ITERATION);
     Some(k)
 }
@@ -201,6 +219,7 @@ pub(crate) fn poll(psx: &mut Psx, target: u64) -> Option<u64> {
     let head = psx.cpu.pc;
     let before = psx.cpu.clone();
     let start = psx.bus.cycle;
+    let retired = psx.cpu.cycles;
     psx.bus.watching = true;
     psx.bus.watch_dirty = false;
     let mut back = false;
@@ -218,6 +237,18 @@ pub(crate) fn poll(psx: &mut Psx, target: u64) -> Option<u64> {
     if !back || psx.bus.watch_dirty || !psx.cpu.same_state(&before) {
         return None;
     }
+    // The multiplier and the GTE must be as far from done as they were, or
+    // the next pass waits on them differently.
+    let now = psx.bus.cycle;
+    let owed = |c: &crate::cpu::Cpu, at: u64| {
+        (
+            c.muldiv_ready.saturating_sub(at),
+            c.gte_ready.saturating_sub(at),
+        )
+    };
+    if owed(&before, start) != owed(&psx.cpu, now) {
+        return None;
+    }
 
     // An interrupt the CPU would take at the next boundary ends the loop.
     let mut cop0 = psx.cpu.cop0.clone();
@@ -226,13 +257,22 @@ pub(crate) fn poll(psx: &mut Psx, target: u64) -> Option<u64> {
         return Some(0);
     }
 
-    let pass = psx.bus.cycle - start;
-    let now = psx.bus.cycle;
+    let pass = now - start;
+    let instructions = psx.cpu.cycles.wrapping_sub(retired);
     let until_event = psx.bus.next_event().saturating_sub(now + 1) / pass;
     let until_target = target.saturating_sub(now) / pass;
     let k = until_event.min(until_target);
     psx.bus.cycle += k * pass;
-    psx.cpu.cycles = psx.cpu.cycles.wrapping_add(k * pass);
+    psx.cpu.cycles = psx.cpu.cycles.wrapping_add(k * instructions);
+    // A ready time the pass set moves with the passes, as stepping them
+    // would move it; one from before the pass stays where it was.
+    let moved = k * pass;
+    if psx.cpu.muldiv_ready > start {
+        psx.cpu.muldiv_ready += moved;
+    }
+    if psx.cpu.gte_ready > start {
+        psx.cpu.gte_ready += moved;
+    }
     Some(k)
 }
 
@@ -254,6 +294,7 @@ mod tests {
     /// then parks in the error path, so both exits get exercised.
     fn machine(timeout: u32) -> Psx {
         let mut psx = Psx::new(vec![0; crate::bus::BIOS_SIZE]).unwrap();
+        psx.bus.cache_ctrl = 0x0001_E988;
         for i in 0..=SPAN_WORDS {
             put(&mut psx, HEAD + 4 * i, 0);
         }
@@ -292,6 +333,7 @@ mod tests {
     /// function also bumps a word in RAM every pass, which is not idle.
     fn polling_machine(count: bool) -> Psx {
         let mut psx = Psx::new(vec![0; crate::bus::BIOS_SIZE]).unwrap();
+        psx.bus.cache_ctrl = 0x0001_E988;
         let main = [
             0x0C00_0440, // jal 0x80001100
             0x0000_0000,
@@ -376,7 +418,7 @@ mod tests {
 
     #[test]
     fn the_timeout_exit_is_taken_on_the_same_cycle() {
-        // 30 000 passes is 420 000 cycles, well inside the run.
+        // 30 000 passes is 780 000 cycles, inside the run.
         let (skipped, stepped) = run_both(30_000, 1_000_000);
         assert!(
             skipped.idle_skipped > 1000,

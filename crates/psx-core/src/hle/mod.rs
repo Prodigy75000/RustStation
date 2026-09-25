@@ -518,7 +518,11 @@ fn a_function(p: &mut Psx, n: u32) {
         0x41 => files::load_test(p),
         0x42 => files::load(p),
         0x43 => files::exec(p),
-        0x44 => ret(p, 0),
+        0x44 => {
+            // FlushCache.
+            p.cpu.icache.flush();
+            ret(p, 0);
+        }
         0x45 => {
             write_call_vectors(p);
             ret(p, 0);
@@ -980,7 +984,7 @@ fn boot(p: &mut Psx) {
 /// games need from it is mostly the interrupt mask: libcd's CdInit expects
 /// the CD-ROM and DMA interrupts already on, and timed out without them.
 fn init_hardware(p: &mut Psx) {
-    let words: [(u32, u32); 12] = [
+    let words: [(u32, u32); 13] = [
         (0x1F80_1000, 0x1F00_0000),
         (0x1F80_1004, 0x1F80_2000),
         (0x1F80_1008, 0x0013_243F),
@@ -994,6 +998,8 @@ fn init_hardware(p: &mut Psx) {
         // DMA: MDEC in and out, and CD-ROM on; GPU and CD-ROM interrupts.
         (0x1F80_10F0, 0x0000_9099),
         (0x1F80_10F4, 0x008C_0000),
+        // The I-cache on, as the BIOS leaves it (measured: 0001E988h).
+        (0xFFFE_0130, 0x0001_E988),
     ];
     for (a, v) in words {
         wr32(p, a, v);

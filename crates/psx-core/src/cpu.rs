@@ -34,6 +34,7 @@
 use crate::bus::Bus;
 use crate::cop0::{Cop0, Exception};
 use crate::gte::Gte;
+use crate::timing::{self, ICache, BCC_IS1, BCC_TAG};
 
 /// A decoded-on-demand 32-bit instruction word.
 #[derive(Clone, Copy)]
@@ -131,22 +132,29 @@ pub struct Cpu {
     pub cop0: Cop0,
     pub gte: Gte,
 
-    /// Instructions retired. One per cycle until a timing model exists. The
-    /// name is deliberately `cycles` so the rest of the system can be written
-    /// against the eventual meaning.
+    /// Instructions retired. Named before instructions had costs; the
+    /// master clock is `Bus::cycle`.
     pub cycles: u64,
+
+    /// Which instruction fetches hit. See [`crate::timing`].
+    pub icache: ICache,
+    /// Master-clock cycle at which HI and LO hold the last multiply's or
+    /// divide's result. MFHI and MFLO wait for it.
+    pub(crate) muldiv_ready: u64,
+    /// Cycle at which the last GTE command is done. Reading the GTE, or
+    /// starting another command, waits for it.
+    pub(crate) gte_ready: u64,
+    /// Cycles this instruction costs beyond its one, gathered as it runs and
+    /// paid in [`Self::retire`]. Zero between instructions, so not state.
+    stall: u64,
 }
 
 /// Where the R3000A starts: the uncached (KSEG1) view of the BIOS ROM.
 pub const RESET_VECTOR: u32 = 0xBFC0_0000;
 
-/// Master-clock cycles charged per instruction.
-///
-/// One, for now, which is honest rather than right: real instructions cost
-/// between roughly 1 and 40 cycles depending on where they fetch from and what
-/// they touch. Everything downstream is written against the master clock rather
-/// than against this constant, so making it real later is a change to one
-/// function and not to the shape of the system.
+/// Master-clock cycles every instruction costs at least: one, fetched from
+/// the I-cache and touching nothing slow. What it costs beyond that comes
+/// from [`crate::timing`].
 pub const CYCLES_PER_INSTRUCTION: u64 = 1;
 
 impl Default for Cpu {
@@ -176,6 +184,10 @@ impl Cpu {
             cop0: Cop0::new(),
             gte: Gte::new(),
             cycles: 0,
+            icache: ICache::new(),
+            muldiv_ready: 0,
+            gte_ready: 0,
+            stall: 0,
         }
     }
 
@@ -248,6 +260,7 @@ impl Cpu {
             && self.delay_slot == other.delay_slot
             && self.cop0 == other.cop0
             && self.gte == other.gte
+            && self.icache == other.icache
     }
 
     /// Jump to `pc`, discarding any in-flight branch. For EXE sideload.
@@ -354,6 +367,7 @@ impl Cpu {
             return;
         }
 
+        self.stall = self.fetch_stall(bus);
         let instruction = Instruction(bus.load32(self.current_pc));
 
         // Advance the delay-slot machinery before executing: a branch taken by
@@ -381,17 +395,41 @@ impl Cpu {
         self.retire(bus);
     }
 
-    /// End of an instruction: commit the shadow register file's counter and
-    /// advance the master clock, which is what lets the timed devices run.
-    ///
-    /// The cost is a flat [`CYCLES_PER_INSTRUCTION`] for now. That is the axis
-    /// this does *not* model yet, and `docs/notes/TIMING.md` says what it will
-    /// take: memory access penalties are meaningless until there is an I-cache,
-    /// because instruction fetch would dominate them.
+    /// End of an instruction: count it and advance the master clock by what
+    /// it cost, which is what lets the timed devices run.
     #[inline]
     fn retire(&mut self, bus: &mut Bus) {
         self.cycles = self.cycles.wrapping_add(1);
-        bus.tick(CYCLES_PER_INSTRUCTION);
+        let n = CYCLES_PER_INSTRUCTION + self.stall;
+        self.stall = 0;
+        bus.tick(n);
+    }
+
+    /// What fetching the instruction at `current_pc` stalls: KUSEG and KSEG0
+    /// go through the I-cache when BCC has it on, the rest read the bus.
+    #[inline(always)]
+    fn fetch_stall(&mut self, bus: &Bus) -> u64 {
+        let pc = self.current_pc;
+        if pc < 0xA000_0000 && bus.cache_ctrl & BCC_IS1 != 0 {
+            self.icache.fetch(pc, bus.cache_ctrl)
+        } else {
+            timing::fetch_stall(pc)
+        }
+    }
+
+    /// The master-clock cycle this instruction has reached.
+    #[inline(always)]
+    fn now(&self, bus: &Bus) -> u64 {
+        bus.cycle + self.stall
+    }
+
+    /// Hold until `ready`, if it has not come yet.
+    #[inline(always)]
+    fn wait_until(&mut self, bus: &Bus, ready: u64) {
+        let now = self.now(bus);
+        if ready > now {
+            self.stall += ready - now;
+        }
     }
 
     fn execute(&mut self, instr: Instruction, bus: &mut Bus) {
@@ -414,7 +452,7 @@ impl Cpu {
             0x0F => self.op_lui(instr),
             0x10 => self.op_cop0(instr),
             0x11 => self.op_absent_cop(1),
-            0x12 => self.op_cop2(instr),
+            0x12 => self.op_cop2(instr, bus),
             0x13 => self.op_absent_cop(3),
             0x20 => self.op_lb(instr, bus),
             0x21 => self.op_lh(instr, bus),
@@ -452,14 +490,14 @@ impl Cpu {
             0x09 => self.op_jalr(instr),
             0x0C => self.exception(Exception::SysCall),
             0x0D => self.exception(Exception::Break),
-            0x10 => self.op_mfhi(instr),
+            0x10 => self.op_mfhi(instr, bus),
             0x11 => self.op_mthi(instr),
-            0x12 => self.op_mflo(instr),
+            0x12 => self.op_mflo(instr, bus),
             0x13 => self.op_mtlo(instr),
-            0x18 => self.op_mult(instr),
-            0x19 => self.op_multu(instr),
-            0x1A => self.op_div(instr),
-            0x1B => self.op_divu(instr),
+            0x18 => self.op_mult(instr, bus),
+            0x19 => self.op_multu(instr, bus),
+            0x1A => self.op_div(instr, bus),
+            0x1B => self.op_divu(instr, bus),
             0x20 => self.op_add(instr),
             0x21 => self.op_addu(instr),
             0x22 => self.op_sub(instr),
@@ -690,7 +728,8 @@ impl Cpu {
 
     // ---- HI / LO --------------------------------------------------------
 
-    fn op_mfhi(&mut self, instr: Instruction) {
+    fn op_mfhi(&mut self, instr: Instruction, bus: &Bus) {
+        self.wait_until(bus, self.muldiv_ready);
         let hi = self.hi;
         self.set_reg(instr.d(), hi);
     }
@@ -699,7 +738,8 @@ impl Cpu {
         self.hi = self.reg(instr.s());
     }
 
-    fn op_mflo(&mut self, instr: Instruction) {
+    fn op_mflo(&mut self, instr: Instruction, bus: &Bus) {
+        self.wait_until(bus, self.muldiv_ready);
         let lo = self.lo;
         self.set_reg(instr.d(), lo);
     }
@@ -708,7 +748,8 @@ impl Cpu {
         self.lo = self.reg(instr.s());
     }
 
-    fn op_mult(&mut self, instr: Instruction) {
+    fn op_mult(&mut self, instr: Instruction, bus: &Bus) {
+        self.muldiv_ready = self.now(bus) + timing::mult_cycles(self.reg(instr.s()), true);
         let a = self.reg(instr.s()) as i32 as i64;
         let b = self.reg(instr.t()) as i32 as i64;
         let r = (a * b) as u64;
@@ -716,7 +757,8 @@ impl Cpu {
         self.lo = r as u32;
     }
 
-    fn op_multu(&mut self, instr: Instruction) {
+    fn op_multu(&mut self, instr: Instruction, bus: &Bus) {
+        self.muldiv_ready = self.now(bus) + timing::mult_cycles(self.reg(instr.s()), false);
         let a = self.reg(instr.s()) as u64;
         let b = self.reg(instr.t()) as u64;
         let r = a * b;
@@ -727,7 +769,8 @@ impl Cpu {
     /// Signed divide. The R3000A does not trap on divide-by-zero or on the
     /// `INT_MIN / -1` overflow; it returns fixed junk, and code that divides by
     /// a zero it never checks depends on exactly which junk.
-    fn op_div(&mut self, instr: Instruction) {
+    fn op_div(&mut self, instr: Instruction, bus: &Bus) {
+        self.muldiv_ready = self.now(bus) + timing::DIV_CYCLES;
         let n = self.reg(instr.s()) as i32;
         let d = self.reg(instr.t()) as i32;
 
@@ -743,7 +786,8 @@ impl Cpu {
         }
     }
 
-    fn op_divu(&mut self, instr: Instruction) {
+    fn op_divu(&mut self, instr: Instruction, bus: &Bus) {
+        self.muldiv_ready = self.now(bus) + timing::DIV_CYCLES;
         let n = self.reg(instr.s());
         let d = self.reg(instr.t());
 
@@ -801,7 +845,7 @@ impl Cpu {
         }
     }
 
-    fn op_cop2(&mut self, instr: Instruction) {
+    fn op_cop2(&mut self, instr: Instruction, bus: &Bus) {
         // COP2 is only usable with Status CU2 set. The BIOS sets it early; a
         // game that hits this without setting it really does take the trap.
         if self.cop0.sr & (1 << 30) == 0 {
@@ -811,12 +855,15 @@ impl Cpu {
 
         match instr.s() {
             0x00 => {
-                // MFC2: load-delayed, same as MFC0.
+                // MFC2: load-delayed, same as MFC0. Like CFC2 and SWC2 it
+                // holds until a running command is done.
+                self.wait_until(bus, self.gte_ready);
                 let v = self.gte.read_data(instr.d());
                 self.set_load(instr.t(), v);
             }
             0x02 => {
                 // CFC2
+                self.wait_until(bus, self.gte_ready);
                 let v = self.gte.read_control(instr.d());
                 self.set_load(instr.t(), v);
             }
@@ -829,7 +876,11 @@ impl Cpu {
                 self.gte.write_control(instr.d(), v);
             }
             // Bit 25 set: a GTE command rather than a register move.
-            s if s & 0x10 != 0 => self.gte.command(instr.0 & 0x1FF_FFFF),
+            s if s & 0x10 != 0 => {
+                self.wait_until(bus, self.gte_ready);
+                self.gte_ready = self.now(bus) + timing::gte_cycles(instr.0);
+                self.gte.command(instr.0 & 0x1FF_FFFF)
+            }
             _ => self.exception(Exception::IllegalInstruction),
         }
     }
@@ -844,6 +895,7 @@ impl Cpu {
             self.address_error(Exception::AddressErrorLoad, addr);
             return;
         }
+        self.stall += timing::load_stall(addr, 4);
         let v = bus.load32(addr);
         self.gte.write_data(instr.t(), v);
     }
@@ -858,6 +910,7 @@ impl Cpu {
             self.address_error(Exception::AddressErrorStore, addr);
             return;
         }
+        self.wait_until(bus, self.gte_ready);
         let v = self.gte.read_data(instr.t());
         bus.store32(addr, v);
     }
@@ -866,12 +919,14 @@ impl Cpu {
 
     fn op_lb(&mut self, instr: Instruction, bus: &mut Bus) {
         let addr = self.reg(instr.s()).wrapping_add(instr.imm_se());
+        self.stall += timing::load_stall(addr, 1);
         let v = bus.load8(addr) as i8 as u32;
         self.set_load(instr.t(), v);
     }
 
     fn op_lbu(&mut self, instr: Instruction, bus: &mut Bus) {
         let addr = self.reg(instr.s()).wrapping_add(instr.imm_se());
+        self.stall += timing::load_stall(addr, 1);
         let v = bus.load8(addr) as u32;
         self.set_load(instr.t(), v);
     }
@@ -882,6 +937,7 @@ impl Cpu {
             self.address_error(Exception::AddressErrorLoad, addr);
             return;
         }
+        self.stall += timing::load_stall(addr, 2);
         let v = bus.load16(addr) as i16 as u32;
         self.set_load(instr.t(), v);
     }
@@ -892,6 +948,7 @@ impl Cpu {
             self.address_error(Exception::AddressErrorLoad, addr);
             return;
         }
+        self.stall += timing::load_stall(addr, 2);
         let v = bus.load16(addr) as u32;
         self.set_load(instr.t(), v);
     }
@@ -902,6 +959,7 @@ impl Cpu {
             self.address_error(Exception::AddressErrorLoad, addr);
             return;
         }
+        self.stall += timing::load_stall(addr, 4);
         let v = bus.load32(addr);
         self.set_load(instr.t(), v);
     }
@@ -913,6 +971,8 @@ impl Cpu {
     fn op_lwl(&mut self, instr: Instruction, bus: &mut Bus) {
         let addr = self.reg(instr.s()).wrapping_add(instr.imm_se());
         let cur = self.out_regs[instr.t() as usize];
+        // Only the bytes it takes go over the bus: addr & 3, plus one.
+        self.stall += timing::load_stall(addr, (addr & 3) + 1);
         let aligned = bus.load32(addr & !3);
 
         let v = match addr & 3 {
@@ -927,6 +987,8 @@ impl Cpu {
     fn op_lwr(&mut self, instr: Instruction, bus: &mut Bus) {
         let addr = self.reg(instr.s()).wrapping_add(instr.imm_se());
         let cur = self.out_regs[instr.t() as usize];
+        // Only the bytes it takes: from addr to the end of the word.
+        self.stall += timing::load_stall(addr, 4 - (addr & 3));
         let aligned = bus.load32(addr & !3);
 
         let v = match addr & 3 {
@@ -941,11 +1003,15 @@ impl Cpu {
     // ---- stores ---------------------------------------------------------
 
     /// Every store funnels through here so the cache-isolation check exists in
-    /// exactly one place. With Status Isc set the write goes to the I-cache,
-    /// which is not modelled, so dropping it is right, writing RAM is not.
+    /// exactly one place. With Status Isc set the write goes to the I-cache
+    /// and never to RAM: to a tag with BCC's TAG bit set, which is how the
+    /// BIOS flushes it, and otherwise to the cached code, which is not kept.
     #[inline(always)]
     fn store(&mut self, bus: &mut Bus, addr: u32, width: u32, val: u32) {
         if self.cop0.cache_isolated() {
+            if bus.cache_ctrl & BCC_TAG != 0 {
+                self.icache.write_tag(addr, val);
+            }
             return;
         }
         match width {

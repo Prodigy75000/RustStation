@@ -12,7 +12,8 @@
 #
 # SURVEY_HLE=1 boots every disc on the HLE kernel instead of a BIOS file, and
 # SURVEY_OUT=dir writes somewhere other than out/survey, so the two can be
-# compared with tools/survey-compare.mjs.
+# compared with tools/survey-compare.mjs. SURVEY_SHOT=path runs another
+# build of shot, to survey a baseline beside a change.
 #
 # **Relative paths throughout, on purpose.** Under Git Bash on Windows the shell
 # rewrites `/c/...` arguments into `C:\...` on the way to a native binary, and
@@ -25,7 +26,7 @@ set -u
 STEPS="${1:-2000000000}"
 cd "$(dirname "$0")/.." || exit 1
 
-SHOT="./target/release/shot.exe"
+SHOT="${SURVEY_SHOT:-./target/release/shot.exe}"
 OUT="${SURVEY_OUT:-out/survey}"
 NTSC="bios/Sony PlayStation SCPH-1001 - DTLH-3000 BIOS v2.2 (1995-12-04)(Sony)(US).bin"
 PAL="bios/Sony PlayStation SCPH-1002 BIOS v2.0 (1995-05-10)(Sony)(EU).bin"
