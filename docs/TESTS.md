@@ -325,6 +325,14 @@ BIOS, and the same title.
   then jumped to address 1 on its next OpenEvent. The tables now sit where the
   console's do, and it draws exactly the picture the BIOS run draws.
 
+**Confirmed on the owner's phone the same evening**, with no BIOS file on it:
+Crash Bandicoot runs at full speed on the HLE kernel, where on his real BIOS it
+ran about 20% slow (the pinned bug), and its controls work after 1903e7a (the
+kernel's pad buffer kept the 5Ah after the pad's ID, so every button landed a
+byte late and Crash took no input). So the slowness belongs to the real-BIOS
+path, not to the emulator as a whole; the lead below is where to look if it
+matters for players who do have a BIOS.
+
 **A lead for the pinned Crash slowness, found on the way and not followed.**
 Crash Bandicoot prints "VSync: timeout" about once a frame once it is running,
 and Final Fantasy VIII does too, on the real BIOS as much as on HLE (981 and 926
