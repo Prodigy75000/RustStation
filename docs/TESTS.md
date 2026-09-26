@@ -811,6 +811,9 @@ back to back, 8.4 to 9.6 against 5.9 to 7.7. The phone is noisy between runs
 per-pixel test over 3 000 random triangles; the suite's GPU images are
 unchanged. Also: `shot`'s default run is now 300M cycles, since at 60M
 the BIOS, running from its ROM at real cost, had not reached the GPU tests.
+
+**Confirmed by the owner on the phone:** Tekken 3 through stage 6 with no
+frame drops.
 - **Metal Gear Solid's briefing screen showed textures down its right side**
   (second phone run): 320 pixels drawn in the 368 mode with a display range
   to match, and the core showing all 368. The width now comes from GP1(06h)
