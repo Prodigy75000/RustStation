@@ -899,6 +899,16 @@ address byte to each port and requires the acknowledge (it fails for port 2
 without the fix). Found and diagnosed by the frontend side from the live
 session.
 
+Confirmed end to end the same day: a two-player netplay session of a
+PlayStation game loaded from a CHD, on v0.2.1, between an arm64 tablet and an
+arm64 phone running identical builds. That one run covered the CHD reader, the
+HLE kernel, both controller ports and lockstep across two different devices;
+the player called it a perfect session, with faster joins than the core it
+replaced and no freeze. The README had said "a DualShock in each port" since
+long before the code did it, which is the lesson worth keeping: a document
+claiming a capability nothing tests reads exactly like one describing a
+capability that works.
+
 **Tekken 3 fights dropped to the low 40s on the phone** where Beetle holds 60
 (reported with a state mid-fight). The fight draws at 368x480; the phone
 needed about 14 ms a frame at worst times, spiking past 20. Profiled on
