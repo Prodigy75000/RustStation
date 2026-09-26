@@ -807,9 +807,9 @@ old build's end state after 6 seconds of the fight, VRAM included:
 PC 8.5 to 5.7 ms a frame (worst 12.2 to 8.0); S25 Ultra, the two builds run
 back to back, 8.4 to 9.6 against 5.9 to 7.7. The phone is noisy between runs
 (heat, which core), and both builds still spike near 20 ms now and then.
- holds the run to the
+`a_row_run_covers_exactly_the_pixels_inside` holds the run to the
 per-pixel test over 3 000 random triangles; the suite's GPU images are
-unchanged. Also: 's default run is now 300M cycles, since at 60M
+unchanged. Also: `shot`'s default run is now 300M cycles, since at 60M
 the BIOS, running from its ROM at real cost, had not reached the GPU tests.
 - **Metal Gear Solid's briefing screen showed textures down its right side**
   (second phone run): 320 pixels drawn in the 368 mode with a display range
