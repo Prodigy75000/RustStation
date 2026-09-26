@@ -914,6 +914,22 @@ Then a longer one: Twisted Metal 2, two players, a tablet joining a phone
 the two machines, and a quick join, which is the state being serialized and
 sent across.
 
+**Reset left the devices running, v0.2.2.** Reset black-screened Rayman and
+Bomberman: Party Edition on a phone, not every time. It reset the CPU, RAM,
+GPU and DMA, and left the drive, the SPU, the timers and the interrupt
+controller as they were, so a reset in the middle of a track came back to a
+drive still playing and interrupts still raised, and the rebooted kernel spent
+its time in its handlers. Reproduced with `retrohost --reset-at`: on v0.2.1
+Rayman stayed black after resets at frames 400, 900 and 1 500 (200 and 600
+recovered), Bomberman after three of four. Reset is now a power cycle, a new
+machine around the same BIOS with the disc, the cards' contents and the
+plugged-in pads moved across. After a reset at any of eight points across the
+two games, the state 2 100 frames later is byte-identical to a fresh boot's at
+2 100. `tests/reset.rs` holds a machine reset after the kernel has woken its
+devices to being identical to a new one (the old reset fails it), and checks
+that the cards, the pads and the addresses of RAM and save RAM, which a
+frontend holds pointers to, survive.
+
 **Tekken 3 fights dropped to the low 40s on the phone** where Beetle holds 60
 (reported with a state mid-fight). The fight draws at 368x480; the phone
 needed about 14 ms a frame at worst times, spiking past 20. Profiled on

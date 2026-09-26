@@ -147,23 +147,40 @@ impl Psx {
         })
     }
 
-    /// Power cycle: CPU back to the reset vector, RAM and scratchpad cleared.
-    /// The BIOS image and any queued EXE survive, as they would across a real
-    /// reset button press.
+    /// Power cycle: a new machine, around the same BIOS, with what is plugged
+    /// into it moved across. The disc stays in the drive, the memory cards
+    /// keep what is on them, the controllers stay plugged in with the buttons
+    /// held on them, and a queued EXE is queued again. Everything else starts
+    /// as it does at power-on: the drive, the SPU, the timers, the interrupt
+    /// controller and every other device, not only the CPU and RAM.
+    ///
+    /// It used to reset the CPU, RAM, GPU and DMA and nothing else. A game
+    /// reset mid-track came back to a drive still playing and interrupts
+    /// still raised from before, and the rebooted kernel spent its time in
+    /// the handlers: Rayman stayed black after three resets in five. Now a
+    /// reset machine is a new machine, and the test says so.
     pub fn reset(&mut self) {
-        self.cpu = Cpu::new();
-        self.bus.ram.iter_mut().for_each(|b| *b = 0);
-        self.bus.scratchpad.iter_mut().for_each(|b| *b = 0);
-        // VRAM survives a reset on hardware, and so does the DMA control
-        // register's power-on value, so `Gpu::reset` clears neither.
-        self.bus.gpu.reset();
-        self.bus.dma = crate::dma::Dma::new();
-        self.bus.stub_reads = 0;
-        self.bus.stub_writes = 0;
-        self.bus.unmapped_reads = 0;
-        self.bus.unmapped_writes = 0;
-        self.tty.clear();
-        self.exe_loaded = false;
+        let mut fresh = Psx::new(self.bus.bios().to_vec())
+            .expect("the BIOS was accepted when this machine was built");
+        // RAM keeps its buffer, with the new machine's contents: a frontend
+        // holds a pointer to it (RetroAchievements reads it every frame), and
+        // a new allocation would leave that pointer at freed memory.
+        self.bus.ram.copy_from_slice(&fresh.bus.ram);
+        std::mem::swap(&mut fresh.bus.ram, &mut self.bus.ram);
+        fresh.bus.cdrom.disc = self.bus.cdrom.disc.take();
+        for (new, old) in fresh.bus.sio.cards.iter_mut().zip(&mut self.bus.sio.cards) {
+            new.data = std::mem::take(&mut old.data);
+            new.connected = old.connected;
+            new.written = old.written;
+        }
+        for (new, old) in fresh.bus.sio.pads.iter_mut().zip(&self.bus.sio.pads) {
+            new.connected = old.connected;
+            new.buttons = old.buttons;
+            new.sticks = old.sticks;
+        }
+        fresh.pending_exe = self.pending_exe.take();
+        fresh.skip_idle = self.skip_idle;
+        *self = fresh;
     }
 
     /// Queue a PSX-EXE. It is written into RAM the moment the BIOS shell

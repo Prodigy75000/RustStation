@@ -18,7 +18,7 @@
 //! retrohost <core.so|core.dll> <system-dir> [--content <path>]
 //!           [--frames N] [--hold start] [--out frame.png]
 //!           [--hash-every N] [--save-at N PATH] [--load-at N PATH]
-//!           [--reload N]
+//!           [--reload N] [--reset-at N]...
 //! ```
 //!
 //! `--hash-every` is the netplay proof: it prints a hash of the serialized
@@ -373,6 +373,7 @@ fn run() -> Result<(), String> {
     let mut load_at: Option<(u64, String)> = None;
     let mut hash_every: u64 = 0;
     let mut reloads: u32 = 0;
+    let mut resets: Vec<u64> = Vec::new();
     let mut swaps: Vec<(u64, c_uint)> = Vec::new();
     let mut card: Option<String> = None;
 
@@ -458,6 +459,15 @@ fn run() -> Result<(), String> {
                     .ok_or("--hash-every needs a number")?
                     .parse()
                     .map_err(|e| format!("--hash-every: {e}"))?;
+                i += 1;
+            }
+            "--reset-at" => {
+                resets.push(
+                    args.get(i + 1)
+                        .ok_or("--reset-at needs a frame")?
+                        .parse()
+                        .map_err(|e| format!("--reset-at: {e}"))?,
+                );
                 i += 1;
             }
             "--reload" => {
@@ -571,6 +581,7 @@ fn run() -> Result<(), String> {
         unsafe extern "C" fn() -> usize
     );
     let unload = entry!(handle, "retro_unload_game", unsafe extern "C" fn());
+    let retro_reset = entry!(handle, "retro_reset", unsafe extern "C" fn());
     let memory_data = entry!(
         handle,
         "retro_get_memory_data",
@@ -768,6 +779,11 @@ fn run() -> Result<(), String> {
                     }
                     println!("loaded {path} before frame {n}");
                 }
+            }
+            // --reset-at: the frontend's reset button, before frame N.
+            if resets.contains(&f) {
+                retro_reset();
+                println!("reset before frame {f}");
             }
             let t = std::time::Instant::now();
             retro_run();
