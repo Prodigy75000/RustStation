@@ -952,6 +952,11 @@ actual mode rather than a count of presses, which a game locking the mode
 would falsify. Through the library in Rayman: no press reads digital, one
 L3+R3 press analog, a second digital, and L3 alone nothing.
 
+Ape Escape plays on a phone on the HLE kernel (2026-09-26). It requires a
+DualShock and is driven by both sticks, so it is the first game confirmed to
+play through the analog path end to end. Sixteen commercial games confirmed on
+HLE; none tried has failed to boot.
+
 **Tekken 3 fights dropped to the low 40s on the phone** where Beetle holds 60
 (reported with a state mid-fight). The fight draws at 368x480; the phone
 needed about 14 ms a frame at worst times, spiking past 20. Profiled on
