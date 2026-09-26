@@ -11,15 +11,15 @@ slot, and a handful of secondary rules hang off them.
 
 ### 1.1 Base semantics `[DOC]`
 
-> "Note that the instruction following the branch will always be executed."
->, psx-spx
+psx-spx (CPU Jump Opcodes): the instruction after a branch or jump is always
+executed.
 
 - Applies to **all** of `J JAL JR JALR BEQ BNE BLTZ BGEZ BGTZ BLEZ BLTZAL BGEZAL
   BC0F/T BC2F/T`.
 - The delay slot executes **whether or not the branch is taken**.
-- **`SYSCALL` and `BREAK` are not branches**: *"exception opcodes are immediately
-  executed (ie. without executing the following opcode)"*. The same is true of every
-  exception: exceptions have no delay slot.
+- **`SYSCALL` and `BREAK` are not branches**: psx-spx notes that exception opcodes
+  take effect at once, and the following instruction is not executed. The same is
+  true of every exception: exceptions have no delay slot.
 - PC-relative target = `$ + 4 + (sext(imm16) << 2)`: relative to the delay slot.
 - `J`/`JAL` target = `(delay_slot_pc & F0000000h) | (imm26 << 2)`. The top nibble
   comes from the **delay slot's** PC, which matters only if the jump is the last word
@@ -41,10 +41,10 @@ special case. Special-casing nested branches is a classic bug source.
 
 ### 1.3 A branch sitting in another branch's delay slot
 
-Architecturally undefined, IDT: *"A delay slot may not itself be occupied by a jump
-or branch instruction; however, this error is not detected and the results of such
-an operation are undefined."*, but deterministic on silicon, and **real games do
-it**: **Threads of Fate** and **Shadow Master**, which otherwise lock up and glitch.
+Architecturally undefined (the IDT R30xx manual forbids a jump or branch in a delay
+slot, but says the CPU does not detect it and the outcome is undefined), yet
+deterministic on silicon, and **real games do it**: **Threads of Fate** and
+**Shadow Master**, which otherwise lock up and glitch.
 
 Given `A` at `X` (taken, target `T_A`) and `B` at `X+4` (taken, target `T_B`):
 
@@ -57,7 +57,9 @@ Given `A` at `X` (taken, target `T_A`) and `B` at `X+4` (taken, target `T_B`):
 
 So the first branch's target instruction is executed **exactly once, as the second
 branch's delay slot**, and `T_A` is not otherwise entered. If `B` is not taken you
-get the normal `A`, `B`, `T_A`, `T_A+4`, … `[CONS]`
+get the normal `A`, `B`, `T_A`, `T_A+4`, … This sequence is what the one-slot
+pipeline model of the IDT R30xx manual predicts; it is widely documented behaviour
+but no primary source states it and no published hardware test was found.
 
 **Corollary for exceptions:** an exception at step 3 gives `EPC = X+4` (the address
 of `B`) with `Cause.BD = 1`. Returning re-executes `B`: but *not* `A`: so the flow
@@ -67,7 +69,8 @@ recompiler's difficulty list.
 
 A jump in a delay slot is the same rule, unconditional. `JAL` in a delay slot still
 writes `$ra = its own address + 8`, which is the address of the *outer* branch's
-target, not a sensible return address, but that is what the hardware does. `[CONS]`
+target, not a sensible return address, but that is what the same model predicts
+(widely documented behaviour, not stated in a primary source).
 
 ### 1.4 Link values
 
@@ -80,10 +83,11 @@ target, not a sensible return address, but that is what the hardware does. `[CON
 
 Why `+8`: the return address is the instruction *after* the delay slot.
 
-### 1.5 JALR ordering: `rs` is read before `rd` is written `[DOC]` `[CONS]`
+### 1.5 JALR ordering: `rs` is read before `rd` is written `[DOC]`
 
-IDT's pseudocode uses an explicit temp: `T: temp ← GPR[rs] ; GPR[rd] ← PC + 8 ;
-T+1: PC ← temp`.
+The IDT R30xx manual's JALR pseudocode (Appendix A) latches `rs` into a temporary,
+writes the link `PC + 8` to `rd` in the same cycle, and loads the PC from the
+temporary one cycle later.
 
 The confirming observation is in psx-spx: `jalr r31,r31` *does* jump correctly the
 first time (it only misbehaves if an IRQ forces a second execution): which is only
@@ -103,14 +107,15 @@ Writing the link to `r0` (`jalr r0, rs`) is discarded.
 | `Cause.BT` (bit 30) | set if the branch is/was to be taken (or is an unconditional jump) `[DOC]` |
 | `TAR` (cop0r6) | updated to the branch/jump **destination address** when `BD = 1` and `BT = 1` `[DOC]` |
 
-Do **not** be clever and point `EPC` at the delay slot. IDT: *"if the CPU returned
-from the exception to the branch delay instruction itself the branch would not be
-taken and the exception would have broken the interrupted program."*
+Do **not** be clever and point `EPC` at the delay slot. The IDT R30xx manual (Ch. 4)
+explains why: returning straight to the delay-slot instruction would skip the
+branch, and the exception would then have corrupted the interrupted program's
+control flow.
 
-> "Interrupts should always return to EPC+0, no matter of the BD flag. That way, if
-> BD=1, the branch gets executed again, that's required because EPC stores only the
-> current program counter, but not additionally the branch destination address."
->, psx-spx `[DOC]`
+psx-spx (COP0 Exception Handling) `[DOC]`: an interrupt handler should always
+return to `EPC+0` regardless of `BD`. With `BD = 1` that re-executes the branch,
+which is necessary because `EPC` records only one address and the branch target is
+not saved anywhere else.
 
 Consequence for a handler that wants to *inspect* the faulting instruction: with
 `BD = 1` the faulting opcode is at `EPC + 4`.
@@ -130,15 +135,15 @@ Cause.BD = 0            ; the fault happens at the target's fetch, which is not 
 ExcCode  = 04h (AdEL)
 ```
 
-> "jumps to faulty memory locations are executed without exception, but will trigger
-> address errors and bus errors at the target location, ie. EPC (and BadAddr, in case
-> of address errors) point to the faulty address, not to the opcode that has jumped
-> to that address.", psx-spx `[DOC]`
+psx-spx (COP0 Exception Handling) `[DOC]`: the jump itself raises nothing. The
+address or bus error is raised at the target, so `EPC` (and `BadVaddr`, for an
+address error) holds the bad target address rather than the address of the jump
+that led there.
 
 Since `EPC` is itself misaligned, returning re-faults, effectively fatal.
 
 `[?]` **Open question:** is the delay-slot instruction executed before the fault?
-IDT says it is not (*"the instruction in the delay slot is not executed"*), and also
+The IDT R30xx manual says the delay-slot instruction is not executed, and also
 disagrees with psx-spx about `EPC`. A strict precise-exception reading says it
 *does* complete, since the fault is detected at the target's instruction fetch. No
 hardware test found; no game known to depend on it.
@@ -149,23 +154,21 @@ hardware test found; no game known to depend on it.
 
 ### 2.1 Base semantics `[DOC]`
 
-> "The loaded data is NOT available to the next opcode, ie. the target register isn't
-> updated until the next opcode has completed. So, if the next opcode tries to read
-> from the load destination register, then it would (usually) receive the OLD value
-> of that register (unless an IRQ occurs between the load and next opcode…)."
->, psx-spx
+psx-spx (CPU Load/Store Opcodes): the loaded value is not written to the target
+register until the following instruction has completed, so that instruction
+normally reads the register's previous value. The exception is an interrupt taken
+between the two (§2.9).
 
-> "In R30xx family processors all loads are implemented with a delay of one
-> instruction. The instruction immediately following a load may not use the
-> destination register of the load instruction… The hardware does not enforce this
-> restriction nor detect a failure to follow it.", IDT R30xx
+IDT R30xx manual (Ch. 13): every load on the R30xx has a one-instruction delay. The
+instruction after a load is not supposed to use the load's destination register,
+but the hardware neither enforces nor detects this.
 
 Carrying a load delay: **`LB LBU LH LHU LW LWL LWR LWC2`**, plus the coprocessor
 moves **`MFC0 MFC2 CFC2`**.
 
-**Exactly one instruction slot.** psx-spx kills the "two slots after coprocessor
-reads" rumour: *"that seems to be nonsense (the PSX does finish both COP0 and COP2
-reads after ONE opcode)."*
+**Exactly one instruction slot.** psx-spx rejects the claim that coprocessor reads
+need two slots: on the PSX, COP0 and COP2 reads both complete after one
+instruction.
 
 `MFHI`/`MFLO` are **not** load-delayed, they interlock instead (§4).
 
@@ -174,9 +177,9 @@ reads after ONE opcode)."*
 The rule is not "the load happens at the end of the delay slot". The observable rule
 is:
 
-> The loaded value lands in the target register **after** the delay-slot instruction
-> has *read* its source operands, but **before** the delay-slot instruction *writes*
-> its own destination.
+The loaded value lands in the target register **after** the delay-slot instruction
+has *read* its source operands, but **before** the delay-slot instruction *writes*
+its own destination.
 
 Reference shape, note the **two cancellation lines**, which are the part naive
 implementations omit:
@@ -228,12 +231,13 @@ nop
 ```
 
 **The first load's value is discarded and is never architecturally visible.**
-`[CONS]`
+Widely documented behaviour, but not stated in psx-spx or the IDT manual.
 
 This is *not* what a naive "each load independently has a one-instruction delay"
-model predicts, that model gives `$2 == a`. It is the `WriteRegDelayed`
-cancellation in §2.2 rule 4. Two independent hardware-driven emulators implement it
-identically; `[?]` no published hardware test writeup was found.
+model predicts, that model gives `$2 == a`. It is the cancellation in §2.2 rule 4.
+`[?]` No published hardware test writeup was found; RustStation implements it and
+pins it with `a_second_load_cancels_the_first` in
+`crates/psx-core/tests/cpu_semantics.rs`.
 
 Getting this wrong is a **silent divergence**: nothing crashes, values are just
 subtly wrong.
@@ -260,7 +264,7 @@ merely overwritten one instruction later. `[DOC]`
 | `lw r1,(a)` ; `lw r2,0(r1)` | old `r1` used as the base address |, |
 | `lw r1,(a)` ; `lwl r1,(b)` | **the pending value `a`** (bypass, §2.7) | merged |
 | `lw r1,(a)` ; `beq r1,r2,X` | old `r1` used for the compare | `r1 = a` |
-| `lw r1,(a)` ; `mfc0 r1,$12` |, | `r1 = SR`, `a` lost `[CONS]` |
+| `lw r1,(a)` ; `mfc0 r1,$12` |, | `r1 = SR`, `a` lost (same rule as §2.4; widely documented, unverified) |
 
 The `sw` row deserves emphasis: **a store in a load delay slot writes the OLD value
 of `rt`**, because it reads `rt` as a source before the pending load commits.
@@ -269,16 +273,16 @@ of `rt`**, because it reads `rt` as a source before the pending load commits.
 
 **Yes, there is dedicated bypass hardware for exactly this.** `[DOC]`
 
-> "The contents of general register rt are internally bypassed within the processor
-> so that no NOP is needed between an immediately preceding load instruction which
-> specifies register rt and a following LWL (or LWR) instruction which also specifies
-> register rt.", IDT R30xx, Appendix A
+IDT R30xx manual, Appendix A (LWL, LWR): the processor forwards `rt` internally, so
+an `LWL` or `LWR` whose `rt` matches the destination of the load immediately before
+it needs no intervening `NOP`.
 
-> "One exception to the load delay is that Load Word Right and Load Word Left may
-> specify a destination register that is the same register used as the destination of
-> an immediately preceding load.", IDT R30xx
+IDT R30xx manual, Ch. 13: this is the one exception to the load delay rule; `LWL`
+and `LWR` may name the same destination register as the load directly preceding
+them.
 
-Precise rule `[CONS]`:
+Precise rule. The bypass itself is `[DOC]` above; the finer points below are widely
+documented behaviour that neither psx-spx nor the IDT manual states explicitly:
 
 - When `LWL`/`LWR` needs the current value of `rt` to merge into, it takes it from
   the **pending load value** if a load targeting `rt` is in flight; otherwise from
@@ -287,8 +291,9 @@ Precise rule `[CONS]`:
   `lw r1,(x) ; lwl r1,(y)` merges into `x`'s value.
 - When the bypass fires, the in-flight load is **consumed**, not committed and then
   overwritten.
-- `LWL`/`LWR` still impose a normal load delay on the *following* instruction. IDT:
-  *"the last instruction of the pair will still have the delay slot."*
+- `LWL`/`LWR` still impose a normal load delay on the *following* instruction. The
+  IDT R30xx manual (Ch. 13) notes that the second instruction of the pair keeps its
+  own delay slot.
 - **`SWL`/`SWR` do not get this treatment**: `rt` is a source there, subject to the
   ordinary load delay.
 
@@ -319,15 +324,17 @@ branch target, whichever instruction actually executes next.
 
 ### 2.9 Exception during a load delay slot, the pending load completes `[DOC]`
 
-> "…unless an IRQ occurs between the load and next opcode, in that case the load
-> would complete during IRQ handling, and so, the next opcode would receive the NEW
-> value.", psx-spx
+psx-spx (CPU Load/Store Opcodes): if an interrupt is taken between a load and the
+next instruction, the load completes while the handler runs, and the next
+instruction, when it resumes, reads the new value.
 
-> "Memory read/write opcodes take a 1-cycle delay… however, if an exception occurs
-> between the two opcodes, then the read/write operation may finish, and the second
-> opcode would probably receive the NEW value.", psx-spx, *Unpredictable Things*
+psx-spx (Unpredictable Things) makes the same point for exceptions in general: the
+pending memory access may complete before the second instruction runs, which then
+most likely reads the new value.
 
-Exact model `[CONS]`: when an exception is taken at instruction *N*,
+Exact model (the commit follows from psx-spx above; the rest of the breakdown is
+widely documented behaviour, not stated in a primary source): when an exception is
+taken at instruction *N*,
 
 - the load issued by *N−1* is **committed** to the register file;
 - any load issued by *N* itself is **dropped**: *N* did not complete;
@@ -343,8 +350,8 @@ exception handler itself contains load-delay-slot code.
 
 ### 2.10 Exception raised *by* the load
 
-> "If an exception occurs during a load instruction, the rt register is left
-> untouched.", psx-spx `[DOC]`
+psx-spx (CPU Load/Store Opcodes) `[DOC]`: a load that itself raises an exception
+leaves `rt` unmodified.
 
 So an `AdEL`/`DBE` from an `LW` creates no pending load; any *previously* pending
 load still commits per §2.9.
@@ -371,10 +378,9 @@ load still commits per §2.9.
 
 ### 4.1 Issue and completion `[DOC]`
 
-> "The mul/div opcodes are starting the multiply/divide operation, starting takes
-> only a single clock cycle, however, trying to read the result from the hi/lo
-> registers while the mul/div operation is busy will halt the CPU until the mul/div
-> has completed.", psx-spx
+psx-spx (CPU Arithmetic Instructions): issuing a multiply or divide costs one clock
+cycle; reading HI or LO before the operation finishes halts the CPU until it
+does.
 
 **HI/LO are interlocked on read**: unlike GPR load delays, which are not. The
 multiply unit runs in parallel with the integer pipe. The value read is always
@@ -418,18 +424,18 @@ missing i-cache and instant DMA).
 
 **(b) Starting a MULT/DIV within two instructions *after* an MFHI/MFLO.** `[DOC]`
 
-> "If either of the two preceding instructions is MFHI or MFLO, the results of those
-> instructions are undefined.", IDT, Appendix A
+IDT R30xx manual, Appendix A (MULT, DIV and their unsigned forms): if either of the
+two instructions before the multiply or divide is `MFHI` or `MFLO`, what those
+moves return is undefined.
 
-The mechanism (IDT §13): an exception inhibits register writeback for most
+The mechanism (IDT R30xx manual, Ch. 13): an exception inhibits register writeback for most
 instructions, but **not** in the multiply unit, once a multiply or divide starts,
 its writes to HI/LO cannot be prevented. So an exception can land just in time to
 stop an `mfhi` writeback while still letting a subsequent multiply start and
 overwrite the data.
 
-psx-spx knows about it but not why: *"there seems to be a strange rule that one
-should not touch the lo/hi registers in the next 2 cycles or so… not yet understood
-if/when/how that rule applies…?"* `[?]`
+psx-spx records a rule of this kind (leave HI/LO alone for roughly two cycles) but
+marks it as not understood, with no statement of when it applies. `[?]`
 
 **In practice: do not model it.** It is only observable when an exception lands in
 the two-instruction window, no game is known to depend on it, and a plain interpreter
@@ -437,16 +443,18 @@ that applies HI/LO writes atomically will never see it.
 
 **(c) Writing HI/LO while a multiply is in flight.** `[DOC]`
 
-> "Instructions that write to the HI and LO registers are not interlocked and
-> serialized… If a MTHI operation is executed following a MULT, MULTU, DIV, or DIVU
-> instruction, but before any MFLO, MFHI, MTLO, or MTHI instructions, the contents of
-> the companion special register LO are undefined.", IDT, Appendix A
+IDT R30xx manual, Appendix A (MTHI, MTLO): writes to HI and LO are neither
+interlocked nor serialised against the multiply unit. An `MTHI` issued after a
+`MULT`, `MULTU`, `DIV` or `DIVU`, with no `MFLO`, `MFHI`, `MTLO` or `MTHI` in
+between, leaves the other register, `LO`, undefined (and symmetrically for
+`MTLO` and `HI`).
 
 - `MTHI`/`MTLO` are **not** interlocked and do not stall for an in-flight multiply.
 - A second `MULT`/`DIV` issued before the first completes simply replaces the pending
   result; the first is lost.
 
-Pragmatic model, sufficient for all known software `[CONS]`: compute HI/LO
+Pragmatic model, sufficient for all known software (a modelling choice, not a
+hardware claim): compute HI/LO
 **immediately** at the `MULT`/`DIV`, record `muldiv_done_at`, and use that timestamp
 only to stall `MFHI`/`MFLO`. `MTHI`/`MTLO` then overwrite immediately. Real hardware
 would let a late in-flight result clobber your `MTHI` value; `[?]` unverified on PSX
@@ -495,11 +503,11 @@ is essentially the only reason `MTHI`/`MTLO` exist.
 On a faulting store nothing is written; on a faulting load `rt` is untouched.
 
 **Bus errors** (`06h IBE` on fetch, `07h DBE` on data) come from unmapped or locked
-regions, not from misalignment. IDT notes that `DBE` is imprecise for stores
-(*"the instruction which generated the store data is not guaranteed to be the one
-which recognizes the exception"*) and that R30xx parts effectively cannot take a bus
-error on a store at all, because of the write buffer. Most emulators never raise
-`IBE`/`DBE` and no known game triggers them.
+regions, not from misalignment. The IDT R30xx manual notes that `DBE` is imprecise
+for stores (the exception may be reported against a later instruction than the
+store that produced the data) and that R30xx parts effectively cannot take a bus
+error on a store at all, because of the write buffer. No known game triggers
+`IBE`/`DBE`, so leaving them unraised is a safe default.
 
 LWL/LWR/SWL/SWR merge tables are in
 [`03-instruction-set.md` §6](03-instruction-set.md).
@@ -516,9 +524,9 @@ access (read or write), and when full. **Loads are allowed to overtake queued
 stores** except to the same address, so the order seen on the bus is not program
 order. `[DOC]`
 
-> "It is important to realize that the write queue's mechanism is only viable for
-> normal memory attached to the main CPU, and that any hardware register state
-> machine will get messed up by it.", psx-spx
+psx-spx (Memory Control) cautions that the write queue only behaves well for plain
+memory on the CPU bus; the reordering it introduces can confuse the state machine
+behind any hardware register.
 
 **An interpreter that executes stores synchronously and in program order does not
 reproduce this**, which is the *forgiving* direction and the right default. The
@@ -534,10 +542,10 @@ Other timing hazards worth recording now so they are not rediscovered later:
 
 | Hazard | Rule |
 |---|---|
-| **`MTC0` side effects** | *"software must assume that any such side effects will be unpredictable on the three instruction periods following the execution of an mtc0."* Enabling/disabling a coprocessor: the next two instructions may or may not trap. Enabling interrupts: the enable won't affect the following two. `[DOC]` |
+| **`MTC0` side effects** | The IDT R30xx manual (Ch. 13) tells software to treat any side effect of an `MTC0` as unpredictable for the three instruction slots after it. Enabling/disabling a coprocessor: the next two instructions may or may not trap. Enabling interrupts: the enable won't affect the following two. `[DOC]` |
 | **`SR.CU2` enable delay** | ~2 clock cycles before COP2 is actually enabled. `[DOC]` |
 | **`SR` write timing** `[DOC]` `[?]` | Changing `SR.IEc` 0→1 via `MTC0` **won't trigger an IRQ until after the next opcode**; changing `SR.IM` bits 0→1 **can trigger immediately** (if `IEc` was already set); `RFE` restoring `IEc` 0→1 also triggers immediately. nocash only, the fork dropped this paragraph. |
-| **`IEc` and `IM` in one `MTC0`** | IDT: *"not recommended… may result in side effects such as spurious interrupts."* |
+| **`IEc` and `IM` in one `MTC0`** | The IDT R30xx manual advises against it, since it can cause side effects such as spurious interrupts. |
 | **COP2 register write delay** | 2–3 clock cycles (3 for `IRGB`), counted in **clock cycles, not opcodes**. |
 | **GTE command latency** | Fixed per command (RTPS 15, RTPT 23, NCDT 44, …). `MFC2`/`CFC2`/a new GTE op stalls until completion; `MTC2`/`CTC2` do not. |
 
@@ -597,7 +605,7 @@ Useful as a smoke-test list once a renderer exists. `[HW]` unless noted.
 | Load delay slot | **Skullmonkeys**; the **Xenogears "Agemo"** patch uses it as an emulator-detection check | misbehaviour / detected as an emulator |
 | `lwr` in a branch delay slot, `lwl` in a load delay slot | **Zen Nihon Joshi Pro Wrestling** |, |
 | Branches in branch delay slots | **Threads of Fate**, **Shadow Master** | lockups and graphical glitches |
-| `MFC2`/`CFC2` load delay | **Tekken 2** | severe graphical glitching, broken geometry |
+| `MFC2`/`CFC2` load delay | **Tekken 2** | badly broken geometry |
 | Interrupt on a GTE command | **Crash Bandicoot 1/2/3**, **Jinx**, **Spyro the Dragon** | broken geometry |
 | Software COP0 interrupt bits (`Cause` bits 8–9) | **Jackie Chan Stuntmaster**, **MTV Sports** titles |, |
 | COP0 debug registers used as scratch storage | **Legacy of Kain: Soul Reaver** (LibCrypt) | must be freely readable/writable |

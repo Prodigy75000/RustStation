@@ -1,7 +1,9 @@
 # Conformance notes: `crates/psx-core` against this reference
 
 A read of `crates/psx-core/src/cpu.rs` and `crates/psx-core/src/cop0.rs` against the
-documents in this directory. **Findings only, nothing here has been changed.**
+documents in this directory, recorded as findings. Items fixed since the read are
+marked **Resolved** with the commit that fixed them (A1, A2 and B4 so far); the rest
+are still open.
 
 Everything not listed below was checked and matches. In particular the parts that are
 usually wrong are already right: the `pc`/`next_pc` branch-delay model, the
@@ -18,6 +20,11 @@ stores while `SR.Isc` is set, `SR` mode-stack push and `RFE` copy-down, the
 ## A. Game-visible
 
 ### A1: Interrupts are taken *instead of* a GTE command, not *after* it
+
+**Resolved in `3234ee4`.** When the instruction about to run is a COP2 command, a
+pending interrupt is now deferred by one instruction so the command executes first.
+Pinned by `an_interrupt_does_not_swallow_a_gte_command` in
+`crates/psx-core/tests/timing.rs`. The original finding follows.
 
 `cpu.rs::step`, the `interrupt_ready()` branch, returns before fetching or executing.
 When the pending instruction is a `COP2 imm25`, hardware **executes the GTE command
@@ -37,6 +44,12 @@ result is a dropped GTE operation on every interrupt that lands on one.
   worth fixing at the same time as the GTE, or it will be misdiagnosed as a GTE bug.
 
 ### A2: A second load to the same register does not cancel the first
+
+**Resolved in `e2bd466`.** Plain loads (`LB`/`LBU`/`LH`/`LHU`/`LW`, `MFC0`, `MFC2`,
+`CFC2`) now go through `Cpu::set_load`, which cancels an in-flight load to the same
+register. `LWL`/`LWR` deliberately do not, since they merge with the pending value.
+Pinned by `a_second_load_cancels_the_first` in
+`crates/psx-core/tests/cpu_semantics.rs`. The original finding follows.
 
 ```rust
 // step(): the pending load is applied unconditionally
@@ -109,6 +122,11 @@ into `TAR`.
   memorized jump address" description is the same behaviour observed from software.
 
 ### B4: A pending load is not committed when an exception is taken
+
+**Resolved in `080d05b`.** An exception now commits the pending load before the
+handler runs. Pinned by
+`an_exception_commits_the_pending_load_before_the_handler_runs` in
+`crates/psx-core/tests/timing.rs`. The original finding follows.
 
 The interrupt and misaligned-fetch paths in `step()` return before the
 `self.load` commit, so the pending load survives into the handler and lands on the
@@ -184,27 +202,22 @@ in `docs/notes/CPU.md`.
 
 ## D. Open question already flagged in `cpu.rs`
 
-The header comment says:
+**Closed in `e2bd466`.** At the time of the read, the `cpu.rs` header comment noted
+that the pending load is applied to `out_regs` *before* the instruction executes, so
+an explicit write by that instruction wins over the arriving load, and flagged that
+precedence as reasoned rather than documented, with an open question in
+`docs/notes/CPU.md`.
 
-> "the pending load is applied to `out_regs` *before* the instruction executes, so an
-> explicit write by that instruction wins over the arriving load. (That precedence is
-> the one part of this taken on reasoning rather than a documented statement -
-> `docs/notes/CPU.md` lists it as an open question for the conformance suite to
-> settle.)"
+**This is documented, and the implementation is correct.** `[DOC]` When a load is
+followed in its delay slot by an instruction that writes the same register (for
+example `lw $1, ...` then `addiu $1, $0, 42`), the later write is what remains: `$1`
+ends up as 42 regardless of what the load fetched, even though the load's own write
+nominally lands after the delay slot. psx-spx states the same rule from the other
+direction. See [`04-delay-slots-and-hazards.md` §2.5](04-delay-slots-and-hazards.md)
+and the summary table in §2.6.
 
-**This is documented, and the implementation is correct.** `[DOC]`
-
-> "You might think that since the LW finishes after the load delay slot its fetched
-> value will override the one set by the ADDIU. It turns out that it's not the case
-> however: after those two instructions $1 will contain 42, no matter what the LW
-> fetched."
-
-psx-spx states the same rule from the other direction. See
-[`04-delay-slots-and-hazards.md` §2.5](04-delay-slots-and-hazards.md) and the summary
-table in §2.6. The open question can be closed.
-
-The *related* rule that is **not** implemented is the second cancellation, a new load
-to the same register, which is A2 above.
+The *related* rule, the second cancellation (a new load to the same register), was
+A2 above and is now implemented.
 
 ---
 
@@ -212,7 +225,9 @@ to the same register, which is A2 above.
 
 `tests/test-suite/cpu/` currently holds `access-time`, `code-in-io`, `cop` and
 `io-access-bitwidth`. Only `cop` exercises the CPU core directly; the other three are
-bus and timing tests. **None of the findings above is covered by an existing test.**
+bus and timing tests. At the time of the read none of the findings above was covered
+by a test; the fixes for A1, A2 and B4 each landed with a unit test (named under
+each item above).
 
 Suggested unit tests, all writable today with no bus or timing model:
 
@@ -233,19 +248,20 @@ Suggested unit tests, all writable today with no bus or timing model:
 | 13 | Primary opcode `14h` raises RI, not a branch | §2 reserved-slot rule |
 | 14 | All four `LWL`/`LWR`/`SWL`/`SWR` alignments, both directions | §6 tables |
 
-Beyond unit tests, the standard third-party CPU conformance ROMs (amidog's CPU/COP0
-tests, and JaCzekanski's `ps1-tests` CPU set) are **not** currently in
-`tests/test-suite/` and would cover most of the above against captured hardware logs.
+Beyond unit tests, the standard third-party CPU conformance ROMs cover most of the
+above against captured hardware logs. JaCzekanski's `ps1-tests` is not vendored: it
+lives out of tree under `tests/test-suite/` (gitignored; bring your own copy) and is
+run by the `testrom` harness, see [`docs/TESTS.md`](../TESTS.md). amidog's CPU/COP0
+tests are not part of that run.
 
 ---
 
 ## F. Nothing here is a licence to copy
 
 Every finding above is stated as **hardware behaviour plus the observable symptom**,
-with a reference to the document that derives it from psx-spx / nocash / IDT. Where a
-claim is marked `[CONS]` in those documents it records that two independent emulators
-*behave* a certain way on a documented-ambiguous case, that is evidence about the
-silicon, not an implementation to copy.
+with a reference to the document that derives it from psx-spx / nocash / IDT. Where
+those documents describe a behaviour that no primary source states outright, they say
+so, and it is treated as unverified until a hardware test settles it.
 
 Implement each fix from the described behaviour and the test that pins it. See the
 clean-room note in [`README.md`](README.md).

@@ -30,7 +30,8 @@
 //! * An HLE kernel ([`hle`]), for booting a disc with no BIOS file.
 //! * Instruction timing ([`timing`]): the I-cache, what loads cost by region,
 //!   and the multiplier's and the GTE's waits.
-//! * Save states that satisfy the in-house byte-identical contract.
+//! * Save states that are byte-identical on every target, by construction
+//!   (see [`save`]), which is what netplay between machines rests on.
 //!
 //! ## What does not exist yet
 //!
@@ -281,8 +282,8 @@ impl Psx {
     /// a fixed 1/60 s of cycles, but an NTSC frame is 263 lines of 3413 video
     /// clocks, about 571 212 CPU cycles (59.29 Hz), so about one frontend
     /// frame in 84 held no vblank at all and showed the previous picture
-    /// again: a hitch every second and a half, which the owner saw in Final
-    /// Fantasy VIII's video. A PAL game lost ten frames a second the other way.
+    /// again: a hitch every second and a half, which showed in Final Fantasy
+    /// VIII's video. A PAL game lost ten frames a second the other way.
     pub fn run_frame(&mut self) {
         self.bus.sync();
         let n = self.bus.video.cycles_to_vblank();
@@ -297,8 +298,8 @@ impl Psx {
     /// its sound, keeps real time. Games and the BIOS reset the GPU between
     /// screens, which puts a PAL console back in NTSC for a moment, and an
     /// American BIOS boots a European disc in NTSC. Running a vblank to vblank
-    /// frame there, at the PAL pace, slowed everything to 84%: the owner heard
-    /// the boot sound and Metal Gear Solid's intro drag. Now only the pictures
+    /// frame there, at the PAL pace, slowed everything to 84%: the boot sound
+    /// and Metal Gear Solid's intro audibly dragged. Now only the pictures
     /// suffer, a repeated or a dropped one now and then, on logos and blank
     /// screens.
     pub fn run_frame_at(&mut self, standard: video::Standard) {

@@ -57,10 +57,10 @@ not trap if nonzero):
 
 ## 2. The reserved-slot rule `[DOC]`
 
-> "All opcodes that are marked as 'N/A' in the Primary and Secondary opcode tables
-> are causing a Reserved Instruction Exception (excode=0Ah). The unused operand bits
-> (eg. Bit21-25 for LUI opcode) should be usually zero, but do not necessarily
-> trigger exceptions if set to nonzero values."
+psx-spx (CPU Opcode Encoding) states that every slot shown as N/A in the primary and
+secondary opcode tables raises Reserved Instruction (ExcCode `0Ah`), while operand
+fields an instruction does not use (for example bits 25..21 of `LUI`) are expected
+to be zero but need not trap when they are not.
 
 Two consequences for a decoder:
 
@@ -145,7 +145,8 @@ address of the instruction itself.
 decoder that only recognises the four canonical patterns and traps on the rest is
 wrong.
 
-The hardware decodes `rt` **partially** `[DOC]` `[CONS]`:
+The hardware decodes `rt` **partially** `[DOC]` (nocash PSX-SPX, CPU Opcode
+Encoding):
 
 | Field | Effect |
 |---|---|
@@ -178,11 +179,14 @@ Two further rules `[DOC]`:
 | 12h, 14h, 16h, 18h, 1Ah, 1Ch, 1Eh | BLTZ (alias) | **no**: bits 19..17 nonzero cancels the link |
 | 13h, 15h, 17h, 19h, 1Bh, 1Dh, 1Fh | BGEZ (alias) | **no** |
 
-> Source note: the alias rows exist only in nocash's original PSX-SPX (`000001 | rs |
-> xxxx0 | imm16 | bltz ;\undocumented dupes … (when bit17-19=nonzero)`); the
-> consoledev fork lists only the four canonical values, which would wrongly imply the
-> other 28 are undefined. Use the nocash rule. `[?]` No published hardware test; two
-> independent emulators implement exactly `(rt & 0x1E) == 0x10`.
+Source note: the alias rows appear only in nocash's original PSX-SPX, which lists
+`rt` values with bit 0 clear as BLTZ duplicates and bit 0 set as BGEZ duplicates,
+and says the link is dropped whenever any of `rt` bits 3..1 (instruction bits
+19..17) is nonzero. The consoledev fork lists only the four canonical values, which
+would wrongly imply the other 28 are undefined. Use the nocash rule. The linking
+condition `(rt & 1Eh) == 10h` is that documented rule written as a mask (bit 4 set,
+bits 3..1 clear). `[?]` No published hardware test covers the alias rows, and
+RustStation's own suite does not yet exercise them.
 
 ## 5. SPECIAL, primary `00h`, indexed by `funct` (bits 5..0)
 
@@ -250,9 +254,10 @@ Compact grid `[DOC]`:
 | `DIV` | `80000000h .. FFFFFFFFh` | `0` | `rs` | `00000001h` (+1) |
 | `DIV` | `80000000h` | `FFFFFFFFh` (−1) | `0` | `80000000h` |
 
-> "For `divu`, the result is more or less correct (as close to infinite as possible).
-> For `div`, the results are total garbage (about furthest away from the desired
-> result as possible).", psx-spx
+psx-spx (CPU Arithmetic Instructions) characterises these as follows: the `DIVU`
+result is a reasonable stand-in for infinity (the largest representable quotient),
+while the signed `DIV` results for a zero divisor are nearly the worst possible
+answer (a positive dividend yields −1, a negative one yields +1).
 
 `MULT`/`MULTU`/`DIV`/`DIVU` **never** raise an exception under any circumstances.
 
@@ -320,11 +325,11 @@ already-clobbered register.
 | 08h | TLBP | **RI (0Ah)** |
 | **10h** | **RFE** | Return from exception: `SR.2-3 → SR.0-1`, `SR.4-5 → SR.2-3`; bits 4-5 unchanged. **Does not jump.** Works in user mode only if `SR.CU0` is set |
 | 00h, 03h–05h, 07h, 09h–0Fh, 11h–1Fh |, | Unused; **execute with no exception**, no known effect. These work even in user mode with COP0 disabled `[DOC]` (nocash only) |
-| 20h–1FFFFFFh | mirrors | "the upper 16 bit of the 25 bit command number are ignored", mirror `00h..1Fh` `[DOC]` (nocash only) |
+| 20h–1FFFFFFh | mirrors | Only the low bits of the 25-bit command number are decoded (nocash says the upper 16 bits are ignored), so these mirror `00h..1Fh` `[DOC]` (nocash only) |
 
-> `[?]` The mirror note implies `RFE` should be matched on the low **5** bits
-> (`imm25 & 1Fh == 10h`), whereas masking **6** bits (`instr & 3Fh == 10h`) is the
-> common choice. Untested; the 6-bit mask is the safe/common one.
+`[?]` The mirror note implies `RFE` should be matched on the low **5** bits
+(`imm25 & 1Fh == 10h`), whereas masking **6** bits (`instr & 3Fh == 10h`) is the
+common choice. Untested; the 6-bit mask is the safe/common one.
 
 ### COP2 `imm25` command layout (for reference; GTE semantics are out of scope) `[DOC]`
 
@@ -354,8 +359,8 @@ test the BIOS exception handler uses.
 | 33h/3Bh | LWC3/SWC3 | COP3 absent → CpU (0Bh, `CE = 3`) when `SR.CU3 = 0` |
 | 30h/38h | LWC0/SWC0 | Not implemented, and **glitchy rather than clean**: see below |
 
-**LWC0 / SWC0 / BC0F / BC0T** `[DOC]` (nocash; the consoledev fork simplifies this to
-"always CpU"):
+**LWC0 / SWC0 / BC0F / BC0T** `[DOC]` (nocash; the consoledev fork reduces this to an
+unconditional Coprocessor Unusable):
 
 - With **`SR.CU0 = 1`**: no exception, nothing useful. The branch condition reads as
   always false (`bc0f` always jumps, `bc0t` never); `SWC0` **stores garbage, the

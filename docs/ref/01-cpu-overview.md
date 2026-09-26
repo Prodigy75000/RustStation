@@ -165,7 +165,9 @@ workable strategies:
 - Execute the GTE command, then take the interrupt with `EPC` pointing at it
   (what the hardware does), or
 - Refuse to take an interrupt when `pc` points at a `cop2 imm25` and defer it by one
-  instruction (what Mednafen does to sidestep the pipeline nuance).
+  instruction, so the command runs before the interrupt is taken and the BIOS
+  fixup then skips an instruction that has already executed. This is the approach
+  RustStation takes.
 
 Note the BIOS fixup cannot work when `Cause.BD` is set, so GTE commands in branch
 delay slots are a hazard in real code too. Old BIOS revisions implement the fixup

@@ -28,8 +28,9 @@ Claims are marked where it matters:
 
 - **`[DOC]`**: stated in psx-spx, nocash's original PSX-SPX, or an IDT R30xx manual.
 - **`[HW]`**: explicitly hardware-verified in a cited source.
-- **`[CONS]`**: emulator-dev consensus; behaves identically in two independent
-  hardware-driven emulators but is not written down in a spec.
+- **Unmarked "widely documented behaviour"**: stated in prose where a claim is
+  commonly described but appears in none of the primary sources below. Treat it as
+  unverified until a hardware test settles it.
 - **`[?]`**: genuinely uncertain, or sources disagree. **Do not encode `[?]` claims
   as invariants or assertions.** Where a `[?]` matters, the safe choice is stated.
 
@@ -42,10 +43,9 @@ RustStation is a clean-room implementation. Everything here is derived from
 **hardware documentation and hardware test results**: psx-spx, nocash's PSX-SPX,
 LSI/IDT datasheets and manuals, not from another emulator's source code.
 
-Where a `[CONS]` marker appears, it records that two independent emulators are
-*observed to behave* a particular way on a documented-ambiguous case; it describes
-behaviour, not implementation. Treat those as evidence about the hardware, and
-implement them from the described behaviour.
+Third-party documentation is distilled and cited, never reproduced: every statement
+taken from psx-spx or an IDT manual is restated here in our own words with a pointer
+to the section it came from.
 
 **Do not paste code from another emulator into this repo, and do not read another
 emulator's source to resolve an ambiguity.** If a behaviour is unclear, the correct

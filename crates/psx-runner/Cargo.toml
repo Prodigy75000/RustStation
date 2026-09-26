@@ -3,12 +3,12 @@ name = "psx-runner"
 version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
-description = "Dev harnesses for RustStation: BIOS boot, PSX-EXE test-ROM runs with TTY capture, and save-state fingerprinting."
+repository.workspace = true
+authors.workspace = true
+description = "Dev harnesses for RustStation: test-ROM runs with TTY capture, headless renders, a minimal libretro frontend, and save-state fingerprinting."
 
-# Dev harnesses. `testrom` comes first: it is how the R3000A gets ground to
-# green against the CPU/GTE conformance suites in dumps/, the same role
-# `tomharte` plays for the SNES 65C816 and the GBA ARM7. The `shot` png bin
-# mirrors the other cores and lands once the GPU rasterizes.
+# Dev harnesses. `testrom` runs the CPU/GTE/GPU conformance suites (kept out of
+# tree under tests/) and reads each one's own printed verdict.
 
 # Boot a BIOS and step it, printing the BIOS TTY and a CPU trace on demand.
 [[bin]]

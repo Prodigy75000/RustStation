@@ -154,8 +154,8 @@ A new card is formatted as Sony's shipped: "MC" header, fifteen free directory
 entries, no broken sectors. **What is on a card is the frontend's**, like the
 disc image, and not in a save state: loading an old state never takes back a
 save. The card's transfer state and flag are in the state (format 14). In the
-libretro core, the card in slot 1 is the frontend's save RAM, so the app keeps
-it as a file as it does a cartridge's battery RAM; slot 2 is empty.
+libretro core, the card in slot 1 is the frontend's save RAM, so the frontend
+keeps it as a file as it does a cartridge's battery RAM; slot 2 is empty.
 `shot --card PATH` and `retrohost --card PATH` do the same for the harnesses.
 
 ## An absent device

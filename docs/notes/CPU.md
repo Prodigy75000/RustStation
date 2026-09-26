@@ -1,10 +1,12 @@
 # MIPS R3000A / LSI CW33300
 
-**Written from:** general MIPS R3000 architecture knowledge, pending the
-manuals landing in `../ref/`. **This note is provisional.** Every numbered claim
-below needs checking against the supplied documentation, and the "Open
-questions" section lists the ones that are load-bearing. Cite the document and
-section beside each fact as it is confirmed.
+**Written from:** the reference set in `../ref/` (psx-spx, nocash's original
+PSX-SPX, and the IDT R30xx Family Software Reference Manual for generic MIPS-I
+semantics), and the hardware logs of the ps1-tests `cpu` suite. The note was
+first drafted from general MIPS R3000 knowledge and has since been read against
+that set: "Settled by the hardware suite" and "Closed by the reference set"
+record what was confirmed, "Known divergences" what the read found wrong, and
+"Open questions" what is still unsettled.
 
 Implemented in `crates/psx-core/src/cpu.rs` and `cop0.rs`.
 
@@ -69,9 +71,11 @@ coprocessor unusable (11), arithmetic overflow (12).
   - `DIV` of `0x80000000` by `-1`: `HI` = 0, `LO` = `0x80000000`.
   - `DIVU` by zero: `HI` = dividend, `LO` = `0xFFFFFFFF`.
 - **Status `Isc` (bit 16) isolates the cache.** Stores made while it is set go
-  to the I-cache, not to memory. With no cache modelled, the store must be
-  **dropped**. Writing RAM anyway corrupts memory during the BIOS's boot-time
-  cache scrub, and the damage surfaces much later.
+  to the I-cache, not to memory, so RAM must **not** be written. Writing it
+  anyway corrupts memory during the BIOS's boot-time cache scrub, and the
+  damage surfaces much later. With the cache control register's tag bit set,
+  the store writes an I-cache tag, which is how the BIOS flushes the cache;
+  otherwise it would write cached code, which is not kept (see open question 2).
 - **Variable shifts use only the low five bits** of `rs`. In Rust a shift of 32
   is a panic in debug and nonsense in release, so the mask is not optional.
 - **Unaligned access traps.** `LH`/`LHU`/`SH` on an odd address and
@@ -155,16 +159,20 @@ These are unsettled. Each names what would settle it.
    two, because `op_lwl` samples `out_regs` before any cancellation would
    apply. That was checked by patching `LWL` to cancel and watching the test
    stay green, rather than assumed.
-2. **The I-cache.** Not modelled at all, only isolated-store dropping. Software
-   that writes code and jumps into it without a cache flush behaves differently
-   on hardware. UltraRust found exactly this to be a shared boot-blocker on N64,
-   so it is worth pricing early rather than discovering late.
+2. **The I-cache's contents.** Since 2026-09-26 its tags are modelled
+   (`crates/psx-core/src/timing.rs`): which fetches hit, what a miss costs, and
+   the tag writes the BIOS flushes it with. The instructions themselves still
+   come from RAM. On hardware a line keeps the code it was filled with until it
+   is flushed, so software that writes code and jumps into it without a flush
+   runs the old code there and the new code here. psx-spx names a game that
+   depends on this; stale instruction caches are a known bug class in emulator
+   cores generally, so it is worth pricing before it is met.
 3. **Scratchpad through KSEG1.** On hardware the scratchpad is the data cache
    and so is not reachable uncached. The bus currently serves it through every
    segment. Serving an access that hardware would fault makes a real bug look
    like working code.
-4. **Instruction cycle costs** landed 2026-09-26: the I-cache, what loads
-   cost by region, and the multiplier's and the GTE's waits
+4. **Instruction cycle costs** landed 2026-09-26: I-cache hits and misses,
+   what loads cost by region, and the multiplier's and the GTE's waits
    (`crates/psx-core/src/timing.rs`, [`TIMING.md`](TIMING.md)). Not yet: the
    write queue, the load shadow as its own mechanism, and DMA taking the bus.
 5. **COP0 register reads on unassigned indices** return zero here for r16 to

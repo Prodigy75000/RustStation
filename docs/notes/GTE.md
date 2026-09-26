@@ -6,7 +6,8 @@ randomised argument sets through every valid opcode, with the whole register
 file dumped after each. All 15 command opcodes, the full register file and the
 divider are in.
 
-Getting there took seven distinct fixes, each found the same way: the suite
+Getting there took nine distinct fixes (the table in
+[`../TESTS.md`](../TESTS.md)), each found the same way: the suite
 stops at the first mismatch and prints a per-register diff, so the register that
 disagrees names the stage that is wrong. They are written up under "Traps"
 below because every one of them is the kind of thing that reads as correct

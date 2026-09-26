@@ -12,18 +12,18 @@
 # gradle step is minutes and only earns its keep when something is actually
 # going to load the library.
 #
-# Why the rest of this exists: the core (RustStation) and the app
-# (TrophyHubAndroid) are separate repos in the TrophyHub umbrella, so getting a
-# core change onto a device is a fixed three-step dance. This pins it so no one
-# rediscovers it. Only arm64-v8a ships (see the app's abiFilters); the devices
-# are arm64.
+# The other two modes are for an Android app that bundles the core in its APK:
+# copy the .so into its jniLibs, rebuild it, install it. The app checkout is
+# ANDROID_APP_DIR, by default a sibling directory named TrophyHubAndroid. Only
+# arm64-v8a is built.
 #
-# NOTE ON LOADING IT: the app resolves cores by bare filename through dlopen,
-# which means the system linker finds them in the APK's own native library
-# directory. **A pushed .so will not be picked up**; the APK has to be rebuilt
-# and reinstalled. And until RustStation has a `CoreSlot` entry in
-# TrophyHubAndroid, nothing in the app asks for this library at all, so `so`
-# mode is the honest one to be running.
+# NOTE ON LOADING IT: an app that resolves cores by bare filename through
+# dlopen finds them in the APK's own native library directory, so **a pushed
+# .so will not be picked up**; the APK has to be rebuilt and reinstalled.
+#
+# Building for Android needs the NDK's clang as the linker for the target, set
+# in a .cargo/config.toml (here or in any parent directory), with
+# -Wl,-z,max-page-size=16384 so the library is 16 KB aligned.
 #
 # Save states: the state format is versioned (psx_core::save::FORMAT_VERSION)
 # and a core only accepts states at its own version. When a change bumps it, the
@@ -36,10 +36,6 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TRIPLE="aarch64-linux-android"
 ABI="arm64-v8a"
 SO="libpsxcore_libretro.so"
-# RustStation is a standalone workspace, so its target dir is local, not the
-# umbrella's shared TrophyHub/target. The umbrella's .cargo/config.toml still
-# supplies the NDK linker + the 16 KB max-page-size link arg, because cargo
-# walks up from the working directory to find it.
 TARGET_DIR="${CARGO_TARGET_DIR:-$REPO/target}"
 
 echo "[1/4] cargo test --workspace"
@@ -62,7 +58,7 @@ if [ "$MODE" = "so" ]; then
     exit 0
 fi
 
-ANDROID="$(cd "$REPO/../TrophyHubAndroid" && pwd)"
+ANDROID="$(cd "${ANDROID_APP_DIR:-$REPO/../TrophyHubAndroid}" && pwd)"
 DST="$ANDROID/app/src/main/jniLibs/$ABI/$SO"
 echo "[3/4] cp core -> $DST"
 mkdir -p "$(dirname "$DST")"
@@ -75,7 +71,7 @@ APK="$ANDROID/app/build/outputs/apk/debug/app-debug.apk"
 echo "APK: $APK"
 
 if [ "$MODE" = "install" ]; then
-    # The primary test device shows up twice over wireless adb often enough
+    # A device can show up twice over wireless adb, often enough
     # that a bare `adb install` picks the wrong entry or refuses outright.
     # Name the target explicitly: ANDROID_SERIAL if it is set, otherwise the
     # only device attached, and complain rather than guess if there are two.

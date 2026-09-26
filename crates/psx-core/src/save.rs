@@ -3,9 +3,7 @@
 
 //! Save states: byte-identical across every target, by construction.
 //!
-//! This file implements the in-house core save-state contract
-//! (`TrophyHubResources/specs/play/IN_HOUSE_CORE_SAVESTATE_SPEC.md`). The rules
-//! it exists to satisfy, restated so they cannot be lost:
+//! The rules it exists to satisfy:
 //!
 //! 1. Nothing native-layout in the stream. No `memcpy` of a struct, no
 //!    `transmute`, no derived serializer. Every field is written explicitly

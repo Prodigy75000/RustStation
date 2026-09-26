@@ -469,7 +469,7 @@ fn run() -> Result<(), String> {
             }
             "--swap-at" => {
                 // FRAME DISC (1-based): open the lid, change the disc and close
-                // it, all before that frame, the way the TrophyHub host does.
+                // it, all before that frame, the way some frontends do.
                 let n = args.get(i + 1).ok_or("--swap-at needs FRAME DISC")?;
                 let d = args.get(i + 2).ok_or("--swap-at needs FRAME DISC")?;
                 let d: c_uint = d.parse().map_err(|e| format!("--swap-at: {e}"))?;

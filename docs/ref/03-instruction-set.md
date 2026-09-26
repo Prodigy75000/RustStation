@@ -67,8 +67,9 @@ else                     R[rd] = t & FFFFFFFFh
 Overflow test without widening: `ADD` overflows iff `(~(rs ^ rt) & (res ^ rs)) < 0`;
 `SUB` overflows iff `((rs ^ rt) & (res ^ rs)) < 0`.
 
-**On overflow the destination is not written.** `[DOC]` IDT: *"The destination
-register rt is not modified when an integer overflow exception occurs."*
+**On overflow the destination is not written.** `[DOC]` (IDT R30xx manual,
+Appendix A: an integer overflow exception leaves the destination register
+unmodified.)
 Note `sub rd, r0, rt` overflows when `rt = 80000000h`.
 
 Exceptions: **Ovf (0Ch)**.
@@ -121,8 +122,8 @@ R[rt] = R[rs] + sext(imm16)          ; wrapping
 
 **`ADDIU` is not "unsigned immediate".** The immediate is *still sign-extended* -
 `addiu rt,rs,0FFFFh` subtracts 1. The only difference from `ADDI` is that `ADDIU`
-never raises `Ovf`. `[DOC]` IDT: *"The only difference between this instruction and
-the ADDI instruction is that ADDIU never causes an overflow exception."*
+never raises `Ovf`. `[DOC]` (IDT R30xx manual, Appendix A, ADDIU: identical to
+`ADDI` except that no overflow exception is ever taken.)
 
 Exceptions: `ADDI` → **Ovf (0Ch)**; `ADDIU` → none.
 
@@ -135,9 +136,9 @@ sltiu rt, rs, imm16   ; 0Bh   R[rt] = ((u32)R[rs] < (u32)sext(imm16)) ? 1 : 0
 
 **`SLTIU` sign-extends the immediate and then compares *unsigned*.** Confirmed by all
 three primary sources. psx-spx spells the effective range out as
-`[0..7FFFh] ∪ [FFFF8000h..FFFFFFFFh]`; IDT: *"The 16-bit immediate is sign-extended
-… Considering both quantities as unsigned integers, if rs is less than the
-sign-extended immediate, the result is set to one."*
+`[0..7FFFh] ∪ [FFFF8000h..FFFFFFFFh]`; the IDT R30xx manual (Appendix A, SLTIU)
+sign-extends the 16-bit immediate first and then compares `rs` against it with both
+treated as unsigned, writing 1 if `rs` is smaller.
 
 So `sltiu rt, rs, -1` tests `rs < FFFFFFFFh`, true for every `rs` except
 `FFFFFFFFh`. Zero-extending the immediate is the classic bug.
@@ -169,8 +170,9 @@ and do not trap if nonzero. Exceptions: none.
 ## 3. Shifts
 
 **Shifts use `rt` as the value and `rs` (or `sa`) as the amount**: the reverse of
-the ALU-register operand order. psx-spx warns explicitly: *"Unlike many other
-opcodes, shifts use 'rt' as second (not third) operand."* A decoder that treats
+the ALU-register operand order. psx-spx (CPU Arithmetic Instructions) calls this out:
+in shifts `rt` is the second operand, not the third as in most other opcodes. A
+decoder that treats
 `SLLV` like `ADDU` is silently wrong.
 
 ```
@@ -270,9 +272,9 @@ R[31] = $ + 8                        ; the address AFTER the delay slot
 npc   = (npc_before & F0000000h) | (imm26 << 2)
 ```
 
-**The top nibble comes from the delay slot's PC, not the jump's PC.** IDT is
-explicit: *"combined with the high-order bits of the address of the delay slot"*,
-with the update at `T+1`. This only differs when the jump itself sits at
+**The top nibble comes from the delay slot's PC, not the jump's PC.** The IDT R30xx
+manual (Appendix A, J and JAL) takes the high-order bits from the delay slot's
+address, and applies the new PC at `T+1`. This only differs when the jump itself sits at
 `?FFFFFFCh`: rare, but real. In the canonical interpreter shape (`pc` already
 advanced to the delay slot before `execute`) this falls out naturally as
 `pc & F0000000h`.
@@ -295,9 +297,9 @@ npc   = tmp
 ```
 
 - **`rd` is a real 5-bit field at insn[15:11].** Decode it; do not hardcode 31.
-- **`rs` is sampled before `rd` is written.** IDT pseudocode uses an explicit temp
-  (`T: temp ← GPR[rs]; GPR[rd] ← PC+8`), and `jalr r31,r31` jumping correctly on its
-  first execution proves it.
+- **`rs` is sampled before `rd` is written.** The IDT R30xx manual's JALR pseudocode
+  (Appendix A) copies `rs` into a temporary before writing the link, and
+  `jalr r31,r31` jumping correctly on its first execution confirms the ordering.
 - Writing the link to `r0` (`jalr r0, rs`) is discarded, `r0` is hardwired.
 - **A misaligned target raises no exception at the jump.** `[DOC]` The `AdEL (04h)`
   fires on the *next instruction fetch*, with `EPC = BadVaddr = the bad target` and
@@ -345,10 +347,9 @@ Exceptions: none.
 
 ### Branches in delay slots
 
-Architecturally undefined (IDT: *"A delay slot may not itself be occupied by a jump
-or branch instruction; however, this error is not detected and the results of such
-an operation are undefined"*): but deterministic on silicon, and **real games do
-it**. See [`04-delay-slots-and-hazards.md` §1.3](04-delay-slots-and-hazards.md).
+Architecturally undefined (the IDT R30xx manual forbids a jump or branch in a delay
+slot, but notes the CPU does not detect it and leaves the result undefined), yet
+deterministic on silicon, and **real games do it**. See [`04-delay-slots-and-hazards.md` §1.3](04-delay-slots-and-hazards.md).
 
 ---
 
@@ -375,8 +376,9 @@ All five loads carry the one-instruction load delay. Exceptions: `AdEL`/`AdES` a
 shown, plus `AdEL`/`AdES` for any access at or above `80000000h` while
 `SR.KUc = 1`, plus `DBE (07h)`.
 
-**Narrow stores put the whole register on the bus.** `[DOC]` `[HW]` *"During an
-8-bit or 16-bit store, all 32 bits of the GPR are placed on the bus."* Some 32-bit
+**Narrow stores put the whole register on the bus.** `[DOC]` `[HW]` (psx-spx, CPU
+Load/Store Opcodes: a byte or halfword store still drives all 32 bits of the source
+register onto the data bus.) Some 32-bit
 I/O registers therefore behave as if a full 32-bit store had happened using the
 register's entire value, the CD-audio soundscope in the SCPH-7xxx shells relies on
 this (it uses `sh` on DMA registers and hangs otherwise).
@@ -435,13 +437,13 @@ R    = the current value of rt  (for LWL/LWR: the BYPASSED value, see §04 2.6)
 | 2 | `[base+2..3]` | `(W & 0000FFFFh) \| (rt << 16)` | 16-bit write at `base+2` |
 | 3 | `[base+3]` | `(W & 00FFFFFFh) \| (rt << 24)` | 8-bit write at `base+3` |
 
-The 24-bit rows are real: *"The CPU has four separate byte-access signals, so, within
-a 32bit location, it can transfer all fragments of Rt at once (including for odd
-24bit amounts)."* `[DOC]` The read-modify-write formulation above is a faithful
+The 24-bit rows are real: psx-spx notes that the CPU has an independent byte-enable
+line for each of the four byte lanes, so any fragment of `rt` within one word,
+three bytes included, goes out in a single transfer. `[DOC]` The read-modify-write formulation above is a faithful
 *emulation* for RAM, but it is **not what the hardware does**: real silicon asserts
 byte enables. If SWL/SWR ever lands on a write-only or side-effecting I/O register,
-the RMW model is wrong. psx-spx: *"Results on unaligned I/O port writes (via SWL/SWR
-opcodes) are unknown."* `[?]`
+the RMW model is wrong. psx-spx records the effect of SWL/SWR on I/O ports as
+unknown. `[?]`
 
 Canonical PSX (little-endian) unaligned word load, note the pair order is the
 reverse of the big-endian examples in the IDT manual:
@@ -455,8 +457,8 @@ and  r2, r2, 0FFFFh
 
 Degenerate case: if `addr` is already word-aligned, `LWL @ addr+3` and
 `LWR @ addr+0` each load the whole word, so the pair duplicates effort but is
-harmless. (psx-spx speculates otherwise, *"Uhhhhhhhm, OR is that NOT allowed…"* -
-the tables above settle it.)
+harmless. (psx-spx leaves open whether the aligned case is permitted; the tables
+above settle it.)
 
 Exceptions: `AdEL`/`AdES` only for user-mode/KUSEG violations; `DBE`. **Never for
 misalignment.**
@@ -490,8 +492,8 @@ Register-by-register behaviour is in
 - **`EPC` (r14), `BadVaddr` (r8), `PRID` (r15), `TAR` (r6) are read-only.**
 - **`MTC0` has no store delay**, except that setting `SR.CU2` (bit 30) takes ~2
   clock cycles to actually enable COP2. `[DOC]`
-- psx-spx explicitly debunks the "coprocessor reads take *two* opcodes" rumour:
-  *"the PSX does finish both COP0 and COP2 reads after ONE opcode."*
+- psx-spx explicitly rejects the claim that coprocessor reads take *two*
+  instructions: on the PSX both COP0 and COP2 reads complete after one.
 
 Exceptions: RI (0Ah) for the nonexistent indices; CpU (0Bh) in user mode with
 `CU0 = 0` (except for the r16–31 garbage registers).
@@ -502,9 +504,9 @@ Exceptions: RI (0Ah) for the nonexistent indices; CpU (0Bh) in user mode with
 cfc0 rt, rd  /  ctc0 rt, rd          ; would address cop0r32..63
 ```
 
-**COP0 has no control-register bank.** psx-spx: *"Registers 32..63 (aka 'control
-registers') aren't used in any MIPS processors. Trying to read any of these
-registers causes a Reserved Instruction Exception (excode=0Ah)."*
+**COP0 has no control-register bank.** psx-spx (COP0 Register Summary) states that
+cop0r32..63, the would-be control registers, are unused on every MIPS part, and that
+reading any of them raises Reserved Instruction (ExcCode `0Ah`).
 
 Implement both as **RI (0Ah)**. `[?]` The write direction (`CTC0`) is not separately
 documented; RI is the consistent reading.
@@ -563,17 +565,16 @@ bc2f / bc2t      ; the GTE has no condition flag: bc2f jumps always, bc2t never
 ```
 
 - **`MFC2`/`CFC2` carry the same one-instruction load delay as a memory load.**
-  **Tekken 2 requires this**: without it, "severe graphical glitching" / broken
-  geometry.
+  **Tekken 2 requires this**: without it, geometry renders badly broken.
 - **`MFC2`/`CFC2` and a new GTE command stall** while a command is in flight;
   `MTC2`/`CTC2` do not stall.
 - All forms raise **CpU (0Bh, `CE = 2`)** when `SR.CU2` is clear.
 - The interrupt-on-GTE-command quirk is in
   [`01-cpu-overview.md` §4.3](01-cpu-overview.md): it is a **CPU-side** requirement
   and matters even before the GTE itself is implemented.
-- psx-spx warns that GTE instructions "should not be used in delay slots of jumps and
-  branches, or in event handlers or interrupts", because the BIOS's `EPC += 4`
-  fixup cannot work when `Cause.BD` is set.
+- psx-spx advises keeping GTE instructions out of jump and branch delay slots and
+  out of event and interrupt handlers, because the BIOS's `EPC += 4` fixup cannot
+  work when `Cause.BD` is set.
 
 ---
 
@@ -594,7 +595,8 @@ break   imm20                        ; SPECIAL 0Dh -> Bp  (09h)
   branch delay slot, `EPC` = the branch's address and `Cause.BD = 1`. So the handler
   reads the opcode at `[EPC]` when `BD = 0` and at `[EPC+4]` when `BD = 1`, and
   returns to `EPC+4` (BD = 0) to skip it.
-  `[?]` psx-spx elsewhere says "by examining the opcode bits at `[epc-4]`", which
+  `[?]` psx-spx elsewhere describes finding the code by reading the opcode at
+  `[epc-4]`, which
   contradicts its own definition of `EPC` and IDT's. That phrasing almost certainly
   describes a handler that has already advanced `EPC`. **Implement `EPC` = the
   faulting instruction's own address.**

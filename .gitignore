@@ -30,14 +30,14 @@
 
 # Vendored third-party test suites (ps1-tests and friends): binaries plus their
 # reference logs. Not ours to redistribute, and large. Bring your own, the same
-# way FamiRust treats the TomHarte vectors. `testrom --dir` walks whatever path
+# way other emulator projects treat third-party test vectors. `testrom --dir` walks whatever path
 # it is given, so nothing here is load-bearing for the build.
 /tests/
 
 # Headless render / audio / TTY dumps from the dev harnesses.
 /out/
 
-# Local convenience junction -> TrophyHubAndroid app jniLibs (deploy target)
+# Local convenience junction to an Android app's jniLibs (deploy target)
 android-jnilibs/
 
 # Scratch from RSTA_GTE_TRACE runs.

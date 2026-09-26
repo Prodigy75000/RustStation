@@ -35,14 +35,11 @@ IDT manual.
 - **r0, r1, r2, r4, r10 and r32–r63** → **Reserved Instruction Exception (0Ah)**, not
   Coprocessor Unusable. Because r32–63 are the "control register" bank, this is what
   makes **`CFC0`/`CTC0` raise RI**.
-- **r16–r31 → garbage, no exception.** psx-spx:
-
-  > "Trying to read these registers returns garbage (but does not trigger an
-  > exception). When reading one of the garbage registers shortly after reading a
-  > valid cop0 register, the garbage value is usually the same as that of the valid
-  > register. When doing the read later on, the return value is usually 00000020h, or
-  > when reading much later it returns 00000040h, or even 00000100h. No idea what is
-  > causing that effect…?"
+- **r16–r31 → garbage, no exception.** psx-spx (COP0 Register Summary): reading
+  them raises nothing and returns an unpredictable value. Read soon after a valid
+  COP0 register, the value usually repeats that register's value; read later it is
+  typically `00000020h`, and later still `00000040h` or even `00000100h`. The source
+  offers no explanation for the pattern.
 
   Practical model: return the **last value read from any valid COP0 register**. The
   `20h`/`40h`/`100h` decay is unexplained `[?]`: treat as don't-care. (With
@@ -56,19 +53,19 @@ IDT manual.
 
 ### Load/store delay on COP0 `[DOC]`
 
-- **`MFC0` has a one-instruction load delay.** psx-spx explicitly debunks the
-  "two-opcode delay" claim: *"the PSX does finish both COP0 and COP2 reads after ONE
-  opcode."*
+- **`MFC0` has a one-instruction load delay.** psx-spx explicitly rejects the claim
+  of a two-instruction delay: on the PSX both COP0 and COP2 reads complete after one.
 - **`MTC0` has no store delay**, with one exception: setting `SR.CU2` (bit 30) is
-  delayed, *"cop2 isn't actually enabled until after 2 clock cycles or so."*
+  delayed, and psx-spx puts the lag before COP2 is really enabled at roughly two clock
+  cycles.
 
 ### The debug registers are real scratch storage `[DOC]`
 
 Games use them as hiding places, so they must be fully readable and writable:
 
 - **Legacy of Kain: Soul Reaver** (and probably others) stores LibCrypt
-  copy-protection values in the debug registers, *"just as a 'hidden' location for
-  storing data, not for actual debugging purposes."*
+  copy-protection values in the debug registers; psx-spx notes they serve purely as
+  an out-of-the-way place to keep data, not for debugging.
 - Cheat devices use COP0 execute breakpoints as boot hooks (`BPC = BFC06xxxh` on
   older firmware, `BPC = 80030000h` on later; the Xplorer has a cheat code type built
   on them).
@@ -98,7 +95,7 @@ Games use them as hiding places, so they must be fully readable and writable:
 | 21 | **TS** | TLB Shutdown | No TLB. On IDT no-TLB parts this is **set by reset** and is **read-only**. `[?]` PSX value unverified |
 | **22** | **BEV** | Boot Exception Vectors (0 = RAM/KSEG0, 1 = ROM/KSEG1) | **Set to 1 by reset**; the BIOS clears it. §7 |
 | 23–24 |, | Not used | Read 0 |
-| 25 | **RE** | Reverse endianness in user mode only | psx-spx: *"(The bit doesn't exist in PSX ?)"* `[?]`: treat as writable and inert; do **not** implement byte swapping |
+| 25 | **RE** | Reverse endianness in user mode only | psx-spx questions whether the bit exists on the PSX at all `[?]`: treat as writable and inert; do **not** implement byte swapping |
 | 26–27 |, | Not used | Read 0 |
 | 28 | **CU0** | COP0 enable (0 = kernel mode only, 1 = kernel **and** user) | Used |
 | 29 | **CU1** | COP1 enable | No COP1 → CpU (0Bh, `CE = 1`) regardless |
@@ -122,24 +119,23 @@ Note `SR.Isc` is **not initialised by reset** `[DOC]`.
 
 ### Swc (bit 17): sources conflict
 
-- **nocash:** *"Instruction cache will act as Data cache and vice versa… (Not used by
-  PSX Kernel)."*
-- **consoledev fork, hardware-tested:** *"Hardware testing shows no observable effect
-  on PSX: IsC+SwC produces identical results to IsC alone… The PSX kernel does not
-  use this bit."* Also: *"Attempting to force the scratchpad to be executable using
-  the bit 17 'Swap cache mode' … does not work, and a bus error will still occur."*
+- **nocash:** gives the generic MIPS meaning, the instruction and data caches trade
+  roles, and notes the PSX kernel does not use the bit.
+- **consoledev fork, hardware-tested:** reports no observable effect on the PSX;
+  `IsC` together with `SwC` behaves exactly like `IsC` alone, and the kernel never
+  sets it. It also reports that setting bit 17 does not make the scratchpad
+  executable: instruction fetches from it still raise a bus error.
 
 **Implement `SwC` as a writable, inert bit.** The generic MIPS meaning does not apply
 because the PSX's d-cache is wired as the scratchpad.
 
 ### SR write timing `[DOC]` `[?]`
 
-nocash only, the fork dropped this paragraph, and it is single-sourced:
-
-> "Changing SR.bit0 from 0-to-1 won't trigger any IRQ until after executing the next
-> opcode. On the other hand, changing SR.bit8-15 from 0-to-1 can immediately trigger
-> IRQs (if SR.bit0 was already set). Another special case is the RFE opcode, which
-> will also immediately trigger IRQs when changing SR.bit0 from 0-to-1."
+nocash only, the fork dropped this paragraph, and it is single-sourced. nocash
+PSX-SPX (COP0 Status Register) reports that raising `SR.bit0` (`IEc`) from 0 to 1
+with `MTC0` cannot trigger an IRQ until the next instruction has executed; raising
+any of `SR.bit8..15` from 0 to 1 can trigger one at once, provided `SR.bit0` is
+already set; and `RFE` raising `SR.bit0` from 0 to 1 also triggers at once.
 
 So an `MTC0` that sets `IEc` gives one instruction of grace; one that sets an `IM`
 bit does not; `RFE` does not.
@@ -166,19 +162,22 @@ software cannot set `ExcCode` or `IP2`.
 | 30 | **BT** | **Branch Taken**: meaningful only when `BD = 1`; set if the branch is/was to be taken (or is an unconditional jump) | No |
 | **31** | **BD** | **Branch Delay**: set when `EPC` points at the *branch* rather than at the faulting delay-slot instruction | No |
 
-**`Cause.IP` is live state, not exception state.** IDT: *"it doesn't indicate what
-happened when the exception took place, but rather shows what is happening now."* So
+**`Cause.IP` is live state, not exception state.** The IDT R30xx manual (Ch. 3)
+stresses that these bits reflect the interrupt inputs as they are now, not as they
+were when the exception was taken. So
 `IP2` is still set while the handler reads `Cause`, and stays set until the handler
 acknowledges `I_STAT`. A handler that `RFE`s before acking re-enters immediately.
 
 **`CE` (bits 28–29).** `[?]` The fork and IDT describe it as set only on CpU
 exceptions, from the offending instruction's coprocessor number. nocash describes it
-more literally as *"Opcode Bit26-27 (aka coprocessor number in case of COP opcodes)"*,
-which hints it may latch unconditionally. Untested. **Standard practice: write
+more literally as a copy of opcode bits 26..27, which are the coprocessor number
+only when the opcode is a COP instruction, and that hints it may latch
+unconditionally. Untested. **Standard practice: write
 `CE = (opcode >> 26) & 3` only on CpU.**
 
-**`BT` (bit 30).** nocash calls it *"Undoc: When BD=1, Branch condition (0=False)"*;
-the fork gives it the `BT` name and the same substance. IDT documents bit 30 as
+**`BT` (bit 30).** nocash lists it as undocumented: with `BD = 1` it holds the branch
+condition, 0 meaning not taken. The fork gives it the `BT` name and the same
+substance. IDT documents bit 30 as
 reserved-zero on stock R3000A. No known software depends on it.
 
 ---
@@ -205,10 +204,11 @@ confirms the core is not an IDT part.
 
 ## 5. The debug / breakpoint block
 
-Provenance `[DOC]`: *"'Normal' R30xx CPUs like IDT's R3041 and R3051 don't have
-similar debug registers, however they are described in LSI's 'L64360' datasheet,
-chapter 14, and in their LR33300/LR33310 datasheet, chapter 4."* Neither LSI document
-is freely reachable, which is why several details below are `[?]`.
+Provenance `[DOC]`: psx-spx (COP0 Debug Registers) points out that stock R30xx parts
+such as IDT's R3041 and R3051 have no equivalent registers, and that the
+documentation for them is LSI's L64360 datasheet (ch. 14) and LR33300/LR33310
+datasheet (ch. 4). Neither LSI document is freely reachable, which is why several
+details below are `[?]`.
 
 ### 5.1 cop0r7, DCIC
 
@@ -227,14 +227,14 @@ derived from black-box testing. Both are given.
 | 12–13 | Jump Redirection (0 = disable, 1–3 = enable) | §5.2 | R/W |
 | 14–15 | **Unknown** `[?]` | Unknown in both sources | R/W |
 | 16–22 |, | Not used, always zero | R |
-| 23 | **DE**: Debug Enable | Master enable for bits 24–31 (nocash: "Super-Master Enable 1") | R/W |
+| 23 | **DE**: Debug Enable | Master enable for bits 24–31 (nocash names it a top-level master enable) | R/W |
 | 24 | **PCE**: Program Counter Breakpoint Enable | uses BPC + BPCM | R/W |
 | 25 | **DAE**: Data Address Breakpoint Enable | uses BDA + BDAM | R/W |
 | 26 | **DR**: Data Read Enable | break on read, when bit 25 set | R/W |
 | 27 | **DW**: Data Write Enable | break on write, when bit 25 set | R/W |
 | 28 | **TE**: Trace Enable | break on any branch/jump/call | R/W |
-| 29 | **KD**: Kernel Debug Enable | break in kernel mode (nocash read it as "master enable for bit 28 and/or exec-break at ≥ 80000000h") | R/W |
-| 30 | **UD**: User Debug Enable | break in user mode (nocash: "master enable for bits 24–27") | R/W |
+| 29 | **KD**: Kernel Debug Enable | break in kernel mode (nocash read it as the enable for bit 28 and/or for execute breaks at ≥ `80000000h`) | R/W |
+| 30 | **UD**: User Debug Enable | break in user mode (nocash read it as the enable for bits 24–27) | R/W |
 | 31 | **TR**: Trap Enable | **0 = only set the status bits; 1 = jump to the debug vector** | R/W |
 
 `[?]` The gating hierarchy of DE/KD/UD/TR is the least certain part of this file.
@@ -273,41 +273,39 @@ stash junk in these registers (§1, Soul Reaver) will break.
 
 ### The break vector, and how to tell it from the BREAK opcode `[DOC]`
 
-> "When a breakpoint address match occurs the PSX jumps to **80000040h** (i.e. unlike
-> normal exceptions, not to 80000080h). The Excode value in the CAUSE register is set
-> to 09h (same as BREAK opcode), and EPC contains the return address, as usual. One of
-> the first things to be done in the exception handler is to disable breakpoints
-> (e.g. if 'trace' break is enabled, then it must be disabled BEFORE jumping from
-> 80000040h to the actual exception handler)."
+psx-spx (COP0 Debug Registers): a breakpoint match vectors to **`80000040h`**, not to
+the normal `80000080h`. `Cause.ExcCode` is set to `09h`, the same code the `BREAK`
+opcode produces, and `EPC` holds the return address as for any exception. The
+handler must disable breakpoints early; in particular an enabled trace break has to
+be turned off before the code at `80000040h` jumps on to the real handler, or the
+jump itself will trip it.
 
-> "the BREAK **opcode** … uses the same Excode value (09h) in CAUSE register. However,
-> the BREAK opcode jumps to the **normal** exception handler at 80000080h (not
-> 80000040h)."
+The same section notes that the `BREAK` **opcode** reports the same `ExcCode`
+(`09h`) but goes to the **normal** handler at `80000080h`, not to `80000040h`.
 
-Same `ExcCode`, different vectors. Getting this backwards is a frequent emulator bug.
+Same `ExcCode`, different vectors. Getting this backwards is an easy implementation
+mistake.
 
 ### 5.2 DCIC bits 12–13, "jump redirection" `[DOC]`
 
-> "If one or both of these bits are nonzero, then the PSX seems to check for the
-> following opcode sequence: `mov rx,[mem]` / one or more opcodes that do not change
-> rx / `jmp/call rx`. If it does sense that sequence, then it sets PC=[00000000h]
-> (i.e. jumps to the word loaded from address 0), but does not store any useful
-> information in any cop0 registers, namely it does not store the return address in
-> EPC… So far the feature seems to be more or less unusable…?"
+nocash PSX-SPX (COP0 Debug Registers) reports, from black-box testing, that with
+either bit set the CPU appears to watch for a load into a register `rx`, followed by
+one or more instructions that leave `rx` alone, followed by a jump or call through
+`rx`. On detecting that pattern it sets `PC` to the word stored at address
+`00000000h`, and records nothing useful in COP0; in particular `EPC` does not get the
+return address. nocash judges the feature practically unusable.
 
-Emulators universally ignore this; nothing sets bits 12–13 in practice.
+Nothing sets bits 12–13 in practice, and it is safe to ignore them.
 
 ### 5.3 cop0r6, TAR / JUMPDEST, sources conflict
 
-- **nocash (older, black-box):** *"a rather strange totally useless register. After
-  certain exceptions, the CPU does memorize a jump destination address… Once when it
-  has memorized an address, the register becomes locked… Exceptions that do unlock the
-  register are Reset and Interrupts (cause.bit10). Exceptions that do NOT unlock the
-  register are syscall/break opcodes, and software generated interrupts."*
-- **consoledev fork (newer, mechanistic):** *"When an exception occurs in the delay
-  slot of a jump or branch (cop0r13.31=1), and the branch is to be taken (or it's an
-  unconditional jump) (cop0r13.30=1), this register is updated to contain the
-  destination address of the jump or branch."*
+- **nocash (older, black-box):** describes it as an odd register of no apparent use.
+  Some exceptions make the CPU record a jump destination in it, after which the
+  register is locked. Reset and hardware interrupts (`Cause` bit 10) unlock it;
+  `SYSCALL`/`BREAK` and software interrupts do not.
+- **consoledev fork (newer, mechanistic):** when an exception hits the delay slot of
+  a jump or branch (`Cause` bit 31 set) and the branch is taken or unconditional
+  (`Cause` bit 30 set), `TAR` is loaded with that jump or branch's destination.
 
 These are not really contradictory: the fork's rule *produces* the sticky,
 random-looking behaviour nocash observed, and explains the lock/unlock pattern
@@ -317,11 +315,12 @@ known game reads it.
 
 ### 5.4 cop0r8, BadVaddr `[DOC]`
 
-> "BadVaddr is updated **ONLY** by Address errors (Excode 04h and 05h), all other
-> exceptions (including bus errors) leave BadVaddr unchanged."
+psx-spx (COP0 Register Summary): `BadVaddr` is written **only** by address errors
+(ExcCode `04h` and `05h`); every other exception, bus errors included, leaves it as
+it was.
 
-IDT is even stronger: *"After any other exception this register is undefined. Note in
-particular that it is not set after a bus error."*
+The IDT R30xx manual (Ch. 3) is stronger: after any other exception the register's
+contents are undefined, and a bus error specifically does not set it.
 
 ---
 
@@ -403,11 +402,11 @@ on_exception(excode, faulting_pc, in_delay_slot, branch_taken, branch_target):
     PC = vector(excode, SR.BEV)
 ```
 
-IDT's step list, verbatim: *"1) sets up EPC to point to the restart location. 2) the
-pre-existing user-mode and interrupt-enable flags in SR are saved by pushing the
-3-entry stack inside SR, and changing to kernel mode with interrupts disabled.
-3) Cause is setup so that software can see the reason for the exception. On address
-exceptions BadVaddr is also set. 4) transfers control to the exception entry point."*
+The IDT R30xx manual (Ch. 4) gives the same sequence in four steps: `EPC` is set to
+the restart address; the current user-mode and interrupt-enable bits are pushed
+onto the 3-entry stack in `SR`, leaving the CPU in kernel mode with interrupts
+disabled; `Cause` is filled in with the reason, and `BadVaddr` too for address
+errors; control passes to the exception vector.
 
 ### Vectors
 
@@ -423,15 +422,15 @@ exceptions BadVaddr is also set. 4) transfers control to the exception entry poi
   it is directly hardware-confirmed. `[?]` The BEV = 1 form `BFC00140h` is a table
   entry only, no source states it was tested, and the BIOS contains no BEV = 1
   vectors, so nothing exercises it.
-- **"The PSX uses only the BEV=0 vectors (aside from the reset vector, the PSX BIOS
-  ROM doesn't contain any of the BEV=1 vectors)."** `[DOC]`
+- **The PSX uses only the BEV = 0 vectors.** Apart from the reset vector, the BIOS
+  ROM contains none of the BEV = 1 vectors (psx-spx, COP0 Exception Vectors). `[DOC]`
 - The actual handler at `80000080h` is four opcodes (`LUI+ADDIU+JMP+NOP` on retail
   BIOS, `LUI+ORI+JMP+NOP` on some debug BIOSes) that jumps to the real kernel
   handler; the same four are mirrored at physical `00000080h`.
-- Cache note `[DOC]`: *"Changing vectors at 800000xxh (kseg0) seems to be
-  automatically reflected to the instruction cache without needing to flush cache (at
-  least it worked SOMETIMES in my test proggy… but NOT always?)… whilst changing
-  mirrors at 000000xxh (kuseg) seems to require to flush cache."*
+- Cache note `[DOC]` `[?]`: psx-spx observes that rewriting the vectors through
+  their KSEG0 addresses (`800000xxh`) appeared to reach the instruction cache without
+  a flush, though only in some of its tests and not reliably, while rewriting the
+  KUSEG mirror (`000000xxh`) appeared to need a cache flush.
 
 ---
 
@@ -461,8 +460,8 @@ held and bits 2–3 now hold the same values. Two consecutive `RFE`s leave the w
   rfe               ; delay slot
   ```
 
-  IDT: *"the most secure way of returning to user mode from an exception is to return
-  with a `jr` instruction which has the `rfe` in its delay slot."*
+  The IDT R30xx manual (Ch. 4) recommends exactly this pairing, `jr` with `rfe` in
+  its delay slot, as the safest way back to user mode.
 - **`RFE` re-enabling `IEc` takes effect immediately** for interrupt purposes -
   unlike an `MTC0` that sets `IEc`, which has one instruction of grace (§2). `[?]`
   single-sourced.
@@ -495,16 +494,16 @@ held and bits 2–3 now hold the same values. Two consecutive `RFE`s leave the w
 
 ### 9.2 The chain `[DOC]`
 
-> "The interrupt request bits in I_STAT are **edge-triggered**, i.e. they get set ONLY
-> if the corresponding interrupt source changes from 'false to true'. If one or more
-> interrupts are requested and enabled, i.e. if `(I_STAT AND I_MASK) = nonzero`, then
-> cop0r13.bit10 gets set, and when cop0r12.bit10 and cop0r12.bit0 are set, too, then
-> the interrupt gets executed."
+psx-spx (Interrupts):
 
-> "cop0r13.bit10 is **NOT a latch**, i.e. it gets automatically cleared as soon as
-> `(I_STAT AND I_MASK) = zero`, so there's no need to do an acknowledge at the cop0
-> side. COP0 additionally has two software interrupt bits, cop0r13.bit8-9, which … are
-> read/write-able latches."
+- The request bits in `I_STAT` are **edge-triggered**: a bit is set only when its
+  source goes from false to true.
+- Whenever `(I_STAT & I_MASK) != 0`, `cop0r13.bit10` is set; the interrupt is taken
+  when `cop0r12.bit10` and `cop0r12.bit0` are also set.
+- `cop0r13.bit10` is **not a latch**. It clears by itself once
+  `(I_STAT & I_MASK) == 0`, so nothing needs acknowledging on the COP0 side.
+- The two software interrupt bits, `cop0r13.bit8..9`, are ordinary read/write
+  latches.
 
 ### 9.3 The exact take-interrupt condition
 
@@ -519,18 +518,18 @@ Things that trip people up:
   interrupt is taken.
 - Both `SR.Im2` **and** `SR.IEc` must be set for hardware IRQs; `SR.Im0`/`Im1` +
   `IEc` for the software ones.
-- **Ack ordering is mandatory**, because `I_STAT` is edge-triggered: *"First,
-  acknowledge I_STAT (e.g. I_STAT.bit7=0). Then, acknowledge corresponding I/O port
-  (e.g. JOY_CTRL.bit4=1)."* The other order can permanently lose an IRQ source, after
+- **Ack ordering is mandatory**, because `I_STAT` is edge-triggered. psx-spx
+  prescribes clearing the `I_STAT` bit first (for example `I_STAT.bit7 = 0`) and only
+  then acknowledging the device (for example `JOY_CTRL.bit4 = 1`). The other order can permanently lose an IRQ source, after
   the device-side ack, a fresh device IRQ within one clock produces no new edge into
   `I_STAT`. Most IRQs (all except 0, 4, 5, 6) need a device-side ack too.
 - **Software interrupts** (`Cause` bits 8–9) produce `ExcCode = 00h (Int)`,
   indistinguishable from a hardware IRQ except by inspecting `Cause.IP`. They are
   latches and the handler must clear them manually before `RFE`. **Jackie Chan
   Stuntmaster** and the **MTV Sports** titles use them.
-- IDT timing caveat for a cycle-accurate core: *"some of the interrupt inputs to R30xx
-  family CPUs are resynchronised internally… the interrupt will be detected only on
-  the rising edge of the second clock after the interrupt becomes active."*
+- IDT timing caveat for a cycle-accurate core: the R30xx resynchronises some of its
+  interrupt inputs internally, so an interrupt is only recognised on the rising edge
+  of the second clock after the input goes active (IDT R30xx manual, Ch. 5).
 
 ---
 
@@ -541,19 +540,18 @@ Things that trip people up:
 `EPC = branch_address` (= `faulting_pc − 4`), `Cause.BD = 1`, `Cause.BT =
 branch_taken`, `TAR = branch_target` if taken.
 
-**Do not** point `EPC` at the delay slot: *"if the CPU returned from the exception to
-the branch delay instruction itself the branch would not be taken and the exception
-would have broken the interrupted program."* (IDT)
+**Do not** point `EPC` at the delay slot: returning straight to the delay-slot
+instruction would skip the branch, and the exception would then have corrupted the
+interrupted program (IDT R30xx manual, Ch. 4).
 
 A handler wanting to inspect the faulting instruction reads `[EPC+4]` when `BD = 1`.
 
 ### 10.2 Interrupt in a delay slot re-executes the branch
 
-This is intended and correct `[DOC]`:
-
-> "Interrupts should always return to EPC+0, no matter of the BD flag. That way, if
-> BD=1, the branch gets executed again, that's required because EPC stores only the
-> current program counter, but not additionally the branch destination address."
+This is intended and correct `[DOC]`. psx-spx (COP0 Exception Handling): an
+interrupt handler should always return to `EPC+0` whatever `BD` says. With `BD = 1`
+that re-executes the branch, which is required because `EPC` holds a single address
+and the branch destination is not saved anywhere.
 
 So the branch (including `JAL`/`BLTZAL`/`BGEZAL`, which harmlessly rewrite `$ra` with
 the same value) and its delay slot both re-execute. The delay-slot instruction was
@@ -581,10 +579,10 @@ recomputes `Cause.BD`/`BT`, overwrites `EPC`, and pushes the SR stack again.
   sets `BD = 0` and destroys the outer `BD = 1` information, the outer context is
   unrecoverable unless the handler saved `EPC`/`SR`/`Cause` first.
 - The 3-deep SR stack buys exactly **one** free nesting level; after two pushes
-  without a save, the original `{KUo, IEo}` is gone. IDT: *"This provides a chance of
-  recovering cleanly from an exception occurring so early in an exception handling
-  routine that the first exception has not yet saved SR. The circumstances in which
-  this can be done are limited."*
+  without a save, the original `{KUo, IEo}` is gone. The IDT R30xx manual (Ch. 3)
+  presents the third level as a way to survive an exception that arrives before the
+  handler for the first one has saved `SR`, and cautions that this only works in
+  limited circumstances.
 - Entry forces `IEc = 0`, so you cannot get an interrupt inside an interrupt without
   the handler explicitly re-enabling, but `AdEL`/`AdES`/`RI`/`Ovf`/`Sys`/`Bp` in the
   handler are not maskable and will clobber `EPC`.
@@ -607,8 +605,8 @@ slot.
 - **`MTC0` to `Cause` must mask to bits 8–9.**
 - **`EPC`, `BadVaddr`, `PRID`, `TAR` are read-only.** (The BIOS init code writes 0 to
   cop0r6 anyway; the write is ignored.)
-- **`SR.CU2` then an immediate GTE op**: ~2 cycles before COP2 is really enabled. Most
-  emulators ignore this; no known game depends on it.
-- **BIOS bug worth knowing:** *"Early BIOS versions did try to examine a copy of
-  cop0r13 in r2 register, but did forget to move cop0r13 to r2 (so they examined
-  garbage)"*, the same defect behind the missing GTE fixup in old BIOSes.
+- **`SR.CU2` then an immediate GTE op**: ~2 cycles before COP2 is really enabled. No known
+  game depends on it, so ignoring it is safe.
+- **BIOS bug worth knowing:** psx-spx notes that early BIOS versions test a copy of
+  cop0r13 in `r2` without ever having moved cop0r13 into `r2`, so they test garbage.
+  This is the same defect behind the missing GTE fixup in old BIOSes.

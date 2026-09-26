@@ -104,7 +104,7 @@ an open question. Two places where the difference shows:
   list runs inside the store that starts it, so a loop has to be cut. Metal
   Slug X builds one on the way into a stage (318 nodes, then three pointing in a
   circle); walked to the old million-node bound it was 1.6 million GP0 commands,
-  150 seconds inside one frame, and on the owner's phone a game that froze and
+  150 seconds inside one frame, and on a phone a game that froze and
   could not be unloaded. Stopping at the first revisit draws every node once and
   finishes the channel. What this cannot give is the hardware's timing: a game
   that polled for the channel still being busy would see it done. The real fix

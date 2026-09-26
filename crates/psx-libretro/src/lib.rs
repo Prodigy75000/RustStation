@@ -157,9 +157,8 @@ const BIOS_CANDIDATES: &[&str] = &[
 
 /// The BIOS names for each region, best first. A console refuses a disc from
 /// another region and drops to its own shell, so a Japanese BIOS picked for an
-/// American disc does exactly that: the owner met it on 2026-09-24 with
-/// scph5500.bin alongside an American BIOS, and every game went to the BIOS
-/// screen.
+/// American disc does exactly that: with scph5500.bin alongside an American
+/// BIOS, every game went to the BIOS screen (found on a phone, 2026-09-24).
 const BIOS_AMERICA: &[&str] = &["scph5501.bin", "scph7001.bin", "scph1001.bin"];
 const BIOS_EUROPE: &[&str] = &["scph5502.bin", "scph7002.bin", "scph1002.bin"];
 const BIOS_JAPAN: &[&str] = &["scph5500.bin", "scph1000.bin"];
@@ -904,7 +903,8 @@ pub extern "C" fn retro_cheat_reset() {}
 pub unsafe extern "C" fn retro_cheat_set(_index: c_uint, _enabled: bool, _code: *const c_char) {}
 
 /// The netplay handshake's state-identity token, as a C string. Not part of the
-/// libretro ABI. The Trophy Hub host looks it up by symbol.
+/// libretro ABI: a frontend that wants it looks it up by symbol, and peers
+/// refuse to play together unless theirs are equal.
 #[no_mangle]
 pub unsafe extern "C" fn ruststation_state_token() -> *const c_char {
     // Leaked once, deliberately: the pointer has to outlive the call and the
@@ -928,7 +928,7 @@ pub unsafe extern "C" fn ruststation_state_token() -> *const c_char {
 mod tests {
     use super::*;
 
-    /// The case the owner hit: a Japanese BIOS and an American one side by
+    /// The case met on a phone: a Japanese BIOS and an American one side by
     /// side, and an American disc. The old fixed order found scph5500 first.
     #[test]
     fn an_american_disc_prefers_an_american_bios_over_a_japanese_one() {

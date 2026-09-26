@@ -4,12 +4,12 @@
 //! Multi-disc games: `.m3u` playlists and the libretro disk-control interface.
 //!
 //! A playlist is one disc image per line, resolved against the playlist's own
-//! directory; blank lines and `#` comments are skipped. The frontends in this
-//! family write exactly that: TrophyHubAndroid stages every disc flat beside a
-//! synthesised `current_rom.m3u` and lists them by bare name.
+//! directory; blank lines and `#` comments are skipped. Frontends that
+//! synthesise one write exactly that, every disc staged flat beside the
+//! playlist and listed by bare name.
 //!
 //! A swap is the frontend opening the lid, choosing an image and closing it.
-//! The TrophyHub host does all three in one instant, with no frame between, so
+//! Some frontends do all three in one instant, with no frame between, so
 //! the drive has to make the change visible by itself. It does: the shell-open
 //! status bit stays latched until software next reads the status, which is how
 //! a game waiting on "insert disc 2" sees that something happened. See

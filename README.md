@@ -5,208 +5,150 @@ Copyright (C) 2026 Prodigy75000
 
 # RustStation
 
-A clean-room **Sony PlayStation (PS1)** emulator core, written from scratch in
-Rust: accuracy-first, with **byte-identical, platform-agnostic save states** as a
-hard design constraint (for cross-engine netplay and rollback). FamiRust (NES),
-SuperRust (SNES), UltraRust (N64), MegaRust (Mega Drive) and PocketRust (GB/GBC)
-are sibling cores built the same way.
+A clean-room Sony PlayStation (PS1) emulator core written from scratch in Rust.
+No C, no bindings, and no lifted code, just the hardware modelled from the docs.
+It boots commercial games with or without a BIOS file, plays them at full speed
+on a phone, and its save states are byte-identical on every machine, which is
+what makes netplay between a PC and a phone sound.
 
-It is early. Read "Where it actually is" before "Design goals".
+## Status
 
-## Design goals, in priority order
+| Component | State |
+|-----------|-------|
+| CPU (MIPS R3000A) | ✅ full user instruction set, COP0, both delay slots, every exception the console raises, `LWL`/`LWR`/`SWL`/`SWR`, the hardware's divide-by-zero results, cache isolation. ps1-tests `cpu/cop` 17/17 |
+| Instruction timing | ✅ the I-cache (tags, line fills, `FlushCache`), load costs by region from the hardware access-time log, multiply/divide and GTE interlocks (`docs/notes/TIMING.md`). Not yet: the write queue and DMA bus time |
+| GTE | ✅ all 15 commands, the register file and the divider. `gte/test-all` 1150/1150, and `gte-fuzz` byte-identical to the hardware log over all 150 625 lines |
+| GPU | ✅ flat, Gouraud and textured polygons, rectangles, lines, semi-transparency, dithering, the mask bit, VRAM transfers, 4/8/15-bit textures and the texture window, 15- and 24-bit display, display size from GP1. Three of the suite's image tests pixel-exact |
+| MDEC | ✅ run-length decoding, the IDCT, colour and monochrome macroblocks, all four output depths. Full-motion video plays |
+| SPU | ✅ all 24 voices: ADPCM, Gaussian interpolation, pitch modulation, noise, ADSR, volume sweeps, capture buffers, the SPU interrupt. Not yet: reverb, so everything is dry |
+| CD-ROM | ✅ the controller, seeks, data reads through the FIFO and DMA, CD-DA with reports, XA-ADPCM decoded and resampled in the drive, the volume matrix, the lid for disc swaps |
+| Disc images | ✅ BIN/CUE (tracks, pregaps, indices) and `.m3u` playlists for multi-disc games. Not yet: CHD |
+| DMA, timers, interrupts | ✅ every DMA channel with something behind it, the three root counters, video timing, the interrupt controller |
+| Controllers | ✅ a DualShock in each port: digital and analog modes, config mode, rumble mapping |
+| Memory cards | ✅ slot 1, exposed as libretro save RAM so the frontend persists it. Card contents stay out of save states, so loading one never takes back a save |
+| HLE kernel | ✅ boots games with no BIOS file: the kernel's A, B and C functions, exceptions, events, threads, pads, memory card files and the CD file system, written from psx-spx (`docs/notes/HLE.md`) |
+| Save states | ✅ fixed size, little-endian, versioned; byte-identical on x86-64 and arm64 (`docs/SAVESTATE.md`) |
+| Netplay | ✅ proven deterministic across machines: the same presses give the same state, video and audio on a Windows PC and two arm64 Android devices, and a peer that loads its host's state mid-game stays in step (`docs/TESTS.md`, "Netplay") |
+| libretro | ✅ content as disc image, playlist or PSX-EXE, both pads with input descriptors, disk control, save states, save RAM, system RAM for RetroAchievements |
 
-1. **Correctness / accuracy.** A MIPS R3000A (LSI CW33300) interpreter with both
-   pipeline artifacts software can see: the branch delay slot and the load delay
-   slot. The CPU is ground against a conformance suite before it is allowed to
-   drive anything else, in the same way the SNES 65C816 and the GBA ARM7 were.
-2. **Byte-identical, deterministic save states**, a requirement, not a feature.
-   Cross-platform cross-engine netplay and rollback are only sound when two
-   machines in the same logical state serialize to the *same bytes* on every
-   platform, ABI and compiler. See
-   [`crates/psx-core/src/save.rs`](crates/psx-core/src/save.rs): every mutable
-   field is serialized little-endian in a fixed order; no `usize`, pointer,
-   float, or hash-ordering ever enters a state; load is the strict inverse and
-   *refuses* truncated, malformed, or over-long buffers. The contract is
-   `TrophyHubResources/specs/play/IN_HOUSE_CORE_SAVESTATE_SPEC.md`, and FamiRust
-   is its reference implementation.
-3. **Clean-room.** Built from hardware documentation only, distilled into
-   [`docs/notes/`](docs/notes/). No third-party emulator source is consulted.
-   Measured reference *data* may be used as data, and is cited where it is.
-   (There is an unrelated open-source Rust PS1 emulator called *Rustation*. It
-   is not consulted either; the name similarity is a coincidence worth naming
-   once so nobody assumes otherwise.)
+Compatibility: every disc in a 34-disc test library boots and plays its own
+content on both the real BIOS and the HLE kernel, and twelve commercial games
+have been played on a phone at full speed with no BIOS file, among them Final
+Fantasy VIII, Metal Gear Solid, Tekken 3, Crash Team Racing, Resident Evil 3,
+Spyro the Dragon, Tony Hawk's Pro Skater 2 and Grand Theft Auto 2. The running
+record, including what did not work and why, is [`docs/TESTS.md`](docs/TESTS.md).
 
-## Where it actually is
+## How it is timed
 
-Working, and confirmed against real hardware behaviour rather than asserted:
+A master clock and a run-until-next-event scheduler drive the video timing, the
+root counters, the CD-ROM, the SPU and DMA; the CPU never runs past the next
+pending event. Each instruction costs what it costs on the console: fetches go
+through an I-cache tag model, loads pay by region and width, and reads of the
+multiplier or the GTE wait until the result is ready. A game's own vsync wait
+loop is recognised and skipped in one step, charged exactly what the loop would
+have cost, so idle frames are cheap on a phone without changing the machine.
 
-- **The BIOS kernel boots** and prints its banner, on every supplied BIOS image,
-  with **zero unmapped bus accesses**.
-- **`cpu/cop` from the ps1-tests suite passes 17/17.** The rest of the CPU
-  baseline, honestly graded, is in [`docs/TESTS.md`](docs/TESTS.md).
-- **CPU**: the full R3000A user instruction set, COP0, both delay slots, all
-  eight exception causes the console can raise, `LWL`/`LWR`/`SWL`/`SWR`, the
-  hardware's fixed divide-by-zero results, and Status `Isc` cache isolation.
-- **Memory map**: 2 MB RAM with its KUSEG mirrors, 1 KB scratchpad, 512 KB BIOS,
-  and a decoded I/O window whose ports are stubbed and *counted*.
-- **Timing**: a master clock with a run-until-next-event scheduler, the
-  interrupt controller, video timing (scanlines, HBlank, VBlank) and the three
-  root counters. Short-delay timer measurements match the captured hardware log
-  exactly; per-frame ones are within 0.2%. Instruction cycle costs are the
-  remaining gap, and are blocked on the I-cache.
-- **GPU**: VRAM, the GP0/GP1 ports, flat and Gouraud triangles and quads,
-  rectangles, lines, semi-transparency, dithering, the mask bit, all four VRAM
-  transfers, and **textures** (4/8/15-bit, CLUTs, the texture window, the
-  rectangle flips). Three of the suite's image tests are **pixel-exact**
-  against their references (`clipping`, `rectangles`, `texture-overflow`) and
-  seven of eleven are within 1.3%. See [`docs/TESTS.md`](docs/TESTS.md).
-- **DMA**: channel 2 (block and linked-list) and channel 6 (ordering table),
-  which is what makes the GPU reachable at all.
-- **GTE**: all 15 commands, the register file and the hardware divider.
-  **`gte/test-all` passes 1150 of 1150, and `gte-fuzz` matches the hardware log
-  byte for byte across all 150 625 lines** of randomised arguments. Nine
-  separate hardware behaviours had to be got right to reach that, and each is
-  pinned by a unit test; the walk is in [`docs/TESTS.md`](docs/TESTS.md).
-- **The BIOS reaches its own main menu**, with the memory card and CD player
-  entries and the animated background, which it could not do before the CD-ROM
-  controller existed. `cargo run --release --bin shot -- <bios.bin>
-  --steps 300000000`. One rendering fault is visible and recorded in
-  [`docs/notes/GPU.md`](docs/notes/GPU.md).
-- **Commercial games render their own content, all thirty-one on hand.** Tekken 3
-  draws a fight in progress, two textured and lit characters with cast shadows on
-  a temple stage. Spyro, Tomb Raider, Ace Combat 2, Crash Bandicoot, Harry Potter
-  and Need for Speed III reach their title screens and menus. Across the whole
-  library there is not one unmapped access, one transfer on an unimplemented DMA
-  channel, or one refused CD-ROM command. See [`docs/TESTS.md`](docs/TESTS.md)
-  for how far each disc gets, and for what that does and does not mean.
-- **MDEC**, the macroblock decoder: the quantisation and IDCT tables, the
-  run-length format, the IDCT, colour and monochrome macroblocks, all four
-  output depths, and both DMA channels. **Full-motion video plays**: twenty-four
-  of the thirty-one discs decode their intro, Tomb Raider's through to its title
-  screen. See [`docs/notes/MDEC.md`](docs/notes/MDEC.md).
-- **SPU, and games make sound.** All 24 voices: ADPCM decoding with its five
-  prediction filters, the pitch counter with 4-point Gaussian interpolation,
-  pitch modulation, the noise generator, the ADSR envelope and the volume
-  sweeps, key-on/key-off and ENDX, the capture buffers, and the SPU interrupt
-  from a voice, a transfer or a capture write. Output is 44 100 Hz stereo
-  through libretro, and `shot --wav` records it with peak, RMS and mean per
-  channel. Crash Bandicoot and Crash Team Racing play their music through
-  their title screens. See [`docs/notes/SPU.md`](docs/notes/SPU.md).
-- **CD audio**: CD-DA through `Play`, with reports, auto-pause and the end of
-  the disc, and XA-ADPCM decoded in the drive (4- and 8-bit, mono and stereo,
-  both rates) and resampled to 44 100 Hz with the documented zigzag filter.
-  Filtering by file and channel, the drive's volume matrix, and Mute. Tekken 3's
-  and Mega Man X5's intro videos, silent before, now have their sound.
-- **CD-ROM**: the controller, seeking, and reads that deliver a sector at a time
-  through the data FIFO and DMA channel 3. Real games load through it: several
-  read eight thousand sectors in the survey. **With a synthetic disc the BIOS
-  also runs its whole recognition sequence and draws the PlayStation licence
-  screen**, with the text on it read off the disc. Reproduce that with `python
-  tools/fakedisc.py out/fakedisc`.
-- **Disc images**: BIN/CUE, with the cue sheet's tracks, pregaps and indices.
-  Raw 2352-byte sectors throughout, because a 2048-byte image has no sector
-  header for `GetlocL` to report and no room for CD-DA. CHD would be a second
-  implementation of the same interface.
-- **Controllers**: SIO0, with a digital pad in each of the two ports. Verified
-  end to end against the suite's `input/pad`, which prints the buttons it sees:
-  holding three prints those three and nothing else.
-- **BIOS TTY capture** through the A/B call gates, so a test binary's own verdict
-  is readable without a screen.
-- **PSX-EXE sideload** at the BIOS shell hand-over point.
-- **An HLE kernel**, for booting without a BIOS file: the kernel's A, B and C
-  functions, exceptions, events, threads, pads, memory card files and the
-  CD-ROM file system, written from psx-spx and kept in guest RAM where games
-  look for it. No intro and no shell. See
-  [`docs/notes/HLE.md`](docs/notes/HLE.md).
-- **Save states** meeting the in-house contract: golden-bytes, round-trip,
-  cross-instance determinism and reject tests, with the golden test's
-  sensitivity proven rather than assumed.
-- **libretro core.** A disc image or a PSX-EXE as content, both pads read from
-  the frontend's RetroPad with input descriptors published, save states, and the
-  RetroAchievements memory surface. It cross-compiles to an Android arm64
-  `.so` with `scripts/deploy-android-debug.sh so`. `retrohost` drives the built
-  library through the real C ABI and gets the same picture, pixel for pixel, as
-  the direct harness does.
+## Clean room
 
-Not started:
-
-- **Reverb**, so everything is dry.
-- Memory cards, CHD images, the CD-ROM's sub-channel.
-- Per-instruction cycle costs. Every instruction is one cycle and
-  multiply/divide do not stall.
-
-All five BIOS images on hand, American, European and Japanese, boot to their
-main menu. Four of the five draw colour noise where the menu's two icons belong,
-which is the oldest open graphics bug here; the fifth, SCPH-1002, draws them
-correctly, and that disagreement is the lead. Recorded in
-[`docs/TESTS.md`](docs/TESTS.md).
-
-It is still early. Every one of the thirty-one discs on hand draws its own
-content and most play their intro video, but that means title screens and menus,
-not gameplay. Sound has everything but reverb.
-No game has been driven with **changing** input, so "playable" is not a claim
-being made. Homebrew and test binaries sideloaded as PSX-EXEs also run, and draw.
-`scripts/survey.sh` runs the whole library and writes the table in
-[`docs/TESTS.md`](docs/TESTS.md).
+Built from hardware documentation only, distilled into
+[`docs/notes/`](docs/notes/) and [`docs/ref/`](docs/ref/), and from measured
+behaviour: the ps1-tests hardware logs, and the real BIOS observed as a black
+box. No other emulator's source is consulted. (There is an unrelated
+open-source Rust PS1 emulator called *Rustation*. It is not consulted either;
+the name similarity is a coincidence worth naming once.)
 
 ## Layout
 
 ```
-crates/psx-core/       the emulator: cpu, gte, gpu, sio, cdrom, disc, bus, save
-crates/psx-libretro/   the C ABI shim (cdylib)
-crates/psx-runner/     dev harnesses: psx, testrom, shot, fingerprint, retrohost
-bios/                  your BIOS dumps (gitignored)
-dumps/                 your disc images and loose binaries (gitignored)
-tests/                 vendored third-party test suites (gitignored)
-docs/notes/            distilled hardware notes, the clean-room source of truth
-docs/ref/              raw third-party reference drops (gitignored)
-docs/TESTS.md          the conformance baseline
+crates/
+  psx-core/       the emulator library: cpu, timing, gte, gpu, mdec, spu,
+                  cdrom, disc, dma, sio (pads and cards), hle, save
+    tests/        CPU semantics and timing integration tests
+  psx-libretro/   the libretro core (cdylib)
+  psx-runner/     dev harnesses: testrom, shot, retrohost, fingerprint, psx
+scripts/          library survey, Android build and deploy
+tools/            survey comparison, synthetic disc builder
+docs/             hardware notes, reference write-ups, the test log
+bios/  dumps/  tests/   your BIOS, discs and test suites (gitignored)
 ```
 
 Nothing copyrighted is committed: no BIOS, no disc image, no third-party test
 binary, no reference manual. `.gitignore` is written so none of it can land by
-accident, and only our own markdown is tracked under `docs/`.
+accident.
 
-## Running it
+## Running
 
-A BIOS you supply is the reference. See [`bios/README.md`](bios/README.md).
-Anywhere a BIOS path goes, `hle` boots the built-in kernel instead, and the
-libretro core falls back to it when the system directory has no BIOS.
+A BIOS is optional. Anywhere a BIOS path goes, `hle` boots the built-in kernel
+instead, and the libretro core uses it when the system directory has no BIOS.
+See [`bios/README.md`](bios/README.md) for the names a real one is looked for
+under.
 
-```bash
-# Boot the BIOS and see how far it gets.
-cargo run --release --bin psx -- bios/scph5501.bin --steps 5000000
+```sh
+# Boot a disc headless and write what is on screen.
+cargo run --release --bin shot -- hle --disc game.cue --steps 400000000 --out frame.png
 
-# Run a conformance binary and read its own verdict.
-cargo run --release --bin testrom -- bios/scph5501.bin tests/test-suite/cpu/cop/cop.exe
-
-# Run a whole folder of them. Three verdicts: PASS, FAIL, UNGRADED.
-cargo run --release --bin testrom -- bios/scph5501.bin --dir tests/test-suite/cpu \
-    --boot-steps 60000000 --steps 30000000
-
-# Prove save-state byte parity across two builds.
-cargo run --release --bin fingerprint -- bios/scph5501.bin --steps 1000000
-
-# Boot a disc.
-cargo run --release --bin shot -- bios/scph5501.bin --disc game.cue --steps 400000000
-
-# The same with no BIOS file, and what the game and the kernel printed.
+# The same, printing what the game and the kernel wrote to the TTY.
 cargo run --release --bin shot -- hle --disc game.cue --steps 400000000 --tty
 
-# Build the libretro core and drive it the way a frontend would. The system
-# directory must hold a BIOS under a name the core looks for (scph1001.bin and
-# friends): a dump named after its release is invisible to it.
+# Run a conformance binary and read its own verdict, or a whole folder of them.
+cargo run --release --bin testrom -- hle tests/test-suite/cpu/cop/cop.exe
+cargo run --release --bin testrom -- hle --dir tests/test-suite/cpu
+
+# Drive the built libretro core through its C ABI, the way a frontend does.
 cargo build --release -p psx-libretro
-cargo run --release --bin retrohost -- target/release/psxcore_libretro.dll system/     --content game.cue --frames 3600 --hold start --out frame.png
+cargo run --release --bin retrohost -- target/release/psxcore_libretro.dll system/ \
+    --content game.cue --frames 3600 --mash --out frame.png
 
-# The same core for an Android device, arm64.
-scripts/deploy-android-debug.sh so
-
-cargo test --workspace
+# The unit and integration tests.
+cargo test --workspace --release
 ```
 
-## Legal
+## Netplay check
 
-GPL-3.0-or-later. No BIOS, disc image, or other copyrighted material is
-distributed with this repository, and `.gitignore` is written so none can be
-committed by accident.
+`retrohost --hash-every N` prints a hash of the serialized state, and of the
+video and audio since the last line, every N frames. Run the same content and
+presses on two machines and every line must match:
+
+```sh
+retrohost <core> system/ --content game.cue --frames 7200 --mash --hash-every 60
+```
+
+`--save-at N PATH` and `--load-at N PATH` take and restore a state mid-run, the
+way a peer resyncs to its host; the run that loaded it must then match the run
+that saved it line for line.
+
+## libretro core
+
+`psx-libretro` builds one `cdylib`:
+
+| Platform | Target triple | Output file |
+|----------|---------------|-------------|
+| Linux    | host          | `libpsxcore_libretro.so` |
+| Windows  | host          | `psxcore_libretro.dll` |
+| macOS    | host          | `libpsxcore_libretro.dylib` |
+| Android arm64 | `aarch64-linux-android` | `libpsxcore_libretro.so` |
+
+Builds are release + LTO. The core has no dependencies at all beyond `std`, so
+cross-compiling only needs a linker for the target.
+
+```sh
+cargo build --release -p psx-libretro
+```
+
+For Android, point cargo at the NDK's clang for `aarch64-linux-android` in a
+`.cargo/config.toml` and link with `-Wl,-z,max-page-size=16384` so the library
+is 16 KB aligned, which the Play Store requires for API 35+. Then:
+
+```sh
+rustup target add aarch64-linux-android
+cargo build --release -p psx-libretro --target aarch64-linux-android
+# or: scripts/deploy-android-debug.sh so
+```
+
+Netplay frontends can compare `ruststation_state_token()`, an exported C string
+of core id, save format version and state size, before letting two peers play.
+
+## License
+
+GNU General Public License v3.0 or later. See [LICENSE](LICENSE). No BIOS, disc
+image or other copyrighted material is distributed with this repository.

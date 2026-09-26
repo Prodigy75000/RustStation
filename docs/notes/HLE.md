@@ -128,7 +128,7 @@ HookEntryInt) and turns off both vblank acknowledges, ChangeClearPAD(0) and
 ChangeClearRCnt(3, 0), so it gets vblank either way.
 
 **The pad buffer is status, ID, then data.** The 5Ah a pad sends after its ID
-is not stored. Storing it put every button a byte late: on the owner's phone
+is not stored. Storing it put every button a byte late: on a phone,
 Crash Bandicoot ran on HLE and took no input at all.
 
 **Unresolved exceptions go through A(40h).** An exception no chain element

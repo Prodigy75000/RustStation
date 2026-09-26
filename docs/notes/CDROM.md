@@ -143,9 +143,9 @@ it is open there is no disc as far as any command can tell (`GetID` answers
 closes the bit stays latched, reading "is or was open", until the next status
 read.
 
-That latch is what makes a swap work at all here. The TrophyHub host opens
-the lid, changes the image and closes it in one instant with no frame in
-between, so a game polling for the lid never sees it open. It sees the latched
+That latch is what makes a swap work at all here. A libretro frontend can open
+the lid, change the image and close it in one instant with no frame in
+between (the Android frontend this was tested with does), so a game polling for the lid never sees it open. It sees the latched
 bit on its next `Getstat`, which is how a game waiting for "insert disc 2"
 learns that one was. `Cdrom::open_lid` / `close_lid`; the lid is in the save
 state from format 12. Which image is in the drive is the frontend's, like the

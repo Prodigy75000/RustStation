@@ -1,9 +1,12 @@
 # Timing, scheduling and interrupts
 
-**Written from:** general knowledge, pending confirmation against the reference
-set in `../ref/`. The scanline constants and the synchronisation modes are the
-parts to check first. The arithmetic is written out below so the numbers can be
-checked rather than trusted.
+**Written from:** first drafted from general knowledge, then checked against the
+ps1-tests suite's hardware logs (the timer tests and `cpu/access-time`; see
+[`../TESTS.md`](../TESTS.md)). The instruction costs are from psx-spx ("Memory
+Map", "Memory Control", "CPU Specifications", "GTE") and that access-time log.
+Still provisional: the scanline constants and the synchronisation modes of
+timers 0 and 1 (open questions below). The arithmetic is written out so the
+numbers can be checked rather than trusted.
 
 Implemented in `crates/psx-core/src/video.rs`, `timers.rs`, `irq.rs`, and the
 scheduler in `bus.rs`.
@@ -13,11 +16,11 @@ scheduler in `bus.rs`.
 The tempting shortcut, once a GPU exists, is to run a frame's worth of CPU and
 then draw. That collapses the frame into a single phase, and it is the root of
 a whole class of bugs (raster splits landing in the wrong place, frameskip,
-shear) in a sibling core, where the fix now needs a save-state format bump and
-is still deferred as a result.
+shear) that is known in emulator cores generally, and expensive to fix late,
+because the fix changes what a save state has to carry.
 
-This core is at `format_version 2` with no states in the wild, so the bump was
-free. Doing it later would not have been.
+This core went to `format_version 2` for it with no states in the wild, so the
+bump was free. Doing it later would not have been.
 
 ## The shape
 
@@ -132,8 +135,8 @@ libretro core declares the console's own rate: 59.29 Hz NTSC, 49.76 Hz PAL
 (`Standard::frame_rate`), chosen from the disc's region at load. Until
 2026-09-25 each frontend frame was a fixed 564 480 cycles, a 60th of a second,
 against an NTSC frame of about 571 212: one frontend frame in 84 held no
-vblank, the frontend showed the same picture twice, and the owner saw Final
-Fantasy VIII's opening video hitch about once a second where Beetle PSX did not.
+vblank, the frontend showed the same picture twice, and on a phone Final
+Fantasy VIII's opening video hitched about once a second where Beetle PSX's did not.
 A PAL game repeated ten frames a second. `a_frame_is_one_vblank_to_the_next` in
 `tests/timing.rs` fails on the fixed length.
 
@@ -144,7 +147,7 @@ the video is in the other standard, a frame is instead exactly one declared
 frame of CPU time, remainder carried (`Psx::run_frame_at`): the machine and
 its sound keep real time, and only the pictures suffer, a repeat or a drop now
 and then on logos and blank screens. The first version ran vblank to vblank
-there too, and the owner heard the BIOS boot sound drag at 84% with an
+there too, and the BIOS boot sound dragged at 84% with an
 American BIOS and a European disc.
 
 ## Skipping the vsync wait

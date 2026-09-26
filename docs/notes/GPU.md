@@ -1,7 +1,9 @@
 # GPU
 
-**Written from:** general knowledge plus the hardware suite's own reference
-images, which turned out to be the more useful source. Implemented in
+**Written from:** psx-spx's GPU chapter, cited below where a fact came from it,
+and the VRAM reference images the ps1-tests `gpu` suite ships, which turned
+out to be the more useful source. The open questions are where
+the two have not yet been reconciled with this implementation. Implemented in
 `crates/psx-core/src/gpu.rs`, with DMA in `dma.rs`.
 
 The **timing** half of this chip lives in `video.rs` and landed first; see
@@ -32,9 +34,10 @@ it to DMA channel 2. Channel 6 exists purely to *build* that table (it writes a
 run of words each pointing at the one before). Without both, a test binary draws
 nothing at all, so the GPU would have been unreachable.
 
-Channels 2 and 6 are implemented; the rest are counted. Transfers are
-instantaneous, which is wrong: real DMA steals bus cycles from the CPU, and
-chopping mode exists to hand some back.
+Channels 2 and 6 came first; every channel with a device behind it is
+implemented now (see [`DMA.md`](DMA.md)). Transfers are instantaneous, which is
+wrong: real DMA steals bus cycles from the CPU, and chopping mode exists to hand
+some back.
 
 ## What draws
 
@@ -135,7 +138,7 @@ Three things that each cost a debugging round:
    direction, but code that polls for *busy* before proceeding would spin.
 7. **Not started**: interlaced *rendering*, the texture cache, and any notion
    of how long drawing takes.
-8. **Display output, done 2026-09-24, from the owner playing on a phone.** Two
+8. **Display output, done 2026-09-24, from play on a phone.** Two
    bugs, both in what is handed to the frontend and neither in emulation:
    * **24-bit display** (GP1(08h) bit 4) was read as 15-bit, so every MDEC
      video in 24-bit colour came out as rainbow stripes: GTA 2 and Twisted Metal
@@ -145,9 +148,10 @@ Three things that each cost a debugging round:
      a game showing fewer lines showed whatever sat below its picture in VRAM:
      the BIOS licence screen asks for lines 16 to 255, 239 of them, which left
      two stray rows at 480i; CTR's menu asks for 28 to 244, a 24-row strip. The
-     height is now Y2 - Y1, doubled at 480i. The *horizontal* range is still
-     ignored and the width is the mode's nominal one, which is why this core
-     fills the screen where Beetle shows a border; the owner prefers it.
+     height is now Y2 - Y1, doubled at 480i. The *horizontal* range was
+     ignored then too; since 2026-09-25 it sets the width (6a above). Where the
+     range sits is still not used, so the picture fills the frame where Beetle
+     PSX shows a border, which the maintainer prefers.
 
 ## Tracing, when a picture is wrong
 

@@ -1,5 +1,11 @@
 # Conformance baseline
 
+This file is a chronological lab notebook. Sections are dated and record what
+was true when they were written, so a newer finding can supersede an older
+one; where it does, the older text carries a short note rather than being
+rewritten. For the current state, read "Real games" and its subsections, and
+"Netplay" for determinism across machines.
+
 Where the core stands against the hardware test suite. Update this whenever a
 verdict moves, and say what moved it.
 
@@ -34,7 +40,7 @@ harness also reports whether our output matches it.
 |---|---|---|
 | `cpu/cop` | **PASS** 17/17 | See below |
 | `cpu/access-time` | UNGRADED | Within about a cycle of the console's log in every region since 2026-09-26, but its figures are where the load costs came from. See below |
-| `cpu/io-access-bitwidth` | UNGRADED | Prints no verdict lines. Differs from the reference: needs real I/O devices, which are all stubbed |
+| `cpu/io-access-bitwidth` | UNGRADED | Prints no verdict lines. Differed from the reference: needs real I/O devices, which were all stubbed at the time |
 | `cpu/code-in-io` | **FAIL** 2 of 3 | Executing code out of the scratchpad and out of I/O space. Needs the scratchpad's real access rules |
 
 ## Timers, as of 2026-08-15
@@ -171,7 +177,9 @@ because those tests use **raw** textures, which bypass both modulation and
 dithering. The remaining error there is in the texel fetch, not the blend.
 
 Everything else outside `cpu/`, `timers/`, `gpu/`, `gte/` and `input/` (CD-ROM,
-SPU, MDEC) is untested because none of those subsystems exist.
+SPU, MDEC) was untested at the time because none of those subsystems existed.
+(Since superseded: all three have been built; see "CD-ROM", "With sound" and
+"Without a BIOS", where the `cdrom`, `spu` and `mdec` folders are run.)
 
 ## GTE, as of 2026-08-16
 
@@ -200,7 +208,7 @@ value differs from what the previous implementation produced, so none can pass
 by accident.
 
 Two of those rows are the same finding in two places, and it is the one worth
-carrying to the other cores: **when a wide value is read at two widths, the
+carrying beyond the GTE: **when a wide value is read at two widths, the
 narrow register cannot tell you which is wrong.** `MAC3` matching while `SZ3`
 disagreed, and `MAC0` matching while `OTZ` disagreed, were both the evidence,
 not the noise.
@@ -279,13 +287,14 @@ Zero *unmapped* accesses matters more than the banner: it means the address
 decode has no holes the BIOS can find. Stubbed accesses are a different counter
 and are expected to be non-zero.
 
-The BIOS does not reach its shell hand-over on its own, because it is waiting on
-a CD-ROM that does not exist. Sideloading a PSX-EXE works regardless: the
+At the time, the BIOS did not reach its shell hand-over on its own, because it
+was waiting on a CD-ROM that did not exist yet. (Since superseded: see "CD-ROM",
+below, where it reaches its main menu and then reads discs.) Sideloading a PSX-EXE works regardless: the
 harness runs until the hand-over point is reached and swaps the binary in there.
 
 ## Without a BIOS: the HLE kernel, 2026-09-25
 
-The owner's priority, to catch Beetle PSX on players who have no BIOS file.
+The priority was to catch up with Beetle PSX for players who have no BIOS file.
 Design and every finding in [`notes/HLE.md`](notes/HLE.md). What was measured:
 
 **The CPU and hardware suites give the same verdicts on HLE as on the
@@ -318,21 +327,21 @@ BIOS, and the same title.
   acknowledged by default.
 - Grand Theft Auto 2 jumped into its own heap: InitHeap wrote a block header
   into memory the game keeps using. It now writes nothing until the first
-  malloc, and GTA 2 plays its DMA Design intro. The owner reports Beetle's
-  HLE black-screens on GTA 2.
+  malloc, and GTA 2 plays its DMA Design intro. On the same phone,
+  Beetle's HLE black-screens on GTA 2.
 - Tony Hawk's Pro Skater 2 wrote a 1 through a null pointer into the B table,
   then jumped to address 1 on its next OpenEvent. The tables now sit where the
   console's do, and it draws exactly the picture the BIOS run draws.
 
-**Confirmed on the owner's phone the same evening**, with no BIOS file on it:
-Crash Bandicoot runs at full speed on the HLE kernel, where on his real BIOS it
+**Confirmed on a phone the same evening**, with no BIOS file on it:
+Crash Bandicoot runs at full speed on the HLE kernel, where on a real BIOS it
 ran about 20% slow (the pinned bug), and its controls work after 1903e7a (the
 kernel's pad buffer kept the 5Ah after the pad's ID, so every button landed a
 byte late and Crash took no input). So the slowness belongs to the real-BIOS
 path, not to the emulator as a whole; the lead below is where to look if it
 matters for players who do have a BIOS.
 
-**The owner's verdict on his own library, HLE kernel on the S25 Ultra,
+**The maintainer's own library, HLE kernel on an arm64 phone,
 2026-09-26** (the phone handles fast-forward up to 3x on this core):
 
 | Game | On HLE |
@@ -345,7 +354,7 @@ matters for players who do have a BIOS.
 | Metal Slug X | Hung on "checking memory card"; fixed the next morning, in two steps |
 | Crash Bash | Hung on "Sony Computer Entertainment America presents"; fixed the same day |
 
-He also reports no new visual glitches since the Metal Gear Solid briefing fix.
+No new visual glitches were seen since the Metal Gear Solid briefing fix.
 
 The two hangs were one bug, and only showed with a memory card in, which the
 phone always has and the PC survey did not. The kernel's card file functions
@@ -355,11 +364,11 @@ sector routine, which does. Metal Slug X runs firstfile and then waits for
 that event. Through the libretro core with a card and no BIOS, Metal Slug X
 now reaches its title screen and Crash Bash its game-type menu.
 
-The owner then found Metal Slug X still hanging on his phone, where Crash Bash
-was fixed. The difference was the card: his holds the save he made on the real
+Metal Slug X was then found still hanging on the phone, where Crash Bash
+was fixed. The difference was the card: the phone's holds a save made on the real
 BIOS, and the PC runs used an empty one. With a save there, the game opens it
 asynchronously and loops on read until read returns 0: an asynchronous read
-answers "accepted", not a byte count, and the data comes with the event. His
+answers "accepted", not a byte count, and the data comes with the event. That
 card, copied off the phone, reproduced the hang and now reaches the title
 screen, untouched. Lesson: test card paths with a card that has a save on it.
 
@@ -432,8 +441,10 @@ subsystems still to come:
 
 ## CD-ROM, as of 2026-08-16
 
-**Nothing in `cdrom/` can be graded yet, and that is the honest position.** All
-four tests need something this core does not have:
+**At the time, nothing in `cdrom/` could be graded, and that was the honest
+position.** All four tests needed something this core did not have. (Since
+superseded in part: the drive now reads real discs; see "With a disc" below and
+"Real games".)
 
 | Test | What it needs |
 |---|---|
@@ -502,9 +513,10 @@ It is committed as a tool rather than described in prose because a milestone
 nobody can reproduce is not much of a milestone, and no disc image can go in
 this repository.
 
-**What it still does not prove:** that a real game boots. The synthetic disc has
+**What it did not yet prove:** that a real game boots. The synthetic disc has
 no filesystem, no `SYSTEM.CNF` and no executable, so everything past "the BIOS
-likes this disc" is untested. The timing constants remain approximate.
+likes this disc" was untested. The timing constants remained approximate.
+(Since superseded: real games boot; see "Real games".)
 
 ## The libretro core, as of 2026-08-16
 
@@ -530,7 +542,8 @@ ran 3600 frames: 3600 video callbacks, 2646000 audio frames, last 512x240,
 **110 428 is the same figure `shot` reports for the same disc**, so the two
 paths agree pixel for pixel. Also confirmed by that run: content loaded from a
 path, `XRGB8888` negotiated, a frame never larger than the geometry declared,
-and audio emitted every frame even though it is silence, which a frontend needs
+and audio emitted every frame even though at the time it was silence (the SPU has
+since gained its voices: see "With sound"), which a frontend needs
 or it stalls its own pacing. Booting with no content draws the BIOS main menu,
 and a PSX-EXE by path draws too.
 
@@ -563,24 +576,23 @@ against 305 996, so the frontend's button does reach the emulated pad. That is
 the plumbing, not the mapping: the mapping is pinned by the unit tests above,
 not by a game.
 
-Still not proven, and unchanged by any of this: **nothing has been driven with
-input that changes.** Every run holds one button from boot. Crash Bandicoot's
-counters are identical with Start held and with nothing held at all.
+At the time still not proven, and unchanged by any of this: **nothing had been
+driven with input that changes.** Every run held one button from boot. Crash
+Bandicoot's counters were identical with Start held and with nothing held at all.
+(Since superseded: `retrohost --mash` and `--press` drive changing input, and
+the core has been played by hand on a phone; see "On a phone" and "Netplay".)
 
 ### Android
 
 `scripts/deploy-android-debug.sh so` cross-compiles the core to
 `aarch64-linux-android`: a 580 KB `ELF64 DYN AArch64` shared object with all
 twenty-five libretro entry points exported, `ruststation_state_token` beside
-them, and 16 KB-aligned `LOAD` segments, which Play requires. The umbrella's
-`.cargo/config.toml` supplies the NDK linker and the alignment flag; cargo finds
-it by walking up from the working directory.
+them, and 16 KB-aligned `LOAD` segments, which Play requires. The NDK linker
+and the alignment flag have to be supplied through cargo configuration.
 
-**A pushed `.so` will not be picked up.** TrophyHubAndroid resolves cores by
-bare filename through `dlopen`, so the linker finds them in the APK's own
-native library directory and the APK has to be rebuilt and reinstalled. And
-until RustStation has a `CoreSlot` entry there, nothing in the app asks for this
-library at all, so `so` mode is the honest one to be running.
+**A pushed `.so` will not be picked up** by an Android frontend that resolves
+cores by bare filename through `dlopen`: the linker finds them in the APK's own
+native library directory, so the APK has to be rebuilt and reinstalled.
 
 ## Netplay: the same on every machine, 2026-09-26
 
@@ -598,15 +610,15 @@ state and of the video frames and audio samples since the last line.
 `--save-at` and `--load-at` take and restore a state mid-run.
 
 **Across machines.** Tekken 3 for 7 200 frames with `--mash` on a Windows
-PC (x86-64), a Galaxy S25 Ultra and a Galaxy Tab (both arm64), all three from
+PC (x86-64), a phone and a tablet (both arm64), all three from
 the same image by md5: all 120 lines equal, state, video and audio, and the
 states saved at frame 3 600 byte-identical. Final Fantasy VIII (its opening
 video, so the MDEC and XA audio) and Metal Gear Solid (Europe, PAL), 3 600
-frames each on the PC and the Tab: 60 of 60 lines equal for both.
+frames each on the PC and the tablet: 60 of 60 lines equal for both.
 
 **Resync.** A run with its presses shifted by 3 000 frames, so a different
 history, loads the PC's frame-3 600 Tekken state at its own frame 600: every
-line after that equals the PC's, on the Tab. The same test on the PC with
+line after that equals the PC's, on the tablet and on the phone. The same test on the PC with
 Tekken and MGS, at five load points for MGS: equal throughout. Shifting the
 presses by one frame instead makes all 15 compared lines differ, which is the
 check that the comparison can fail.
@@ -711,7 +723,7 @@ count moved by under 1%. Those are timing shifts from the SPU now taking sync
 points, not changes in what the games reach.
 
 What the survey does not measure is sound. The recordings `shot --wav` makes
-are for a listener, and they have had one: on 2026-09-24 the owner listened to
+are for a listener, and they have had one: on 2026-09-24 the maintainer listened to
 30 seconds from power-on of six games and recognised every one, the boot
 sound first and then Crash Bandicoot, CTR, Mega Man X5, Metal Slug X, Spyro
 and Tekken 3, all judged to sound right. The last three exercise CD audio.
@@ -724,9 +736,9 @@ game loading, not missing audio.
 
 ### On a phone, 2026-09-24
 
-The first time this core ran anywhere but the desktop: the libretro core in the
-Android app as a DEBUG-only toggle against Beetle PSX, played by the owner with
-real, changing input.
+The first time this core ran anywhere but the desktop: the libretro core in an
+Android libretro frontend, in a debug build beside Beetle PSX, played by hand
+with real, changing input.
 
 - **60 fps flat on every disc tried**, five of them including Twisted Metal.
   The interpreter's speed was the open risk; on this phone it is not one.
@@ -738,7 +750,7 @@ Found, and fixed the same day, each reproduced on the desktop first:
 
 - **Videos in 24-bit colour looked "very strange"** (GTA 2, Twisted Metal) and
   the games were perfect from their menus on. The display read 24-bit as
-  15-bit. **Confirmed fixed on the device by the owner.**
+  15-bit. **Confirmed fixed on the device.**
 - **A garbage row at the bottom of the licence screen**, and the strip under
   CTR's menu: the height ignored GP1(07h). **Confirmed fixed on the device.**
 - **A Japanese BIOS next to an American one sent every American game to the
@@ -747,7 +759,7 @@ Found, and fixed the same day, each reproduced on the desktop first:
 
 Still open:
 
-- **An occasional stall** after which the app reports the game as still loaded
+- **An occasional stall** after which the frontend reports the game as still loaded
   until it is restarted. **Found and fixed.** retrohost timed every frame of
   every disc under 60 seconds of mashed input: 30 discs never exceeded 35 ms,
   and Metal Slug X took **137 seconds on one frame**. Replayed from a state
@@ -756,14 +768,15 @@ Still open:
   stops at the first node it revisits (`docs/notes/DMA.md`); the same frame
   takes 0.08 s and the run reaches gameplay. On a phone that frame is the
   freeze, and the unload waiting behind it is "game already loaded".
-- **Which BIOS the phone ran.** The owner reports none installed, yet the core
-  refuses a disc without one and has no fallback. The core now logs the
-  directory it searched and the BIOS it took through the frontend's logger, so
-  the next run on the phone answers it.
+- **Which BIOS the phone ran.** None was installed, yet the core then refused
+  a disc without one and had no fallback. The core now logs the directory it
+  searched and the BIOS it took through the frontend's logger, so the next run
+  on the phone answers it. (Since superseded 2026-09-25: with no BIOS the core
+  falls back to its HLE kernel; see "Without a BIOS".)
 
 ### Against Beetle PSX on the same phone, 2026-09-24
 
-The owner's own comparison, flipping the toggle on the same discs:
+Switching between the two cores on the same discs:
 
 - **GTA 2 runs on this core and black-screens on Beetle** (with and without a
   BIOS).
@@ -774,9 +787,10 @@ The owner's own comparison, flipping the toggle on the same discs:
   disc-swap support. **Added 2026-09-25**: `.m3u` playlists and the libretro
   disk-control interface, with the drive's lid (`docs/notes/CDROM.md`).
   Metal Gear Solid (Europe) boots from a two-disc playlist like the Android app
-  writes, and `retrohost --swap-at FRAME DISC` swaps the way the TrophyHub host
-  does. What is not tested: a game's own "insert disc 2" prompt, which is
-  hours into both games and cannot be reached without memory cards.
+  writes, and `retrohost --swap-at FRAME DISC` swaps the way an Android
+  frontend does. What is not tested: a game's own "insert disc 2" prompt, which
+  is hours into both games and could not be reached without memory cards
+  (since added: see "Memory cards, 2026-09-25").
 
 Crash Bash, which stalled on the "SCEA presents" screen, was an anti-modchip
 check (CD Test 04h/05h, now answered with zero SCEx counts). It reaches its
@@ -786,17 +800,17 @@ Dino Crisis had the same check and now reaches its in-engine intro.
 **Crash Bandicoot ran about 20% slow on the phone** while the counter read 60.
 Not a timing error: the emulated console was on time (30 game frames and 59
 to 60 vblanks per second). The tablet simply needed 17.0 ms per frame, 22 ms
-at worst, to emulate the owner's gameplay state, against 16.7 ms. Twisted Metal
+at worst, to emulate a saved gameplay state, against 16.7 ms. Twisted Metal
 2's gameplay needed 14.0 ms, which is why it ran at full speed. 64% of
 Crash's instructions were its vsync wait, which is now skipped exactly
 (`docs/notes/TIMING.md`): **9.8 ms on the tablet**, Twisted Metal 2 6.7 ms.
 `shot --pace` prints vblanks, flips and wall time per second of frames, and
 the ARM build of `shot` runs on the tablet over adb.
 
-**Still open, pinned by the owner: Crash Bandicoot plays about 20% slow by
+**Still open, pinned by the maintainer: Crash Bandicoot plays about 20% slow by
 eye on the phone, and it is not performance.** The two speed-ups above (Crash's
 busy frame 19.5 ms to 14.8 on the tablet, host perf line at 60 fps) did not
-change what the owner sees. Music plays at the right speed, the counter reads
+change what is seen on the phone. Music plays at the right speed, the counter reads
 60, and every other game tried plays at the right speed, Crash Bash, Twisted
 Metal 2 and Metal Slug X included. The spin "does not consistently spin" when
 jump and spin are pressed together. What is established: the emulated console
@@ -807,11 +821,14 @@ root counter or the vblank count rather than from frames, whether the
 one-cycle-per-instruction CPU (roughly twice a real one) changes that, and
 whether the pad is read in time for a same-frame jump and spin. The quickest
 discriminator is a side-by-side against Beetle PSX on the same save state,
-timing one fixed stretch of a level in real seconds.
+timing one fixed stretch of a level in real seconds. (Since then: on the HLE
+kernel Crash runs at full speed on the phone, which places the slowness on the
+real-BIOS path; see "Without a BIOS". The one-cycle-per-instruction CPU was
+replaced by instruction timing on 2026-09-26.)
 
 **First run of the multi-disc build on the phone, 2026-09-25.** Final Fantasy
 VIII and Metal Gear Solid boot, and the Disc entry in the pause menu lists four
-and two discs with the first selected. Then, from the owner:
+and two discs with the first selected. Then, as reported from the phone:
 
 - **Metal Gear Solid took no input**: nothing skipped the intro, nothing
   worked on "press start". It asks the pad whether it is a DualShock (`43h`,
@@ -828,26 +845,26 @@ and two discs with the first selected. Then, from the owner:
   reproduced. With disc 1 here, the opening video ends in a fade to white of
   about two seconds and the game goes on into the infirmary scene, untouched.
   Needs a state from the phone taken on the white screen.
-  **Fixed 2026-09-26 by instruction timing (821bf93).** The owner confirms
-  it hung before that build and goes on after it. A state taken on the logo
+  **Fixed 2026-09-26 by instruction timing (821bf93).** It was confirmed on
+  the phone that it hung before that build and goes on after it. A state taken on the logo
   just before the white reaches the infirmary here in 30 seconds. Why the
   one-cycle CPU hung it was not found: it never reproduced on the PC, which
   had no memory card and one disc where the phone had a card and a 4-disc
   m3u.
 
-**All seven of the owner's discs play on the HLE kernel, 2026-09-26**:
+**All seven of the maintainer's discs play on the HLE kernel, 2026-09-26**:
 Twisted Metal 2, Grand Theft Auto 2, Crash Bandicoot, Metal Gear Solid,
 Crash Bash, Metal Slug X and Final Fantasy VIII, with no BIOS file.
 The same day, five more pushed to the phone: Spyro the Dragon, Tekken 3,
-Crash Team Racing, Tony Hawk's Pro Skater 2 and Resident Evil 3. The owner:
-all play well at full speed. Resident Evil 3 unlocked a RetroAchievement
+Crash Team Racing, Tony Hawk's Pro Skater 2 and Resident Evil 3.
+All play well at full speed. Resident Evil 3 unlocked a RetroAchievement
 ("Easy", a dodge before the warehouse) from a real dodge in play, so the
 memory RetroAchievements reads is the game's own. Twelve of twelve on HLE.
 
 **Tekken 3 fights dropped to the low 40s on the phone** where Beetle holds 60
-(the owner, with a state mid-fight). The fight draws at 368x480; the S25
-Ultra needed about 14 ms a frame at worst times, spiking past 20. Profiled on
-the Tab with simpleperf: 63% drawing triangles (44% the loop, 18% texel
+(reported with a state mid-fight). The fight draws at 368x480; the phone
+needed about 14 ms a frame at worst times, spiking past 20. Profiled on
+the tablet with simpleperf: 63% drawing triangles (44% the loop, 18% texel
 fetch), 28% the CPU. Three changes, each checked byte for byte against the
 old build's end state after 6 seconds of the fight, VRAM included:
 
@@ -856,7 +873,7 @@ old build's end state after 6 seconds of the fight, VRAM included:
 - the texture window's masks are worked out once per primitive, not per texel;
 - each attribute's per-pixel step is divided once per triangle, not per row.
 
-PC 8.5 to 5.7 ms a frame (worst 12.2 to 8.0); S25 Ultra, the two builds run
+PC 8.5 to 5.7 ms a frame (worst 12.2 to 8.0); on the phone, the two builds run
 back to back, 8.4 to 9.6 against 5.9 to 7.7. The phone is noisy between runs
 (heat, which core), and both builds still spike near 20 ms now and then.
 `a_row_run_covers_exactly_the_pixels_inside` holds the run to the
@@ -864,7 +881,7 @@ per-pixel test over 3 000 random triangles; the suite's GPU images are
 unchanged. Also: `shot`'s default run is now 300M cycles, since at 60M
 the BIOS, running from its ROM at real cost, had not reached the GPU tests.
 
-**Confirmed by the owner on the phone:** Tekken 3 through stage 6 with no
+**Confirmed on the phone:** Tekken 3 through stage 6 with no
 frame drops.
 - **Metal Gear Solid's briefing screen showed textures down its right side**
   (second phone run): 320 pixels drawn in the 368 mode with a display range
@@ -895,24 +912,23 @@ frames with a stall of up to 19 once a second; after, 900, every 4 frames
 before (Crash 2.4 ms a frame against 2.8 on the PC), because fewer
 instructions fit in an emulated frame.
 
-The survey after the pad change (`out/survey-base-633b.txt` against the new
-one) moved in the ways a game that finds a DualShock would: Tenchu 2 reaches
+The survey after the pad change, compared against the one before it, moved in the ways a game that finds a DualShock would: Tenchu 2 reaches
 its memory card prompt before its video, Resident Evil 3 goes into analog mode
 and is earlier in its intro at the snapshot, Dino Crisis is on a video rather
 than in-engine. No disc lost its picture or stopped reading.
 
 **Memory cards, 2026-09-25** (`docs/notes/SIO.md`). Every disc with a fresh card and 90 seconds
-of mashed input (`out/cardscan.sh`): Spyro wrote a real save, `BASCUS-94228SPYRO`, one block,
+of mashed input: Spyro wrote a real save, `BASCUS-94228SPYRO`, one block,
 checksummed directory entry, title "SPYRO THE DRAGON" and a three-frame icon; the BIOS
 memory card screen lists it with its gem icon. Tenchu 2, which stopped on "MEMORY CARD is
 not inserted", goes on into its intro and makes the dummy write to sector 3Fh that clears
 the new-card flag.
 
-**Confirmed on the owner's phone the same day:** Metal Slug X saved manually from its
+**Confirmed on a phone the same day:** Metal Slug X saved manually from its
 options, the game was quit and restarted, and it loaded the save back ("load complete").
-The card survives a relaunch through the app's save RAM path, which writes it on every
-pause and on quit (not periodically, so a crash mid-session loses what was saved since
-the last pause).
+The card survives a relaunch through the libretro save RAM interface. When it reaches
+storage is up to the frontend; the one tested writes it on pause and on quit, not
+periodically, so a crash mid-session loses what was saved since the last pause.
 
 Where Beetle is still ahead: reverb, and years of compatibility across far more than 31 discs.
 
@@ -924,13 +940,15 @@ sectors, macroblocks and primitives, not by pixels alone.
 
 ### What "gameplay" does and does not mean
 
-Tekken 3 renders a round in progress and Crash reaches its main menu. Neither is
-a claim that either game is *playable*. Every run here holds a single button from
-boot, and Crash's counters are identical with Start held and with nothing held at
-all, so **nothing here has tested that anything responds to input**, only that
-games get far enough to ask for it. There is no sound anywhere in this core
-either. The next honest step is a scripted input sequence rather than another
-screenshot.
+As of 2026-08-16: Tekken 3 renders a round in progress and Crash reaches its main
+menu. Neither is a claim that either game is *playable*. Every run here held a
+single button from boot, and Crash's counters were identical with Start held and
+with nothing held at all, so **nothing here tested that anything responds to
+input**, only that games get far enough to ask for it. There was no sound
+anywhere in this core either. The next honest step was a scripted input sequence
+rather than another screenshot. (Since superseded: the SPU, CD audio and
+changing input have all arrived, and games have been played by hand; see "With
+sound", "On a phone" and "Netplay".)
 
 Tomb Raider's 57-track, one-file-per-track cue sheet parsed correctly, which is
 the multi-file case `docs/notes/DISC.md` listed as implemented but untested.
