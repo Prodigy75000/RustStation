@@ -885,6 +885,20 @@ Then a CHD not made here: a player's own Bomberman (USA) image, made by
 other tools, imported on a phone, recognised as PlayStation, and played well
 on v0.2.0.
 
+**Port 2 had no pad, v0.2.1.** In the first two-player netplay session on a
+phone, Bomberman: Party Edition and Twisted Metal 2 would not let player 2 be
+anything but the computer, with the session itself stable. The libretro core
+connected the pad in port 1 and never the one in port 2, so a game polling
+port 2 got FFh and no acknowledge, which is exactly how an empty port looks,
+and correctly concluded nobody was there. The frontend's port 2 input was
+written into a pad the SIO would not answer for. Everything measured had been
+on one pad: the netplay and reload runs drive port 1, and the survey holds
+Start on it, and a port nothing polls cannot report that it is missing. Both
+pads are connected at load now, and `a_pad_answers_in_both_ports` sends the
+address byte to each port and requires the acknowledge (it fails for port 2
+without the fix). Found and diagnosed by the frontend side from the live
+session.
+
 **Tekken 3 fights dropped to the low 40s on the phone** where Beetle holds 60
 (reported with a state mid-fight). The fight draws at 368x480; the phone
 needed about 14 ms a frame at worst times, spiking past 20. Profiled on

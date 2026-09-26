@@ -146,7 +146,7 @@ static mut FRAMEBUFFER: Vec<u32> = Vec::new();
 static mut SILENCE: Vec<i16> = Vec::new();
 
 const LIBRARY_NAME: &[u8] = b"RustStation (PlayStation)\0";
-const LIBRARY_VERSION: &[u8] = b"0.2.0\0";
+const LIBRARY_VERSION: &[u8] = b"0.2.1\0";
 /// What the frontend will offer as content. Disc images first: they are the
 /// point, and a core that does not list them cannot be handed one however well
 /// it would cope. `exe` and `psexe` stay for the conformance suites, which ship
@@ -588,11 +588,8 @@ pub unsafe extern "C" fn retro_load_game(info: *const GameInfo) -> bool {
         }
     };
 
-    // A memory card in slot 1, which is the frontend's save RAM: it copies
-    // the player's card file over this one after load and saves it back, as
-    // it does a cartridge's battery RAM. Until then it is a formatted, empty
-    // card. Slot 2 is the core's own, one card for every game.
-    psx.bus.sio.cards[0].connected = true;
+    plug_in(&mut psx);
+    // Slot 2's card is the core's own, one card for every game.
     *ptr::addr_of_mut!(CARD2) = Some(card2::Card2::attach(&mut psx, save_dir().as_deref()));
 
     // A null info is "boot with no content", the BIOS menu. Valid on its own.
@@ -620,6 +617,22 @@ pub unsafe extern "C" fn retro_load_game(info: *const GameInfo) -> bool {
         publish_disk_control();
     }
     true
+}
+
+/// What is plugged into the console: a pad in each port, and a memory card in
+/// slot 1, which is the frontend's save RAM (it copies the player's card file
+/// over this one after load and saves it back, as it does a cartridge's
+/// battery RAM; until then it is a formatted, empty card).
+///
+/// Port 2's pad has to be there for a second player to exist at all. A game
+/// asks a port whether anything is plugged in by polling it, and an empty port
+/// never answers, so with no pad there it offers player 2 only as the
+/// computer. Two-player games through netplay did exactly that until this
+/// connected it.
+fn plug_in(psx: &mut Psx) {
+    psx.bus.sio.pads[0].connected = true;
+    psx.bus.sio.pads[1].connected = true;
+    psx.bus.sio.cards[0].connected = true;
 }
 
 /// Offer the frontend disc swapping. Published per game, because the host
@@ -859,6 +872,22 @@ pub unsafe extern "C" fn ruststation_state_token() -> *const c_char {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Both ports answer a poll. Selecting port 2 (JOY_CTRL bit 13) and sending
+    /// the pad's address byte must be acknowledged, which is how a game learns
+    /// a second player is there; an empty port reads FFh and never answers.
+    #[test]
+    fn a_pad_answers_in_both_ports() {
+        let mut psx = Psx::new(psx_core::hle::rom()).unwrap();
+        plug_in(&mut psx);
+        for (port, ctrl) in [(1, 0x1003), (2, 0x3003)] {
+            let sio = &mut psx.bus.sio;
+            sio.write(0x0A, 2, 0);
+            sio.write(0x0A, 2, ctrl);
+            sio.write(0, 1, 0x01);
+            assert!(sio.cycles_to_event().is_some(), "port {port} acknowledged");
+        }
+    }
 
     /// The name this core would print for a pad bit. Independent of both tables
     /// under test, so it can referee between them.
