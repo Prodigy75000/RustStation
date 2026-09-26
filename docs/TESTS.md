@@ -776,9 +776,16 @@ and two discs with the first selected. Then, from the owner:
   reproduced. With disc 1 here, the opening video ends in a fade to white of
   about two seconds and the game goes on into the infirmary scene, untouched.
   Needs a state from the phone taken on the white screen.
-  **Closed 2026-09-26: not a hang.** The owner took a state on the logo
-  just before the white, then found the game goes on if given longer. The
-  state run here reaches the infirmary in 30 seconds.
+  **Fixed 2026-09-26 by instruction timing (821bf93).** The owner confirms
+  it hung before that build and goes on after it. A state taken on the logo
+  just before the white reaches the infirmary here in 30 seconds. Why the
+  one-cycle CPU hung it was not found: it never reproduced on the PC, which
+  had no memory card and one disc where the phone had a card and a 4-disc
+  m3u.
+
+**All seven of the owner's discs play on the HLE kernel, 2026-09-26**:
+Twisted Metal 2, Grand Theft Auto 2, Crash Bandicoot, Metal Gear Solid,
+Crash Bash, Metal Slug X and Final Fantasy VIII, with no BIOS file.
 - **Metal Gear Solid's briefing screen showed textures down its right side**
   (second phone run): 320 pixels drawn in the 368 mode with a display range
   to match, and the core showing all 368. The width now comes from GP1(06h)
