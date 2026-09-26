@@ -881,6 +881,9 @@ sectors differ. Through the shipped library, Tekken 3 hashes the same (state,
 video, audio) from its CHD, from its cue sheet, and from an `.m3u` listing the
 CHD, on the PC and on an arm64 tablet. Details in
 [`notes/DISC.md`](notes/DISC.md).
+Then a CHD not made here: a player's own Bomberman (USA) image, made by
+other tools, imported on a phone, recognised as PlayStation, and played well
+on v0.2.0.
 
 **Tekken 3 fights dropped to the low 40s on the phone** where Beetle holds 60
 (reported with a state mid-fight). The fight draws at 368x480; the phone
