@@ -146,7 +146,7 @@ static mut FRAMEBUFFER: Vec<u32> = Vec::new();
 static mut SILENCE: Vec<i16> = Vec::new();
 
 const LIBRARY_NAME: &[u8] = b"RustStation (PlayStation)\0";
-const LIBRARY_VERSION: &[u8] = b"0.2.2\0";
+const LIBRARY_VERSION: &[u8] = b"0.3.0\0";
 /// What the frontend will offer as content. Disc images first: they are the
 /// point, and a core that does not list them cannot be handed one however well
 /// it would cope. `exe` and `psexe` stay for the conformance suites, which ship
@@ -384,6 +384,7 @@ unsafe fn poll_pads(psx: &mut Psx) {
         }
         let pad = &mut psx.bus.sio.pads[port as usize];
         pad.buttons = held;
+        pad.watch_analog_combo();
         // The sticks, as the pad sends them: right X, right Y, left X, left Y.
         // libretro's range is -32768..32767 with 0 centred, the pad's 00h..FFh
         // with 80h centred, and both have up and left negative. Games read
@@ -887,6 +888,32 @@ mod tests {
             sio.write(0, 1, 0x01);
             assert!(sio.cycles_to_event().is_some(), "port {port} acknowledged");
         }
+    }
+
+    /// A frontend's Analog button is L3 and R3 together, and it reaches the
+    /// pad through the ordinary input poll: port 1 held both, port 2 held
+    /// nothing.
+    #[test]
+    fn l3_and_r3_from_the_frontend_switch_that_pad_to_analog() {
+        unsafe extern "C" fn both_sticks(
+            port: c_uint,
+            device: c_uint,
+            _: c_uint,
+            id: c_uint,
+        ) -> i16 {
+            // RetroPad ids 14 and 15 are L3 and R3.
+            i16::from(port == 0 && device == RETRO_DEVICE_JOYPAD && (id == 14 || id == 15))
+        }
+        let mut psx = Psx::new(psx_core::hle::rom()).unwrap();
+        plug_in(&mut psx);
+        unsafe {
+            INPUT_STATE_CB = Some(both_sticks);
+            poll_pads(&mut psx);
+            poll_pads(&mut psx);
+            INPUT_STATE_CB = None;
+        }
+        assert!(psx.bus.sio.pads[0].is_analog(), "port 1 pressed it once");
+        assert!(!psx.bus.sio.pads[1].is_analog(), "port 2 did not");
     }
 
     /// The name this core would print for a pad bit. Independent of both tables

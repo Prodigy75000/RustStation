@@ -103,6 +103,12 @@ pub struct Pad {
     /// Config mode as 43h left it, applied when the transfer ends: 0 for no
     /// change, 1 to leave, 2 to enter.
     pub(crate) config_next: u8,
+    /// Whether L3 and R3 were both held at the last [`Pad::watch_analog_combo`],
+    /// so that holding them presses the Analog button once, not every frame.
+    /// Serialized: it is derived from input history, and a netplay peer that
+    /// loads its host's state must agree on it or the next frame toggles
+    /// analog mode on one machine and not the other.
+    pub(crate) combo_held: bool,
 }
 
 impl Default for Pad {
@@ -118,6 +124,7 @@ impl Default for Pad {
             command: 0,
             param: 0,
             config_next: 0,
+            combo_held: false,
         }
     }
 }
@@ -246,6 +253,25 @@ impl Pad {
 
     pub fn is_analog(&self) -> bool {
         self.analog
+    }
+
+    /// L3 and R3 pressed together are the Analog button, once per press.
+    ///
+    /// A frontend has no button for it: the RetroPad has sixteen and the
+    /// DualShock's all have places in them. Both sticks clicked at once is
+    /// a pair no game asks a player for, it reaches the core as ordinary
+    /// input, so netplay carries it with everything else, and a physical pad
+    /// gets it for free. A frontend drawing an Analog button presses both.
+    /// Call once per frame, after [`Pad::buttons`] is set. L3 and R3 still
+    /// reach the game as themselves.
+    pub fn watch_analog_combo(&mut self) {
+        // The constants are bit numbers, not masks.
+        let combo = (1 << button::L3) | (1 << button::R3);
+        let both = self.buttons & combo == combo;
+        if both && !self.combo_held {
+            self.press_analog_button();
+        }
+        self.combo_held = both;
     }
 }
 
@@ -757,6 +783,46 @@ mod tests {
         assert_eq!(r[1], 0x73);
         sio.pads[0].press_analog_button();
         assert_eq!(read_pad(&mut sio, &mut irq)[1], 0x41, "and back");
+    }
+
+    /// Both sticks clicked together are the Analog button: once per press,
+    /// not once per frame held, never for one stick alone, and not while
+    /// software has locked the mode.
+    #[test]
+    fn l3_and_r3_together_press_the_analog_button_once() {
+        let mut pad = Pad {
+            connected: true,
+            ..Pad::default()
+        };
+        let frame = |pad: &mut Pad, held: u16| {
+            pad.buttons = held;
+            pad.watch_analog_combo();
+            pad.is_analog()
+        };
+        let bit = |b: u16| 1u16 << b;
+        let both = bit(button::L3) | bit(button::R3);
+        assert!(!frame(&mut pad, bit(button::L3)), "one stick alone");
+        assert!(
+            !frame(&mut pad, bit(button::R3) | bit(button::CROSS)),
+            "the other alone"
+        );
+        assert!(
+            !frame(&mut pad, bit(button::SELECT) | bit(button::L3)),
+            "Select and L3 are not the pair"
+        );
+        assert!(frame(&mut pad, both), "both: analog");
+        for _ in 0..10 {
+            assert!(frame(&mut pad, both), "still held: no second press");
+        }
+        assert!(
+            frame(&mut pad, bit(button::L3)),
+            "releasing one changes nothing"
+        );
+        assert!(!frame(&mut pad, both), "pressed again: digital");
+        frame(&mut pad, 0);
+
+        pad.locked = true;
+        assert!(!frame(&mut pad, both), "locked by software");
     }
 
     #[test]

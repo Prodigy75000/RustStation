@@ -24,7 +24,7 @@ what makes netplay between a PC and a phone sound.
 | CD-ROM | ✅ the controller, seeks, data reads through the FIFO and DMA, CD-DA with reports, XA-ADPCM decoded and resampled in the drive, the volume matrix, the lid for disc swaps |
 | Disc images | ✅ BIN/CUE (tracks, pregaps, indices), CHD (every CD codec, zstd included), and `.m3u` playlists of either for multi-disc games |
 | DMA, timers, interrupts | ✅ every DMA channel with something behind it, the three root counters, video timing, the interrupt controller |
-| Controllers | ✅ a DualShock in each port: digital and analog modes, config mode, rumble mapping |
+| Controllers | ✅ a DualShock in each port: digital and analog modes, config mode, rumble mapping. L3 and R3 clicked together press the Analog button, so games that leave analog mode to the player can have it |
 | Memory cards | ✅ both slots. Slot 1 is libretro save RAM, kept per game by the frontend; slot 2 is one card shared by every game, kept by the core in the save directory. Card contents stay out of save states, so loading one never takes back a save |
 | HLE kernel | ✅ boots every game, with no BIOS file: the kernel's A, B and C functions, exceptions, events, threads, pads, memory card files and the CD file system, written from psx-spx (`docs/notes/HLE.md`) |
 | Save states | ✅ fixed size, little-endian, versioned; byte-identical on x86-64 and arm64 (`docs/SAVESTATE.md`) |

@@ -77,7 +77,10 @@ pub const MAGIC: &[u8; 8] = b"RSTAPSX1";
 ///   with the fraction of a cycle left, is carried into the next. That decides
 ///   the cycle the frontend's next input lands on, so a netplay peer that
 ///   loaded its host's state without it ended its frames cycles apart.
-pub const FORMAT_VERSION: u16 = 16;
+/// * 17: each pad's L3+R3 latch, one byte after its other state, so that
+///   holding both sticks presses the Analog button once, identically on a
+///   netplay peer that loaded the state mid-press.
+pub const FORMAT_VERSION: u16 = 17;
 
 const HEADER_BYTES: usize = 8 + 2;
 const CPU_BYTES: usize = 32 * 4     // regs
@@ -160,7 +163,8 @@ const CARD_BYTES: usize = 1 + 1 + 2 + 1 // flag, command, address, checksum
 /// One pad's own state, added in format version 13.
 const PAD_BYTES: usize = 1 + 1 + 1 // analog, locked, config
     + 6                             // the rumble mapping
-    + 1 + 1 + 1; // this transfer's command, its parameter, config to come
+    + 1 + 1 + 1 // this transfer's command, its parameter, config to come
+    + 1; // the L3+R3 latch, added in format version 17
 
 /// The SPU, added in format version 7: the register file, then sound RAM
 /// behind a length prefix, then the transfer pointer. Version 10 adds the
@@ -638,6 +642,7 @@ fn write_sio(w: &mut Writer, s: &sio::Sio) {
         w.u8(pad.command);
         w.u8(pad.param);
         w.u8(pad.config_next);
+        w.bool(pad.combo_held);
     }
     for card in &s.cards {
         w.u8(card.flag);
@@ -1025,6 +1030,7 @@ fn read_sio(r: &mut Reader, s: &mut sio::Sio) -> Option<()> {
         pad.param = r.u8()?;
         // Canonicalized: only 0, 1 and 2 mean anything.
         pad.config_next = r.u8()?.min(2);
+        pad.combo_held = r.bool()?;
     }
     for card in s.cards.iter_mut() {
         card.flag = r.u8()?;
@@ -1433,6 +1439,7 @@ mod tests {
             p.config_next = 2;
             let q = &mut psx.bus.sio.pads[1];
             q.locked = true;
+            q.combo_held = true;
             q.rumble = [0x66, 0x55, 0x44, 0x33, 0x22, 0x11];
             q.command = 0x44;
             q.param = 0x01;
@@ -1472,15 +1479,15 @@ mod tests {
 
         // Header, byte for byte.
         assert_eq!(&snap[0..8], MAGIC);
-        assert_eq!(&snap[8..10], &[0x10, 0x00]);
+        assert_eq!(&snap[8..10], &[0x11, 0x00]);
 
         // Total length, pinned to a literal, deliberately NOT compared against
         // `Psx::state_size()`, which would only compare the layout to itself.
-        assert_eq!(snap.len(), 3_746_090);
+        assert_eq!(snap.len(), 3_746_092);
 
         // Whole-buffer checksum: any added, removed, reordered or re-widened
         // field moves it.
-        assert_eq!(fnv1a64(&snap), 0xD683_1D47_9176_A893);
+        assert_eq!(fnv1a64(&snap), 0xA78E_1D89_9E48_E425);
     }
 
     #[test]

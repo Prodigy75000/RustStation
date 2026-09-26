@@ -932,6 +932,20 @@ frontend holds pointers to, survive.
 Confirmed on the phone with v0.2.2 installed: resets in both games come back
 to a normal boot.
 
+**An Analog button, v0.3.0.** A DualShock powers up digital, and some games
+leave switching to analog to the player, who presses the Analog button between
+the sticks; with no way to press it, the on-screen sticks did nothing in those
+games. The RetroPad has no spare button, so L3 and R3 clicked together are the
+Analog button, once per press. They reach the core as ordinary input, so
+netplay carries them, and a physical pad has them too. Which frame the pair
+was last held on is kept per pad and serialized (format 17): without it, a
+peer that loaded its host's state mid-press would toggle on the next frame and
+the host would not. The first version tested the pair against `L3 | R3` as a
+mask, but the button constants are bit numbers, so it matched Select and L3;
+the core test built its input the same wrong way and passed. The libretro test,
+which feeds RetroPad ids 14 and 15 through the real input poll, did not share
+the mistake and failed, and the core test now includes Select with L3.
+
 **Tekken 3 fights dropped to the low 40s on the phone** where Beetle holds 60
 (reported with a state mid-fight). The fight draws at 368x480; the phone
 needed about 14 ms a frame at worst times, spiking past 20. Profiled on
