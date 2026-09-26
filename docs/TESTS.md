@@ -946,6 +946,12 @@ the core test built its input the same wrong way and passed. The libretro test,
 which feeds RetroPad ids 14 and 15 through the real input poll, did not share
 the mistake and failed, and the core test now includes Select with L3.
 
+v0.3.1 exports `ruststation_analog_mode()`, a bitmask of which pads are in
+analog mode, so a frontend's Analog button can light up with the machine's
+actual mode rather than a count of presses, which a game locking the mode
+would falsify. Through the library in Rayman: no press reads digital, one
+L3+R3 press analog, a second digital, and L3 alone nothing.
+
 **Tekken 3 fights dropped to the low 40s on the phone** where Beetle holds 60
 (reported with a state mid-fight). The fight draws at 368x480; the phone
 needed about 14 ms a frame at worst times, spiking past 20. Profiled on

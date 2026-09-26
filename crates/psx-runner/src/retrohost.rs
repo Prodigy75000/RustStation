@@ -843,6 +843,17 @@ fn run() -> Result<(), String> {
             );
         }
 
+        // The pads' analog mode, as a frontend lighting an Analog button reads
+        // it. Optional: a core without the symbol is not a failure.
+        if let Ok(p) = dl::sym(handle, "ruststation_analog_mode") {
+            let mode = std::mem::transmute::<*mut c_void, unsafe extern "C" fn() -> c_uint>(p)();
+            println!(
+                "analog mode: port 1 {}, port 2 {}",
+                mode & 1 != 0,
+                mode & 2 != 0
+            );
+        }
+
         let (w, h) = (FRAME_W, FRAME_H);
         let frame = &*std::ptr::addr_of!(FRAME);
         let lit = frame.iter().filter(|p| **p & 0x00FF_FFFF != 0).count();

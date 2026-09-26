@@ -146,7 +146,7 @@ static mut FRAMEBUFFER: Vec<u32> = Vec::new();
 static mut SILENCE: Vec<i16> = Vec::new();
 
 const LIBRARY_NAME: &[u8] = b"RustStation (PlayStation)\0";
-const LIBRARY_VERSION: &[u8] = b"0.3.0\0";
+const LIBRARY_VERSION: &[u8] = b"0.3.1\0";
 /// What the frontend will offer as content. Disc images first: they are the
 /// point, and a core that does not list them cannot be handed one however well
 /// it would cope. `exe` and `psexe` stay for the conformance suites, which ship
@@ -848,6 +848,29 @@ pub extern "C" fn retro_cheat_reset() {}
 #[no_mangle]
 pub unsafe extern "C" fn retro_cheat_set(_index: c_uint, _enabled: bool, _code: *const c_char) {}
 
+/// Which pads are in analog mode, the red LED: bit 0 for port 1, bit 1 for
+/// port 2. Not part of the libretro ABI: a frontend that draws an Analog
+/// button looks it up by symbol to light it.
+///
+/// This is the machine's own mode, read every time, not a count of presses.
+/// A game can switch the mode itself and can lock it so the button does
+/// nothing, and an indicator that tracked presses would go on claiming
+/// analog after a refusal. 0 with nothing loaded.
+#[no_mangle]
+pub unsafe extern "C" fn ruststation_analog_mode() -> c_uint {
+    psx_ref().map_or(0, analog_mask)
+}
+
+fn analog_mask(psx: &Psx) -> c_uint {
+    psx.bus
+        .sio
+        .pads
+        .iter()
+        .enumerate()
+        .filter(|(_, pad)| pad.is_analog())
+        .fold(0, |mask, (port, _)| mask | 1 << port)
+}
+
 /// The netplay handshake's state-identity token, as a C string. Not part of the
 /// libretro ABI: a frontend that wants it looks it up by symbol, and peers
 /// refuse to play together unless theirs are equal.
@@ -914,6 +937,21 @@ mod tests {
         }
         assert!(psx.bus.sio.pads[0].is_analog(), "port 1 pressed it once");
         assert!(!psx.bus.sio.pads[1].is_analog(), "port 2 did not");
+    }
+
+    /// The mode read back is the pad's, so a press a locked pad refused does
+    /// not show as analog, and port 2 reports in bit 1.
+    #[test]
+    fn the_analog_mode_read_back_is_the_machines() {
+        let mut psx = Psx::new(psx_core::hle::rom()).unwrap();
+        plug_in(&mut psx);
+        assert_eq!(analog_mask(&psx), 0, "both power up digital");
+        psx.bus.sio.pads[1].press_analog_button();
+        assert_eq!(analog_mask(&psx), 0b10, "port 2");
+        psx.bus.sio.pads[0].press_analog_button();
+        assert_eq!(analog_mask(&psx), 0b11, "both");
+        psx.bus.sio.pads[1].press_analog_button();
+        assert_eq!(analog_mask(&psx), 0b01, "port 2 back to digital");
     }
 
     /// The name this core would print for a pad bit. Independent of both tables
