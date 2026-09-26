@@ -929,6 +929,8 @@ two games, the state 2 100 frames later is byte-identical to a fresh boot's at
 devices to being identical to a new one (the old reset fails it), and checks
 that the cards, the pads and the addresses of RAM and save RAM, which a
 frontend holds pointers to, survive.
+Confirmed on the phone with v0.2.2 installed: resets in both games come back
+to a normal boot.
 
 **Tekken 3 fights dropped to the low 40s on the phone** where Beetle holds 60
 (reported with a state mid-fight). The fight draws at 368x480; the phone
