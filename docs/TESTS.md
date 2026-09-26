@@ -791,6 +791,26 @@ Crash Team Racing, Tony Hawk's Pro Skater 2 and Resident Evil 3. The owner:
 all play well at full speed. Resident Evil 3 unlocked a RetroAchievement
 ("Easy", a dodge before the warehouse) from a real dodge in play, so the
 memory RetroAchievements reads is the game's own. Twelve of twelve on HLE.
+
+**Tekken 3 fights dropped to the low 40s on the phone** where Beetle holds 60
+(the owner, with a state mid-fight). The fight draws at 368x480; the S25
+Ultra needed about 14 ms a frame at worst times, spiking past 20. Profiled on
+the Tab with simpleperf: 63% drawing triangles (44% the loop, 18% texel
+fetch), 28% the CPU. Three changes, each checked byte for byte against the
+old build's end state after 6 seconds of the fight, VRAM included:
+
+- a row's inside pixels are found as one run from the three edges, rather than
+  testing every pixel of the bounding box (about half of which is outside);
+- the texture window's masks are worked out once per primitive, not per texel;
+- each attribute's per-pixel step is divided once per triangle, not per row.
+
+PC 8.5 to 5.7 ms a frame (worst 12.2 to 8.0); S25 Ultra, the two builds run
+back to back, 8.4 to 9.6 against 5.9 to 7.7. The phone is noisy between runs
+(heat, which core), and both builds still spike near 20 ms now and then.
+ holds the run to the
+per-pixel test over 3 000 random triangles; the suite's GPU images are
+unchanged. Also: 's default run is now 300M cycles, since at 60M
+the BIOS, running from its ROM at real cost, had not reached the GPU tests.
 - **Metal Gear Solid's briefing screen showed textures down its right side**
   (second phone run): 320 pixels drawn in the 368 mode with a display range
   to match, and the core showing all 368. The width now comes from GP1(06h)

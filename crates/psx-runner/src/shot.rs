@@ -89,7 +89,10 @@ fn main() -> ExitCode {
     let mut bios_path = None;
     let mut exe_path: Option<String> = None;
     let mut out_path = "shot.png".to_string();
-    let mut steps: u64 = 60_000_000;
+    // Master-clock cycles. 300M since instructions have costs: the BIOS
+    // runs from its 8-bit ROM at 29 cycles an instruction, and at 60M the
+    // suite's GPU tests had not drawn yet.
+    let mut steps: u64 = 300_000_000;
     let mut whole_vram = false;
     let mut compare_path: Option<String> = None;
     let mut hold = 0u16;

@@ -115,6 +115,12 @@ struct Tex {
     clut_y: u32,
     /// Use the texel colour as-is, with no shading applied.
     raw: bool,
+    /// The texture window, as masks: a coordinate becomes (c & and) | or.
+    /// Fixed for the primitive, so worked out once rather than per texel.
+    u_and: u32,
+    u_or: u32,
+    v_and: u32,
+    v_or: u32,
 }
 
 /// How a primitive combines with what is already in VRAM.
@@ -778,7 +784,16 @@ impl Gpu {
     /// a polygon's own second-vertex word; `clut` is the 16-bit palette
     /// attribute from its first.
     fn tex_params(&self, texpage: u32, clut: u32, raw: bool) -> Tex {
+        // The texture window folds a repeating patch over the page.
+        let mask_x = self.texture_window & 0x1F;
+        let mask_y = (self.texture_window >> 5) & 0x1F;
+        let off_x = (self.texture_window >> 10) & 0x1F;
+        let off_y = (self.texture_window >> 15) & 0x1F;
         Tex {
+            u_and: 0xFF & !(mask_x * 8),
+            u_or: (off_x & mask_x) * 8,
+            v_and: 0xFF & !(mask_y * 8),
+            v_or: (off_y & mask_y) * 8,
             page_x: (texpage & 0x0F) * 64,
             page_y: ((texpage >> 4) & 1) * 256,
             depth: (texpage >> 7) & 3,
@@ -795,17 +810,10 @@ impl Gpu {
     /// hardware does cut-outs. It is **not** the same as black: an opaque black
     /// texel has bit 15 set. Treating zero as black fills every sprite's
     /// surround with a solid box.
+    #[inline(always)]
     fn texel(&self, tex: &Tex, u: i32, v: i32) -> Option<u16> {
-        // The texture window folds a repeating patch over the page.
-        let mask_x = self.texture_window & 0x1F;
-        let mask_y = (self.texture_window >> 5) & 0x1F;
-        let off_x = (self.texture_window >> 10) & 0x1F;
-        let off_y = (self.texture_window >> 15) & 0x1F;
-
-        let u = u as u32 & 0xFF;
-        let v = v as u32 & 0xFF;
-        let u = (u & !(mask_x * 8)) | ((off_x & mask_x) * 8);
-        let v = (v & !(mask_y * 8)) | ((off_y & mask_y) * 8);
+        let u = (u as u32 & tex.u_and) | tex.u_or;
+        let v = (v as u32 & tex.v_and) | tex.v_or;
 
         let row = ((tex.page_y + v) & 0x1FF) as usize * VRAM_WIDTH;
         let raw = match tex.depth {
@@ -1052,43 +1060,78 @@ impl Gpu {
         };
         let bias = |from: Vertex, to: Vertex| if top_left(from, to) { 0 } else { -1 };
         let (b0, b1, b2) = (bias(b, c), bias(c, a), bias(a, b));
+        if min_x > max_x {
+            return;
+        }
+        let textured = tex.is_some();
+        let dither = (gouraud || textured) && self.dithering();
+        // What each attribute gains per pixel is the same on every row, so
+        // its division is done once here; a row only divides its start.
+        let per_pixel =
+            |fa: i32, fb: i32, fc: i32| Lerp::new(0, -(d0 * fa + d1 * fb + d2 * fc), area);
+        let (sr, sg, sb) = if gouraud {
+            (
+                per_pixel(a.r, b.r, c.r),
+                per_pixel(a.g, b.g, c.g),
+                per_pixel(a.b, b.b, c.b),
+            )
+        } else {
+            (Lerp::ZERO, Lerp::ZERO, Lerp::ZERO)
+        };
+        let (su, sv) = if textured {
+            (per_pixel(a.u, b.u, c.u), per_pixel(a.v, b.v, c.v))
+        } else {
+            (Lerp::ZERO, Lerp::ZERO)
+        };
         for y in min_y..=max_y {
             let p = Vertex {
                 x: min_x,
                 y,
                 ..Default::default()
             };
-            let (mut w0, mut w1, mut w2) = (orient(b, c, p), orient(c, a, p), orient(a, b, p));
+            let (w0, w1, w2) = (orient(b, c, p), orient(c, a, p), orient(a, b, p));
+            // The pixels inside are one run, found from the three edges rather
+            // than by testing every pixel of the bounding box, which for a
+            // triangle is about half outside. Pixel k along the row is inside
+            // edge i while w_i - k * d_i + b_i >= 0.
+            let (mut lo, mut hi) = (0, max_x - min_x);
+            for (w, d, bias) in [(w0, d0, b0), (w1, d1, b1), (w2, d2, b2)] {
+                let w = w + bias;
+                if d > 0 {
+                    hi = hi.min(w.div_euclid(d));
+                } else if d < 0 {
+                    // k >= ceil(-w / -d)
+                    lo = lo.max((-w).div_euclid(-d) + i32::from((-w).rem_euclid(-d) != 0));
+                } else if w < 0 {
+                    hi = -1;
+                }
+            }
+            if lo > hi {
+                continue;
+            }
+            let x0 = min_x + lo;
+            let (w0, w1, w2) = (w0 - lo * d0, w1 - lo * d1, w2 - lo * d2);
             // Each attribute is (w0 * a + w1 * b + w2 * c) / area, and the
             // numerator is linear along the row too, so the quotient is carried
-            // from pixel to pixel instead of divided for. See `Lerp`.
-            let lerp = |fa: i32, fb: i32, fc: i32| {
-                Lerp::new(
-                    w0 * fa + w1 * fb + w2 * fc,
-                    -(d0 * fa + d1 * fb + d2 * fc),
-                    area,
-                )
-            };
-            let textured = tex.is_some();
+            // from pixel to pixel instead of divided for. See `Lerp`. Started
+            // at the run's first pixel it is exactly what stepping to it gives.
+            let at = |step: Lerp, fa: i32, fb: i32, fc: i32| step.at(w0 * fa + w1 * fb + w2 * fc);
             let (mut lr, mut lg, mut lb) = if gouraud {
                 (
-                    lerp(a.r, b.r, c.r),
-                    lerp(a.g, b.g, c.g),
-                    lerp(a.b, b.b, c.b),
+                    at(sr, a.r, b.r, c.r),
+                    at(sg, a.g, b.g, c.g),
+                    at(sb, a.b, b.b, c.b),
                 )
             } else {
                 (Lerp::ZERO, Lerp::ZERO, Lerp::ZERO)
             };
             let (mut lu, mut lv) = if textured {
-                (lerp(a.u, b.u, c.u), lerp(a.v, b.v, c.v))
+                (at(su, a.u, b.u, c.u), at(sv, a.v, b.v, c.v))
             } else {
                 (Lerp::ZERO, Lerp::ZERO)
             };
-            for x in min_x..=max_x {
-                if x > min_x {
-                    w0 -= d0;
-                    w1 -= d1;
-                    w2 -= d2;
+            for x in x0..=min_x + hi {
+                if x > x0 {
                     if gouraud {
                         lr.step();
                         lg.step();
@@ -1098,9 +1141,6 @@ impl Gpu {
                         lu.step();
                         lv.step();
                     }
-                }
-                if w0 + b0 < 0 || w1 + b1 < 0 || w2 + b2 < 0 {
-                    continue;
                 }
 
                 let colour = if gouraud {
@@ -1114,17 +1154,7 @@ impl Gpu {
                 let (u, v) = if textured { (lu.q, lv.q) } else { (0, 0) };
                 // A flat, untextured colour is already exact in 5 bits; only
                 // interpolated or modulated output has anything to dither.
-                self.shade_pixel(
-                    x,
-                    y,
-                    colour,
-                    blend,
-                    tex.as_ref(),
-                    u,
-                    v,
-                    semi,
-                    gouraud || tex.is_some(),
-                );
+                self.shade_pixel(x, y, colour, blend, tex.as_ref(), u, v, semi, dither);
             }
         }
     }
@@ -1596,6 +1626,17 @@ impl Lerp {
             dq: delta.div_euclid(area),
             dr: delta.rem_euclid(area),
             area,
+        }
+    }
+
+    /// The same step, starting from the numerator `n`.
+    #[inline(always)]
+    fn at(self, n: i32) -> Lerp {
+        let q = n.div_euclid(self.area);
+        Lerp {
+            q,
+            r: n - q * self.area,
+            ..self
         }
     }
 
@@ -2261,5 +2302,63 @@ mod tests {
         let mut out = vec![0xDEAD_BEEFu32; 320 * 240];
         g.framebuffer(&mut out);
         assert_eq!(out[0], 0);
+    }
+
+    /// The rasterizer finds each row's run of inside pixels from the three
+    /// edges instead of testing every pixel of the bounding box. Checked here
+    /// against that per-pixel test, top-left rule and all, over random
+    /// triangles: thin ones, degenerate ones, and ones hanging off the edge
+    /// of VRAM.
+    #[test]
+    fn a_row_run_covers_exactly_the_pixels_inside() {
+        let mut seed = 0x1234_5678u32;
+        let mut rand = |n: i32| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed >> 8) as i32 % n
+        };
+        let orient = |a: (i32, i32), b: (i32, i32), c: (i32, i32)| {
+            (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
+        };
+        for n in 0..3000 {
+            let mut p = [(0, 0); 3];
+            for q in p.iter_mut() {
+                *q = (rand(140) - 20, rand(140) - 20);
+            }
+            let mut g = gpu();
+            let v = |(x, y): (i32, i32)| Vertex {
+                x,
+                y,
+                r: 255,
+                g: 255,
+                b: 255,
+                ..Default::default()
+            };
+            g.triangle(v(p[0]), v(p[1]), v(p[2]), false, Blend::Opaque, None, false);
+
+            let (a, mut b, mut c) = (p[0], p[1], p[2]);
+            if orient(a, b, c) < 0 {
+                std::mem::swap(&mut b, &mut c);
+            }
+            let area = orient(a, b, c);
+            let bias = |f: (i32, i32), t: (i32, i32)| {
+                let (dx, dy) = (t.0 - f.0, t.1 - f.1);
+                if dy < 0 || (dy == 0 && dx > 0) {
+                    0
+                } else {
+                    -1
+                }
+            };
+            for y in 0..128 {
+                for x in 0..128 {
+                    let q = (x, y);
+                    let inside = area != 0
+                        && orient(b, c, q) + bias(b, c) >= 0
+                        && orient(c, a, q) + bias(c, a) >= 0
+                        && orient(a, b, q) + bias(a, b) >= 0;
+                    let drawn = px(&g, x as usize, y as usize) != 0;
+                    assert_eq!(drawn, inside, "triangle {n} {p:?} at ({x}, {y})");
+                }
+            }
+        }
     }
 }
