@@ -909,6 +909,11 @@ long before the code did it, which is the lesson worth keeping: a document
 claiming a capability nothing tests reads exactly like one describing a
 capability that works.
 
+Then a longer one: Twisted Metal 2, two players, a tablet joining a phone
+(both arm64, v0.2.1), fifteen minutes with no freeze and no divergence between
+the two machines, and a quick join, which is the state being serialized and
+sent across.
+
 **Tekken 3 fights dropped to the low 40s on the phone** where Beetle holds 60
 (reported with a state mid-fight). The fight draws at 368x480; the phone
 needed about 14 ms a frame at worst times, spiking past 20. Profiled on
