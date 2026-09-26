@@ -13,6 +13,16 @@
 //! over in one batch. Before content is loaded `retro_run` still emits a frame
 //! of silence, because a frontend starved of audio stalls its own frame pacing.
 //!
+//! The machine always boots the built-in HLE kernel ([`psx_core::hle`]), never
+//! a BIOS file, even when the frontend's system directory holds one. A state
+//! does not carry the BIOS, so two netplay peers are only running the same
+//! machine if they are running the same kernel, and a BIOS file one player
+//! forgot about would split them. The real BIOS stays the reference in the
+//! dev harnesses, which take its path.
+//!
+//! Slot 1's memory card is the frontend's save RAM; slot 2's the core keeps
+//! itself, one card shared by every game (see [`card2`]).
+//!
 //! Two surfaces here exist ahead of anything needing them, on purpose. The
 //! state transfer (`retro_serialize` / `retro_unserialize`) is what the netplay
 //! handshake negotiates against, and the RetroAchievements memory interface
@@ -29,6 +39,7 @@ use psx_core::disc::{Disc, Region};
 use psx_core::sio::button;
 use psx_core::video::Standard;
 use psx_core::{exe::Exe, save, Psx};
+use std::path::Path;
 
 // ---------------------------------------------------------------------------
 // libretro ABI
@@ -38,6 +49,7 @@ const RETRO_API_VERSION: c_uint = 1;
 
 const RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY: c_uint = 9;
 const RETRO_ENVIRONMENT_GET_LOG_INTERFACE: c_uint = 27;
+const RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY: c_uint = 31;
 const RETRO_ENVIRONMENT_SET_PIXEL_FORMAT: c_uint = 10;
 const RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS: c_uint = 11;
 const RETRO_ENVIRONMENT_SET_DISK_CONTROL_INTERFACE: c_uint = 13;
@@ -129,6 +141,7 @@ static mut INPUT_POLL_CB: Option<InputPollFn> = None;
 static mut INPUT_STATE_CB: Option<InputStateFn> = None;
 
 static mut PSX: Option<Psx> = None;
+static mut CARD2: Option<card2::Card2> = None;
 static mut FRAMEBUFFER: Vec<u32> = Vec::new();
 static mut SILENCE: Vec<i16> = Vec::new();
 
@@ -139,58 +152,6 @@ const LIBRARY_VERSION: &[u8] = b"0.1.0\0";
 /// it would cope. `exe` and `psexe` stay for the conformance suites, which ship
 /// as PSX-EXEs.
 const VALID_EXTENSIONS: &[u8] = b"cue|bin|img|iso|m3u|exe|psexe\0";
-
-/// BIOS images to look for in the frontend's system directory, best first.
-/// A PlayStation core cannot do anything at all without one.
-const BIOS_CANDIDATES: &[&str] = &[
-    "scph5501.bin",
-    "scph5500.bin",
-    "scph5502.bin",
-    "scph7001.bin",
-    "scph7002.bin",
-    "scph1001.bin",
-    "scph1002.bin",
-    "scph1000.bin",
-    "psxonpsp660.bin",
-    "bios.bin",
-];
-
-/// The BIOS names for each region, best first. A console refuses a disc from
-/// another region and drops to its own shell, so a Japanese BIOS picked for an
-/// American disc does exactly that: with scph5500.bin alongside an American
-/// BIOS, every game went to the BIOS screen (found on a phone, 2026-09-24).
-const BIOS_AMERICA: &[&str] = &["scph5501.bin", "scph7001.bin", "scph1001.bin"];
-const BIOS_EUROPE: &[&str] = &["scph5502.bin", "scph7002.bin", "scph1002.bin"];
-const BIOS_JAPAN: &[&str] = &["scph5500.bin", "scph1000.bin"];
-/// No region of their own, or unknown, so tried after the right region's and
-/// before a wrong one.
-const BIOS_NEUTRAL: &[&str] = &["psxonpsp660.bin", "bios.bin"];
-
-fn region_bios(region: Option<Region>) -> &'static [&'static str] {
-    match region {
-        Some(Region::America) => BIOS_AMERICA,
-        Some(Region::Europe) => BIOS_EUROPE,
-        Some(Region::Japan) => BIOS_JAPAN,
-        None => &[],
-    }
-}
-
-/// The order to look for a BIOS in, for a disc from `region`: that region's
-/// own names, then the neutral ones, then everything else as a last resort,
-/// because a mismatched BIOS still boots EXEs and the BIOS menu.
-fn bios_order(region: Option<Region>) -> Vec<&'static str> {
-    let mut order: Vec<&str> = region_bios(region)
-        .iter()
-        .chain(BIOS_NEUTRAL)
-        .copied()
-        .collect();
-    for name in BIOS_CANDIDATES {
-        if !order.contains(name) {
-            order.push(name);
-        }
-    }
-    order
-}
 
 // The libretro ABI is single-threaded and callback-driven, so the core's state
 // is process-global. These accessors go through raw pointers rather than taking
@@ -299,6 +260,7 @@ macro_rules! info { ($($t:tt)*) => { $crate::log_line($crate::LOG_INFO, &format!
 macro_rules! warn { ($($t:tt)*) => { $crate::log_line($crate::LOG_WARN, &format!($($t)*)) } }
 macro_rules! error { ($($t:tt)*) => { $crate::log_line($crate::LOG_ERROR, &format!($($t)*)) } }
 
+mod card2;
 mod discs;
 
 #[no_mangle]
@@ -506,6 +468,9 @@ pub unsafe extern "C" fn retro_run() {
     if let Some(psx) = psx_mut() {
         poll_pads(psx);
         psx.run_frame_at(*ptr::addr_of!(DECLARED));
+        if let Some(card2) = (*ptr::addr_of_mut!(CARD2)).as_mut() {
+            card2.frame(psx);
+        }
 
         // The GPU picks the resolution, and software changes it mid-game, so
         // the geometry is read per frame rather than fixed at load. It can only
@@ -608,29 +573,14 @@ pub unsafe extern "C" fn retro_load_game(info: *const GameInfo) -> bool {
     } else {
         Standard::Ntsc
     };
-    let bios = match load_bios(region) {
-        Some(bios) => bios,
-        // No BIOS file: the built-in kernel boots the game instead. It has
-        // no shell, so with nothing to boot there is still nothing to show.
-        None if !info.is_null() => {
-            warn!(
-                "no BIOS found in the frontend's system directory (expected one of: {}); \
-                 booting with the built-in HLE kernel",
-                BIOS_CANDIDATES.join(", ")
-            );
-            psx_core::hle::rom()
-        }
-        None => {
-            error!(
-                "no BIOS found in the frontend's system directory, and no content: the \
-                 built-in kernel has no BIOS menu to show. Expected one of: {}",
-                BIOS_CANDIDATES.join(", ")
-            );
-            return false;
-        }
-    };
+    // The built-in kernel has no shell, so with no content there is nothing
+    // to show.
+    if info.is_null() {
+        error!("no content: the built-in kernel has no BIOS menu to show");
+        return false;
+    }
 
-    let mut psx = match Psx::new(bios) {
+    let mut psx = match Psx::new(psx_core::hle::rom()) {
         Ok(p) => p,
         Err(e) => {
             error!("{e}");
@@ -641,8 +591,9 @@ pub unsafe extern "C" fn retro_load_game(info: *const GameInfo) -> bool {
     // A memory card in slot 1, which is the frontend's save RAM: it copies
     // the player's card file over this one after load and saves it back, as
     // it does a cartridge's battery RAM. Until then it is a formatted, empty
-    // card. Slot 2 stays empty.
+    // card. Slot 2 is the core's own, one card for every game.
     psx.bus.sio.cards[0].connected = true;
+    *ptr::addr_of_mut!(CARD2) = Some(card2::Card2::attach(&mut psx, save_dir().as_deref()));
 
     // A null info is "boot with no content", the BIOS menu. Valid on its own.
     if disc_set.is_some() {
@@ -757,6 +708,10 @@ pub unsafe extern "C" fn retro_load_game_special(
 
 #[no_mangle]
 pub unsafe extern "C" fn retro_unload_game() {
+    if let (Some(card2), Some(psx)) = ((*ptr::addr_of_mut!(CARD2)).as_mut(), psx_ref()) {
+        card2.flush(psx);
+    }
+    *ptr::addr_of_mut!(CARD2) = None;
     PSX = None;
     *ptr::addr_of_mut!(discs::DISCS) = None;
 }
@@ -769,7 +724,6 @@ pub extern "C" fn retro_get_region() -> c_uint {
     }
 }
 
-/// Ask the frontend where its system directory is and look for a BIOS in it.
 /// The content's path, if it is a disc image rather than an EXE.
 unsafe fn content_disc_path(info: &GameInfo) -> Option<&str> {
     if info.path.is_null() {
@@ -783,46 +737,24 @@ unsafe fn content_disc_path(info: &GameInfo) -> Option<&str> {
         .then_some(p)
 }
 
-unsafe fn load_bios(region: Option<Region>) -> Option<Vec<u8>> {
+/// The frontend's save directory, for slot 2's card; its system directory if
+/// it has no save directory, which is where RetroArch's own default puts saves
+/// beside the system files anyway.
+unsafe fn save_dir() -> Option<PathBuf> {
     let env = ENV_CB?;
-    let mut dir: *const c_char = ptr::null();
-    if !env(
+    for cmd in [
+        RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY,
         RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY,
-        &mut dir as *mut *const c_char as *mut c_void,
-    ) || dir.is_null()
-    {
-        return None;
-    }
-
-    let base = PathBuf::from(CStr::from_ptr(dir).to_string_lossy().into_owned());
-    info!("looking for a BIOS in {}", base.display());
-    let order = bios_order(region);
-    let matching = region_bios(region).len() + BIOS_NEUTRAL.len();
-    for (rank, name) in order.iter().enumerate() {
-        // Case varies between dumps; try both, since Linux and Android will not
-        // do it for us.
-        for candidate in [base.join(name), base.join(name.to_uppercase())] {
-            if let Ok(image) = std::fs::read(&candidate) {
-                if image.len() == psx_core::bus::BIOS_SIZE {
-                    info!("BIOS {} for a {region:?} disc", candidate.display());
-                    if region.is_some() && rank >= matching {
-                        warn!(
-                            "{name} is not a {region:?} BIOS. Some BIOSes refuse a disc \
-                             from another region (scph5500 does) and drop to their shell; \
-                             scph1001 has been seen to boot a European disc"
-                        );
-                    }
-                    return Some(image);
-                }
-                warn!(
-                    "ignoring {}: {} bytes, expected {}",
-                    candidate.display(),
-                    image.len(),
-                    psx_core::bus::BIOS_SIZE
-                );
+    ] {
+        let mut dir: *const c_char = ptr::null();
+        if env(cmd, &mut dir as *mut *const c_char as *mut c_void) && !dir.is_null() {
+            let path = CStr::from_ptr(dir).to_string_lossy().into_owned();
+            if Path::new(&path).is_dir() {
+                return Some(PathBuf::from(path));
             }
         }
     }
+    warn!("the frontend gave no save directory: memory card 2 will not be kept");
     None
 }
 
@@ -927,45 +859,6 @@ pub unsafe extern "C" fn ruststation_state_token() -> *const c_char {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The case met on a phone: a Japanese BIOS and an American one side by
-    /// side, and an American disc. The old fixed order found scph5500 first.
-    #[test]
-    fn an_american_disc_prefers_an_american_bios_over_a_japanese_one() {
-        let order = bios_order(Some(Region::America));
-        let pos = |n: &str| order.iter().position(|x| *x == n).unwrap();
-        assert!(pos("scph1001.bin") < pos("scph5500.bin"));
-        assert!(pos("scph5501.bin") < pos("scph5500.bin"));
-        assert_eq!(order[0], "scph5501.bin");
-    }
-
-    #[test]
-    fn each_region_puts_its_own_bios_first_and_keeps_every_name() {
-        for (region, first) in [
-            (Region::Europe, "scph5502.bin"),
-            (Region::Japan, "scph5500.bin"),
-        ] {
-            let order = bios_order(Some(region));
-            assert_eq!(order[0], first);
-            // Region-free names come before any other region's.
-            let neutral = order.iter().position(|x| *x == "psxonpsp660.bin").unwrap();
-            assert!(neutral < order.iter().position(|x| *x == "scph5501.bin").unwrap());
-        }
-        // Nothing is ever dropped: a wrong-region BIOS is a last resort, not
-        // a refusal, because it still boots EXEs and the BIOS menu.
-        for region in [
-            None,
-            Some(Region::America),
-            Some(Region::Europe),
-            Some(Region::Japan),
-        ] {
-            let order = bios_order(region);
-            assert_eq!(order.len(), BIOS_CANDIDATES.len(), "{region:?}");
-            for name in BIOS_CANDIDATES {
-                assert!(order.contains(name), "{region:?} lost {name}");
-            }
-        }
-    }
 
     /// The name this core would print for a pad bit. Independent of both tables
     /// under test, so it can referee between them.

@@ -861,6 +861,18 @@ All play well at full speed. Resident Evil 3 unlocked a RetroAchievement
 ("Easy", a dodge before the warehouse) from a real dodge in play, so the
 memory RetroAchievements reads is the game's own. Twelve of twelve on HLE.
 
+Rayman, Silent Hill (USA) and Yu-Gi-Oh! Forbidden Memories then played
+perfectly on HLE too (2026-09-26): fifteen of fifteen, and no disc tried has
+yet failed to boot on the built-in kernel. On that record the libretro core
+stopped reading BIOS files at all: it always boots the HLE kernel, so every
+copy runs the same kernel and a forgotten BIOS file cannot split two netplay
+peers (one had been sitting unseen in a tablet's system directory). Rayman
+also popped a RetroAchievement ("refill health from one hit point") on
+loading a save state. The core's memory was right, since rich presence read
+correctly; the frontend did not reset the achievement runtime across the
+load, so the jump in memory looked like the condition. Reported to the
+frontend, and not a core bug.
+
 **Tekken 3 fights dropped to the low 40s on the phone** where Beetle holds 60
 (reported with a state mid-fight). The fight draws at 368x480; the phone
 needed about 14 ms a frame at worst times, spiking past 20. Profiled on

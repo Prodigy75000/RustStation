@@ -155,7 +155,11 @@ entries, no broken sectors. **What is on a card is the frontend's**, like the
 disc image, and not in a save state: loading an old state never takes back a
 save. The card's transfer state and flag are in the state (format 14). In the
 libretro core, the card in slot 1 is the frontend's save RAM, so the frontend
-keeps it as a file as it does a cartridge's battery RAM; slot 2 is empty.
+keeps it as a file as it does a cartridge's battery RAM. Slot 2 has no such
+channel in libretro, so the core keeps that card itself, as
+`ruststation-card2.mcd` in the frontend's save directory: one card for every
+game, as a second card on a console was, written once it has been quiet for a
+second after a save and again on unload. The kernel's `bu10:` device reaches it.
 `shot --card PATH` and `retrohost --card PATH` do the same for the harnesses.
 
 ## An absent device

@@ -11,9 +11,8 @@
 //!
 //! What that catches, and unit tests on the shim's tables cannot: an entry
 //! point that is missing or misnamed, a pixel format the frontend refuses, a
-//! `need_fullpath` that leaves content unopenable, a BIOS the core cannot find
-//! in the system directory, and a video callback whose geometry disagrees with
-//! what it declared.
+//! `need_fullpath` that leaves content unopenable, and a video callback whose
+//! geometry disagrees with what it declared.
 //!
 //! ```text
 //! retrohost <core.so|core.dll> <system-dir> [--content <path>]
@@ -23,17 +22,16 @@
 //!
 //! `--hash-every` is the netplay proof: it prints a hash of the serialized
 //! state, and of the video frames and audio samples since the last line, every
-//! N frames. Run
-//! the same content and presses on two machines and the lines must match. A
+//! N frames. Run the same content and presses on two machines and the lines
+//! must match. A
 //! run given `--load-at` a state another run saved with `--save-at` must then
 //! print the same lines as that run from the frame it loaded at, which is a
 //! peer resyncing to its host.
 //!
-//! `system-dir` is what the core is told is the frontend's system directory,
-//! and it must hold a BIOS under one of the canonical names (`scph1001.bin`
-//! and friends). That is not a detail: a dump named after its release is
-//! invisible to a core looking for `scph1001.bin`, and the failure is a core
-//! that loads and then refuses content.
+//! `system-dir` is what the core is told is the frontend's system directory.
+//! The core always boots its built-in kernel, so it needs no BIOS there; it
+//! keeps the card in slot 2 there, since this frontend offers no separate save
+//! directory.
 
 use std::ffi::{c_char, c_uint, c_void, CStr, CString};
 use std::fs::File;
@@ -620,8 +618,7 @@ fn run() -> Result<(), String> {
         };
         if !ok {
             return Err(format!(
-                "retro_load_game refused. Is there a BIOS in {system_dir}, \
-                 named the way the core looks for it?"
+                "retro_load_game refused the content (system directory {system_dir})"
             ));
         }
         if !PIXEL_FORMAT_OK {

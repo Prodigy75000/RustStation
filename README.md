@@ -7,7 +7,7 @@ Copyright (C) 2026 Prodigy75000
 
 A clean-room Sony PlayStation (PS1) emulator core written from scratch in Rust.
 No C, no bindings, and no lifted code, just the hardware modelled from the docs.
-It boots commercial games with or without a BIOS file, plays them at full speed
+It boots commercial games on its own built-in BIOS, plays them at full speed
 on a phone, and its save states are byte-identical on every machine, which is
 what makes netplay between a PC and a phone sound.
 
@@ -25,17 +25,19 @@ what makes netplay between a PC and a phone sound.
 | Disc images | ✅ BIN/CUE (tracks, pregaps, indices) and `.m3u` playlists for multi-disc games. Not yet: CHD |
 | DMA, timers, interrupts | ✅ every DMA channel with something behind it, the three root counters, video timing, the interrupt controller |
 | Controllers | ✅ a DualShock in each port: digital and analog modes, config mode, rumble mapping |
-| Memory cards | ✅ slot 1, exposed as libretro save RAM so the frontend persists it. Card contents stay out of save states, so loading one never takes back a save |
-| HLE kernel | ✅ boots games with no BIOS file: the kernel's A, B and C functions, exceptions, events, threads, pads, memory card files and the CD file system, written from psx-spx (`docs/notes/HLE.md`) |
+| Memory cards | ✅ both slots. Slot 1 is libretro save RAM, kept per game by the frontend; slot 2 is one card shared by every game, kept by the core in the save directory. Card contents stay out of save states, so loading one never takes back a save |
+| HLE kernel | ✅ boots every game, with no BIOS file: the kernel's A, B and C functions, exceptions, events, threads, pads, memory card files and the CD file system, written from psx-spx (`docs/notes/HLE.md`) |
 | Save states | ✅ fixed size, little-endian, versioned; byte-identical on x86-64 and arm64 (`docs/SAVESTATE.md`) |
 | Netplay | ✅ proven deterministic across machines: the same presses give the same state, video and audio on a Windows PC and two arm64 Android devices, and a peer that loads its host's state mid-game stays in step (`docs/TESTS.md`, "Netplay") |
 | libretro | ✅ content as disc image, playlist or PSX-EXE, both pads with input descriptors, disk control, save states, save RAM, system RAM for RetroAchievements |
 
 Compatibility: every disc in a 34-disc test library boots and plays its own
-content on both the real BIOS and the HLE kernel, and twelve commercial games
+content on both the real BIOS and the HLE kernel, and fifteen commercial games
 have been played on a phone at full speed with no BIOS file, among them Final
-Fantasy VIII, Metal Gear Solid, Tekken 3, Crash Team Racing, Resident Evil 3,
-Spyro the Dragon, Tony Hawk's Pro Skater 2 and Grand Theft Auto 2. The running
+Fantasy VIII, Metal Gear Solid, Silent Hill, Tekken 3, Crash Team Racing,
+Resident Evil 3, Rayman, Spyro the Dragon, Tony Hawk's Pro Skater 2, Yu-Gi-Oh!
+Forbidden Memories and Grand Theft Auto 2. No disc tried so far has failed to
+boot on the built-in kernel. The running
 record, including what did not work and why, is [`docs/TESTS.md`](docs/TESTS.md).
 
 ## How it is timed
@@ -78,10 +80,10 @@ accident.
 
 ## Running
 
-A BIOS is optional. Anywhere a BIOS path goes, `hle` boots the built-in kernel
-instead, and the libretro core uses it when the system directory has no BIOS.
-See [`bios/README.md`](bios/README.md) for the names a real one is looked for
-under.
+The libretro core always boots its built-in kernel and never reads a BIOS
+file, so every copy of it runs the same machine, which netplay depends on. The
+harnesses take a real BIOS's path as the reference, or `hle` for the built-in
+kernel. See [`bios/README.md`](bios/README.md).
 
 ```sh
 # Boot a disc headless and write what is on screen.

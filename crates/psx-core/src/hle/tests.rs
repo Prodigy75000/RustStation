@@ -782,3 +782,60 @@ fn printf_takes_a_minus_after_the_width() {
     let tty = psx.take_tty();
     assert!(tty.contains(" 5.3 |"), "printed {tty:?}");
 }
+
+/// "bu10:" is the card in slot 2: a file saved there lands on that card and
+/// leaves slot 1's alone.
+#[test]
+fn a_file_on_bu10_is_saved_to_the_card_in_slot_two() {
+    let mut p = Prog::new();
+    let name = 0x8004_0000u32;
+    let src = 0x8004_0100u32;
+    // open("bu10:BASLUS-00000TWO", create, one block), write 0x80, close
+    p.args(&[name, 0x0001_0202]);
+    p.a(0x00);
+    p.a.mov(S0, V0);
+    p.keep(0);
+    p.args(&[0, src, 0x80]);
+    p.a.mov(A0, S0);
+    p.a(0x03);
+    p.keep(1);
+    p.a.mov(A0, S0);
+    p.a(0x04);
+    let code = p.halt();
+    let text: Vec<u8> = code.iter().flat_map(|w| w.to_le_bytes()).collect();
+    let mut psx = Psx::new(rom()).unwrap();
+    psx.bus.sio.cards[0].connected = true;
+    psx.bus.sio.cards[1].connected = true;
+    let put = |psx: &mut Psx, at: u32, s: &[u8]| {
+        let o = (at & 0x1F_FFFF) as usize;
+        psx.bus.ram[o..o + s.len()].copy_from_slice(s);
+    };
+    put(&mut psx, name, b"bu10:BASLUS-00000TWO\0");
+    let data: Vec<u8> = (0..0x80u8).map(|i| i.wrapping_mul(11) ^ 0x3C).collect();
+    put(&mut psx, src, &data);
+    psx.sideload_exe(Exe {
+        initial_pc: ORG,
+        initial_gp: 0,
+        dest: ORG,
+        text,
+        memfill_start: 0,
+        memfill_size: 0,
+        sp_base: 0x801F_FF00,
+        sp_offset: 0,
+    });
+    psx.run(400_000);
+    assert_eq!(result(&mut psx, 0x3F), 0x600D, "{}", psx.take_tty());
+    assert_eq!(result(&mut psx, 1), 0x80, "the write took all of it");
+
+    let two = &psx.bus.sio.cards[1].data;
+    let named = two.windows(19).any(|w| w == b"BASLUS-00000TWO\0\0\0\0");
+    assert!(named, "slot 2's directory names the file");
+    assert!(
+        two.windows(0x80).any(|w| w == &data[..]),
+        "and holds its data"
+    );
+    assert!(
+        psx.bus.sio.cards[0].data == crate::memcard::formatted(),
+        "slot 1's card is untouched"
+    );
+}
