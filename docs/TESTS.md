@@ -776,6 +776,9 @@ and two discs with the first selected. Then, from the owner:
   reproduced. With disc 1 here, the opening video ends in a fade to white of
   about two seconds and the game goes on into the infirmary scene, untouched.
   Needs a state from the phone taken on the white screen.
+  **Closed 2026-09-26: not a hang.** The owner took a state on the logo
+  just before the white, then found the game goes on if given longer. The
+  state run here reaches the infirmary in 30 seconds.
 - **Metal Gear Solid's briefing screen showed textures down its right side**
   (second phone run): 320 pixels drawn in the 368 mode with a display range
   to match, and the core showing all 368. The width now comes from GP1(06h)
