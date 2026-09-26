@@ -263,7 +263,7 @@ fn run_one(
     psx.sideload_exe(exe);
     psx.bus.sio.pads[0].buttons = hold;
     if let Some(d) = disc {
-        psx.bus.cdrom.disc = Some(psx_core::disc::Disc::open(Path::new(d))?);
+        psx.bus.cdrom.disc = Some(psx_chd::open_any(Path::new(d))?);
     }
 
     // Phase 1: BIOS boot, until the shell hands over and the EXE goes in.

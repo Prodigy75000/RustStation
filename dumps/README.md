@@ -24,7 +24,8 @@ given, recursively, and sorts the results so a run is reproducible.
   form, since it keeps the raw 2352-byte sectors, the audio tracks and the
   sector headers software can see. A bare `.bin`, `.img` or `.iso` with no cue
   is also read, as a single data track whose sector size (2352 or 2048) is
-  inferred from the file's length. See
+  inferred from the file's length. A `.chd` made by `chdman createcd` is
+  read too, with any of its CD codecs. See
   [`../docs/notes/DISC.md`](../docs/notes/DISC.md). For a game on more than one
   disc, an `.m3u` playlist lists one image per line, resolved against the
   playlist's own folder, for example:

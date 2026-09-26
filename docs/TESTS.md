@@ -873,6 +873,15 @@ correctly; the frontend did not reset the achievement runtime across the
 load, so the jump in memory looked like the condition. Reported to the
 frontend, and not a core bug.
 
+**CHD, 2026-09-26.** CHD images are read (`psx-chd`, on the pure-Rust `chd`
+crate), checked against BIN/CUE by building CHDs with chdman and comparing
+every sector: Tekken 3 and Tomb Raider (57 tracks, default codecs and zstd)
+are identical, and each layout detail broken on purpose makes thousands of
+sectors differ. Through the shipped library, Tekken 3 hashes the same (state,
+video, audio) from its CHD, from its cue sheet, and from an `.m3u` listing the
+CHD, on the PC and on an arm64 tablet. Details in
+[`notes/DISC.md`](notes/DISC.md).
+
 **Tekken 3 fights dropped to the low 40s on the phone** where Beetle holds 60
 (reported with a state mid-fight). The fight draws at 368x480; the phone
 needed about 14 ms a frame at worst times, spiking past 20. Profiled on

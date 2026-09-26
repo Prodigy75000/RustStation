@@ -6,8 +6,9 @@
 //! Deliberately a layer of its own, with the CD-ROM controller knowing nothing
 //! about file formats. A disc is a **table of contents plus a function from LBA
 //! to 2352 raw bytes**, and that is the whole interface. BIN/CUE is one
-//! implementation of it; CHD would be another, and adding it should not touch
-//! `cdrom.rs` at all.
+//! implementation of it. A compressed image is another, supplied from outside
+//! the core as a [`SectorSource`] (the `psx-chd` crate does CHD), so the
+//! core itself depends on nothing and `cdrom.rs` knows nothing of either.
 //!
 //! ## Why raw 2352-byte sectors, and not `.iso`
 //!
@@ -65,14 +66,31 @@ pub struct Track {
     pub length: u32,
 }
 
+/// Sectors from somewhere other than a flat file: a compressed image.
+///
+/// Addressed by sector, not by byte, because a compressed image's sectors are
+/// not laid out at a fixed stride of the track's sector size.
+pub trait SectorSource: Send {
+    /// Fill `buf` with the first `buf.len()` bytes of stored sector `index`.
+    fn read_sector(&mut self, index: u64, buf: &mut [u8]) -> bool;
+}
+
 enum Backing {
-    /// An image already in memory: what [`Disc::from_memory`] builds, and the
-    /// shape a decompressed CHD hunk would arrive in.
+    /// An image already in memory: what [`Disc::from_memory`] builds.
     Memory(Vec<u8>),
     File(File),
+    Source(Box<dyn SectorSource>),
 }
 
 impl Backing {
+    /// Stored sector `index` of a track whose sectors are `size` bytes.
+    fn read_unit(&mut self, index: u64, size: usize, buf: &mut [u8]) -> bool {
+        match self {
+            Backing::Source(s) => s.read_sector(index, buf),
+            _ => self.read_at(index * size as u64, buf),
+        }
+    }
+
     fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> bool {
         match self {
             Backing::Memory(v) => {
@@ -93,6 +111,7 @@ impl Backing {
             Backing::File(f) => {
                 f.seek(SeekFrom::Start(offset)).is_ok() && f.read_exact(buf).is_ok()
             }
+            Backing::Source(_) => false,
         }
     }
 }
@@ -301,6 +320,7 @@ impl Disc {
                     file_lengths.push(match &backing {
                         Backing::Memory(v) => v.len() as u64,
                         Backing::File(f) => f.metadata().map(|m| m.len()).unwrap_or(0),
+                        Backing::Source(_) => 0,
                     });
                     files.push(backing);
                     current_file = Some(files.len() - 1);
@@ -410,6 +430,34 @@ impl Disc {
         })
     }
 
+    /// A disc whose sectors come from `source`, laid out as `tracks` say.
+    /// Each track's [`Track::stored_from`] is the index in `source` of its
+    /// `INDEX 01` sector. The tracks must be in order and not overlap.
+    pub fn from_source(
+        tracks: Vec<Track>,
+        source: Box<dyn SectorSource>,
+        label: String,
+    ) -> Result<Disc, String> {
+        let Some(last) = tracks.last() else {
+            return Err(format!("{label}: no tracks"));
+        };
+        let length = last.start_lba + last.length;
+        for pair in tracks.windows(2) {
+            if pair[1].pregap_lba < pair[0].start_lba + pair[0].length {
+                return Err(format!(
+                    "{label}: track {} overlaps track {}",
+                    pair[1].number, pair[0].number
+                ));
+            }
+        }
+        Ok(Disc {
+            files: vec![Backing::Source(source)],
+            tracks,
+            length,
+            label,
+        })
+    }
+
     /// The track containing `lba`, if any.
     pub fn track_at(&self, lba: u32) -> Option<&Track> {
         self.tracks
@@ -437,22 +485,50 @@ impl Disc {
         }
 
         let within = lba - track.start_lba;
-        let offset = (track.file_sector as u64 + within as u64) * track.sector_size as u64;
+        let index = track.file_sector as u64 + within as u64;
+        let size = track.sector_size;
+        let file = &mut self.files[track.file];
 
-        match track.sector_size {
-            RAW_SECTOR => self.files[track.file].read_at(offset, out),
+        match size {
+            RAW_SECTOR => file.read_unit(index, size, out),
             2336 => {
                 // Mode 2 without sync or header: the subheader onwards.
                 out.fill(0);
                 write_sync_and_header(out, lba, track.mode);
-                self.files[track.file].read_at(offset, &mut out[16..16 + 2336])
+                file.read_unit(index, size, &mut out[16..16 + 2336])
             }
             2048 => {
                 out.fill(0);
                 write_sync_and_header(out, lba, track.mode);
-                self.files[track.file].read_at(offset, &mut out[24..24 + 2048])
+                file.read_unit(index, size, &mut out[24..24 + 2048])
             }
             _ => false,
+        }
+    }
+}
+
+impl Track {
+    /// A track for [`Disc::from_source`]: its content starts at `start_lba`
+    /// and at stored sector `stored_from`, after a pregap from `pregap_lba`
+    /// that has no stored sectors and reads blank.
+    pub fn stored_from(
+        number: u8,
+        mode: TrackMode,
+        sector_size: usize,
+        stored_from: u32,
+        pregap_lba: u32,
+        start_lba: u32,
+        length: u32,
+    ) -> Track {
+        Track {
+            number,
+            mode,
+            sector_size,
+            file: 0,
+            file_sector: stored_from,
+            start_lba,
+            pregap_lba,
+            length,
         }
     }
 }

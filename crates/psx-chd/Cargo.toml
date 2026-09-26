@@ -1,0 +1,14 @@
+[package]
+name = "psx-chd"
+version = "0.2.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+repository.workspace = true
+authors.workspace = true
+description = "CHD disc images for RustStation: a CD CHD as a psx-core Disc."
+
+[dependencies]
+psx-core = { path = "../psx-core" }
+# Pure Rust. The default features read every CD codec chdman writes by
+# default (LZMA, Deflate, FLAC); zstd is added without the C library.
+chd = { version = "0.3.4", default-features = false, features = ["std", "cd_full", "fast_lzma"] }

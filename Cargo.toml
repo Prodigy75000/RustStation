@@ -2,10 +2,10 @@
 # scratch in Rust.
 [workspace]
 resolver = "2"
-members = ["crates/psx-core", "crates/psx-libretro", "crates/psx-runner"]
+members = ["crates/psx-core", "crates/psx-chd", "crates/psx-libretro", "crates/psx-runner"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/Prodigy75000/RustStation"

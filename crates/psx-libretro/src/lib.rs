@@ -3,7 +3,7 @@
 
 //! libretro C ABI front-end for RustStation.
 //!
-//! Content is a **disc image** (a cue sheet, or a raw image) or a PSX-EXE, and
+//! Content is a **disc image** (a cue sheet, a CHD, or a raw image) or a PSX-EXE, and
 //! either arrives as a path: `need_fullpath` is set because a cue sheet names
 //! other files beside it and a frontend that reads content into a buffer for us
 //! would hand over the sheet's text and nothing it points at.
@@ -146,12 +146,12 @@ static mut FRAMEBUFFER: Vec<u32> = Vec::new();
 static mut SILENCE: Vec<i16> = Vec::new();
 
 const LIBRARY_NAME: &[u8] = b"RustStation (PlayStation)\0";
-const LIBRARY_VERSION: &[u8] = b"0.1.0\0";
+const LIBRARY_VERSION: &[u8] = b"0.2.0\0";
 /// What the frontend will offer as content. Disc images first: they are the
 /// point, and a core that does not list them cannot be handed one however well
 /// it would cope. `exe` and `psexe` stay for the conformance suites, which ship
 /// as PSX-EXEs.
-const VALID_EXTENSIONS: &[u8] = b"cue|bin|img|iso|m3u|exe|psexe\0";
+const VALID_EXTENSIONS: &[u8] = b"cue|chd|bin|img|iso|m3u|exe|psexe\0";
 
 // The libretro ABI is single-threaded and callback-driven, so the core's state
 // is process-global. These accessors go through raw pointers rather than taking
@@ -652,7 +652,7 @@ unsafe fn load_content(psx: &mut Psx, info: &GameInfo) -> bool {
     };
 
     if let Some(disc_path) = content_disc_path(info) {
-        return match Disc::open(std::path::Path::new(disc_path)) {
+        return match psx_chd::open_any(std::path::Path::new(disc_path)) {
             Ok(d) => {
                 psx.bus.cdrom.disc = Some(d);
                 true
@@ -731,7 +731,7 @@ unsafe fn content_disc_path(info: &GameInfo) -> Option<&str> {
     }
     let p = CStr::from_ptr(info.path).to_str().ok()?;
     let lower = p.to_ascii_lowercase();
-    [".cue", ".bin", ".iso", ".img", ".m3u"]
+    [".cue", ".chd", ".bin", ".iso", ".img", ".m3u"]
         .iter()
         .any(|ext| lower.ends_with(ext))
         .then_some(p)

@@ -1,6 +1,6 @@
 [package]
 name = "psx-runner"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
 repository.workspace = true
@@ -41,5 +41,11 @@ path = "src/retrohost.rs"
 
 [dependencies]
 psx-core = { path = "../psx-core" }
+psx-chd = { path = "../psx-chd" }
 # Dev-harness only. The core and the shipped libretro cdylib pull in nothing.
 png = "0.17"
+
+# Compare two disc images, of any format, track by track and sector by sector.
+[[bin]]
+name = "discdiff"
+path = "src/discdiff.rs"

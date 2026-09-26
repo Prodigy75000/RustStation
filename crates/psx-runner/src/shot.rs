@@ -241,7 +241,7 @@ fn main() -> ExitCode {
     psx.bus.sio.pads[0].buttons = hold;
 
     if let Some(path) = &disc_path {
-        match psx_core::disc::Disc::open(std::path::Path::new(path)) {
+        match psx_chd::open_any(std::path::Path::new(path)) {
             Ok(d) => {
                 println!("disc: {} tracks, {} sectors", d.tracks.len(), d.length);
                 psx.bus.cdrom.disc = Some(d);

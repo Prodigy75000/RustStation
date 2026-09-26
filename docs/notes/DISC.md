@@ -10,8 +10,33 @@ Implemented in `crates/psx-core/src/disc.rs`.
 
 A disc is a **table of contents plus a function from LBA to 2352 raw bytes**.
 That is the whole of it, and keeping it that small is the point: the CD-ROM
-controller never learns what a cue sheet is, so CHD can be added later as a
-second implementation without touching `cdrom.rs`.
+controller never learns what a cue sheet is. CHD is the second implementation,
+in its own crate (`psx-chd`) as a `SectorSource`, and `cdrom.rs` did not change.
+
+## CHD (2026-09-26)
+
+A CD CHD stores the track list as text metadata (`CHT2`, or the older `CHTR`)
+and the sectors in order, compressed a hunk at a time. The decompression is the
+pure-Rust `chd` crate's, used as a library: the format is defined by MAME's
+source, which is not read here. What `psx-chd` adds is the layout, and three
+details of it were established by experiment, building CHDs with `chdman` from
+BIN/CUE images and comparing every sector with `discdiff`:
+
+* each stored sector is the 2352 bytes of data then 96 of subcode;
+* each track's stored sectors are padded to a multiple of four;
+* audio samples are stored big-endian.
+
+A pregap whose type starts with `V` is stored in front of its track and is
+skipped; either way the pregap reads blank, as it does from a cue sheet.
+
+Tekken 3 (a data track and two audio tracks) and Tomb Raider (57 tracks, with
+the default codecs and again with zstd) read identically from CHD and BIN/CUE,
+track table and every sector, 292 635 and 281 655 of them. Each of the three
+details, broken on purpose, makes thousands of sectors differ. Tekken 3 through
+the shipped library for 1 800 frames hashes the same (state, video, audio) from
+either image, on the PC and on an arm64 tablet; frame times there match BIN/CUE
+except the first frame, which pays 60 to 95 ms once. `crates/psx-chd/tests`
+carries a synthetic disc and its CHD so the comparison runs anywhere.
 
 ## Why raw 2352-byte sectors
 
@@ -61,11 +86,11 @@ checking the ECC, which is a trade worth making but not worth hiding.
 
 ## Open questions
 
-1. **CHD is not supported.** It holds the same raw 2352-byte sectors, so nothing
-   is lost by it; the cost is purely decoding, which means hunk decompression
-   across several codecs plus a metadata format. Worth doing, and it belongs
-   entirely in this file.
-2. **Multi-file cue sheets are implemented but untested.** One `FILE` per track
+1. **CHD: only CD images.** A hard-disk or DVD CHD is refused with a message.
+2. **Multi-file cue sheets** (untested when this was first written) now have
+   one: the synthetic disc in `psx-chd`'s test is three files, and Tekken 3 and
+   Tomb Raider's cue sheets agree with chdman's own reading of them, track for
+   track. One `FILE` per track
    is common in the wild. The accumulation of the base LBA across files is the
    part most likely to be wrong, and no test here covers it because building a
    convincing fixture needs more than one image.

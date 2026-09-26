@@ -22,7 +22,7 @@ what makes netplay between a PC and a phone sound.
 | MDEC | ✅ run-length decoding, the IDCT, colour and monochrome macroblocks, all four output depths. Full-motion video plays |
 | SPU | ✅ all 24 voices: ADPCM, Gaussian interpolation, pitch modulation, noise, ADSR, volume sweeps, capture buffers, the SPU interrupt. Not yet: reverb, so everything is dry |
 | CD-ROM | ✅ the controller, seeks, data reads through the FIFO and DMA, CD-DA with reports, XA-ADPCM decoded and resampled in the drive, the volume matrix, the lid for disc swaps |
-| Disc images | ✅ BIN/CUE (tracks, pregaps, indices) and `.m3u` playlists for multi-disc games. Not yet: CHD |
+| Disc images | ✅ BIN/CUE (tracks, pregaps, indices), CHD (every CD codec, zstd included), and `.m3u` playlists of either for multi-disc games |
 | DMA, timers, interrupts | ✅ every DMA channel with something behind it, the three root counters, video timing, the interrupt controller |
 | Controllers | ✅ a DualShock in each port: digital and analog modes, config mode, rumble mapping |
 | Memory cards | ✅ both slots. Slot 1 is libretro save RAM, kept per game by the frontend; slot 2 is one card shared by every game, kept by the core in the save directory. Card contents stay out of save states, so loading one never takes back a save |
@@ -66,8 +66,10 @@ crates/
   psx-core/       the emulator library: cpu, timing, gte, gpu, mdec, spu,
                   cdrom, disc, dma, sio (pads and cards), hle, save
     tests/        CPU semantics and timing integration tests
+  psx-chd/        CHD disc images, as a psx-core disc
+    tests/        a synthetic CHD read back against its BIN/CUE
   psx-libretro/   the libretro core (cdylib)
-  psx-runner/     dev harnesses: testrom, shot, retrohost, fingerprint, psx
+  psx-runner/     dev harnesses: testrom, shot, retrohost, discdiff, fingerprint, psx
 scripts/          library survey, Android build and deploy
 tools/            survey comparison, synthetic disc builder
 docs/             hardware notes, reference write-ups, the test log
@@ -130,7 +132,9 @@ that saved it line for line.
 | macOS    | host          | `libpsxcore_libretro.dylib` |
 | Android arm64 | `aarch64-linux-android` | `libpsxcore_libretro.so` |
 
-Builds are release + LTO. The core has no dependencies at all beyond `std`, so
+Builds are release + LTO. The emulator itself (`psx-core`) has no dependencies
+beyond `std`. CHD reading lives in `psx-chd`, on the pure-Rust
+[`chd`](https://crates.io/crates/chd) crate, so nothing needs a C toolchain and
 cross-compiling only needs a linker for the target.
 
 ```sh

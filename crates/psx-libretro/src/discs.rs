@@ -82,7 +82,7 @@ impl Discs {
         match self.paths.get(index) {
             None => Ok(None),
             Some(p) if p.as_os_str().is_empty() => Ok(None),
-            Some(p) => Disc::open(p).map(Some).map_err(|e| e.to_string()),
+            Some(p) => psx_chd::open_any(p).map(Some).map_err(|e| e.to_string()),
         }
     }
 }

@@ -23,10 +23,9 @@
 //! `--hash-every` is the netplay proof: it prints a hash of the serialized
 //! state, and of the video frames and audio samples since the last line, every
 //! N frames. Run the same content and presses on two machines and the lines
-//! must match. A
-//! run given `--load-at` a state another run saved with `--save-at` must then
-//! print the same lines as that run from the frame it loaded at, which is a
-//! peer resyncing to its host.
+//! must match. A run given `--load-at` a state another run saved with
+//! `--save-at` must then print the same lines as that run from the frame it
+//! loaded at, which is a peer resyncing to its host.
 //!
 //! `system-dir` is what the core is told is the frontend's system directory.
 //! The core always boots its built-in kernel, so it needs no BIOS there; it
@@ -703,6 +702,7 @@ fn run() -> Result<(), String> {
         // the next load is told the game is still loaded.
         let (mut slowest, mut slowest_at) = (std::time::Duration::ZERO, 0u64);
         let mut total = std::time::Duration::ZERO;
+        let mut times = Vec::with_capacity(frames as usize);
         for f in 0..frames {
             if !presses.is_empty() {
                 HELD = presses
@@ -763,6 +763,7 @@ fn run() -> Result<(), String> {
             retro_run();
             let dt = t.elapsed();
             total += dt;
+            times.push(dt);
             if dt > slowest {
                 slowest = dt;
                 slowest_at = f;
@@ -796,6 +797,25 @@ fn run() -> Result<(), String> {
             slowest.as_secs_f64() * 1e3,
             total.as_secs_f64() * 1e3 / frames.max(1) as f64
         );
+        // The first frame pays for whatever loading defers to it, once. What a
+        // player sees is the rest: the worst of them, and the 99th percentile.
+        if times.len() > 1 {
+            let (at, worst) = times
+                .iter()
+                .enumerate()
+                .skip(1)
+                .max_by_key(|(_, d)| **d)
+                .map(|(i, d)| (i, *d))
+                .unwrap_or_default();
+            let mut sorted = times[1..].to_vec();
+            sorted.sort();
+            let p99 = sorted[(sorted.len() - 1) * 99 / 100];
+            println!(
+                "            after the first: slowest {:.1} ms at frame {at}, 99th percentile {:.1} ms",
+                worst.as_secs_f64() * 1e3,
+                p99.as_secs_f64() * 1e3
+            );
+        }
 
         let (w, h) = (FRAME_W, FRAME_H);
         let frame = &*std::ptr::addr_of!(FRAME);
