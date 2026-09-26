@@ -74,7 +74,12 @@ pub const MAGIC: &[u8; 8] = b"RSTAPSX1";
 /// * 15: instructions cost what they cost on the console, so the CPU gains
 ///   what that depends on: the I-cache's tags, and the cycles at which the
 ///   multiplier and the GTE are done.
-pub const FORMAT_VERSION: u16 = 15;
+/// * 16: the frame carries, appended last. A frame of the other standard
+///   ends after the instruction that crosses its end, and what it ran over,
+///   with the fraction of a cycle left, is carried into the next. That decides
+///   the cycle the frontend's next input lands on, so a netplay peer that
+///   loaded its host's state without it ended its frames cycles apart.
+pub const FORMAT_VERSION: u16 = 16;
 
 const HEADER_BYTES: usize = 8 + 2;
 const CPU_BYTES: usize = 32 * 4     // regs
@@ -216,7 +221,11 @@ const CD_AUDIO_BYTES: usize = 4 + 4   // the volume matrix, applied and pending
 /// widths above rather than from `save_state().len()`, so a test that pins it
 /// is comparing the serializer against an independent statement of the layout,
 /// not against itself.
-pub const STATE_SIZE: usize = HEADER_BYTES + CPU_BYTES + COP0_BYTES + GTE_BYTES + BUS_BYTES;
+pub const STATE_SIZE: usize =
+    HEADER_BYTES + CPU_BYTES + COP0_BYTES + GTE_BYTES + BUS_BYTES + FRAME_BYTES;
+
+/// `run_frame_at`'s carries: the fraction of a cycle, and the overshoot.
+const FRAME_BYTES: usize = 8 + 8;
 
 /// Offsets of the two length prefixes, derived from the same field widths.
 /// `load_state` checks them *before* it writes anything, which is what lets the
@@ -1043,6 +1052,8 @@ impl Psx {
         w.u16(FORMAT_VERSION);
         write_cpu(&mut w, &self.cpu);
         write_bus(&mut w, &self.bus);
+        w.u64(self.frame_frac);
+        w.u64(self.frame_over);
         debug_assert_eq!(w.buf.len(), STATE_SIZE, "STATE_SIZE is out of date");
         w.buf
     }
@@ -1079,6 +1090,8 @@ impl Psx {
             r.take(HEADER_BYTES)?;
             read_cpu(&mut r, &mut self.cpu)?;
             read_bus(&mut r, &mut self.bus)?;
+            self.frame_frac = r.u64()?;
+            self.frame_over = r.u64()?;
             Some(())
         })()
         .is_some()
@@ -1440,6 +1453,10 @@ mod tests {
             card.previous = 0xC0 | k;
         }
 
+        // The frame carries, different so a swap shows.
+        psx.frame_frac = 7;
+        psx.frame_over = 23;
+
         psx
     }
 
@@ -1457,15 +1474,15 @@ mod tests {
 
         // Header, byte for byte.
         assert_eq!(&snap[0..8], MAGIC);
-        assert_eq!(&snap[8..10], &[0x0F, 0x00]);
+        assert_eq!(&snap[8..10], &[0x10, 0x00]);
 
         // Total length, pinned to a literal, deliberately NOT compared against
         // `Psx::state_size()`, which would only compare the layout to itself.
-        assert_eq!(snap.len(), 3_746_074);
+        assert_eq!(snap.len(), 3_746_090);
 
         // Whole-buffer checksum: any added, removed, reordered or re-widened
         // field moves it.
-        assert_eq!(fnv1a64(&snap), 0xF1DE_BE4C_ADFF_30D0);
+        assert_eq!(fnv1a64(&snap), 0xD683_1D47_9176_A893);
     }
 
     #[test]

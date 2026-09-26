@@ -582,6 +582,58 @@ native library directory and the APK has to be rebuilt and reinstalled. And
 until RustStation has a `CoreSlot` entry there, nothing in the app asks for this
 library at all, so `so` mode is the honest one to be running.
 
+## Netplay: the same on every machine, 2026-09-26
+
+Netplay over libretro sends only the buttons. Each peer runs its own copy of
+the game, peers compare hashes of `retro_serialize` to notice a split, and a
+peer that has split loads the host's state. So two things have to hold, and
+both are tested through the shipped library, not the core directly:
+
+1. **The same content and presses give the same bytes on every machine.**
+2. **A peer that loads the host's state carries on exactly as the host does**,
+   whatever it was doing before.
+
+`retrohost --hash-every N` prints, every N frames, a hash of the serialized
+state and of the video frames and audio samples since the last line.
+`--save-at` and `--load-at` take and restore a state mid-run.
+
+**Across machines.** Tekken 3 for 7 200 frames with `--mash` on a Windows
+PC (x86-64), a Galaxy S25 Ultra and a Galaxy Tab (both arm64), all three from
+the same image by md5: all 120 lines equal, state, video and audio, and the
+states saved at frame 3 600 byte-identical. Final Fantasy VIII (its opening
+video, so the MDEC and XA audio) and Metal Gear Solid (Europe, PAL), 3 600
+frames each on the PC and the Tab: 60 of 60 lines equal for both.
+
+**Resync.** A run with its presses shifted by 3 000 frames, so a different
+history, loads the PC's frame-3 600 Tekken state at its own frame 600: every
+line after that equals the PC's, on the Tab. The same test on the PC with
+Tekken and MGS, at five load points for MGS: equal throughout. Shifting the
+presses by one frame instead makes all 15 compared lines differ, which is the
+check that the comparison can fail.
+
+**What it found.** `run_frame_at`, for a frontend pacing at one standard
+while the video runs the other, carries the cycles its last instruction ran
+past the frame's end and a fraction of a cycle. Both were kept out of the
+state as host-side, on the reasoning that where frames end does not change
+the machine. It does under netplay: the frame's end is where the next input
+lands. A resynced peer kept its own carry and ended every later frame a few
+cycles off the host's. `a_resynced_peer_ends_its_frames_where_the_host_does`
+failed at 29 cycles on the first frame, and passes since both are serialized
+(save format 16). None of the game runs above tripped it: the carry is only
+non-zero while the video standard differs from the declared one.
+
+**Why it holds.** The core is integer-only: its one floating-point use is in
+a test. It has no `unsafe`, no hash maps, no clocks and no threads, and it
+reads environment variables only to turn on trace output.
+
+**Not proven: the memory card.** What is on a card stays out of the state on
+purpose, so loading one never takes back a save. Under netplay, each peer has
+its own card. Tekken 3 with a card holding another game's save and with none
+hashes identically over 1 800 frames, because it finds no save of its own
+either way. A game that finds its own save on one peer's card and not the
+other's will split them, and a resync cannot fix that. It needs the peers to
+play from the same card.
+
 ## Real games, as of 2026-08-16
 
 Every disc on hand, thirty-one of them, run for the same two billion instructions

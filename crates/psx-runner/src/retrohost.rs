@@ -18,7 +18,16 @@
 //! ```text
 //! retrohost <core.so|core.dll> <system-dir> [--content <path>]
 //!           [--frames N] [--hold start] [--out frame.png]
+//!           [--hash-every N] [--save-at N PATH] [--load-at N PATH]
 //! ```
+//!
+//! `--hash-every` is the netplay proof: it prints a hash of the serialized
+//! state, and of the video frames and audio samples since the last line, every
+//! N frames. Run
+//! the same content and presses on two machines and the lines must match. A
+//! run given `--load-at` a state another run saved with `--save-at` must then
+//! print the same lines as that run from the frame it loaded at, which is a
+//! peer resyncing to its host.
 //!
 //! `system-dir` is what the core is told is the frontend's system directory,
 //! and it must hold a BIOS under one of the canonical names (`scph1001.bin`
@@ -205,6 +214,11 @@ static mut FRAME_W: usize = 0;
 static mut FRAME_H: usize = 0;
 static mut FRAMES_SEEN: u64 = 0;
 static mut AUDIO_FRAMES: u64 = 0;
+/// FNV-1a over every video frame and audio sample the core has sent, for
+/// `--hash-every`: two peers must agree on what they showed and played, not
+/// only on the state.
+static mut VIDEO_HASH: u64 = FNV_OFFSET;
+static mut AUDIO_HASH: u64 = FNV_OFFSET;
 static mut DESCRIPTORS: Vec<(c_uint, String)> = Vec::new();
 static mut PIXEL_FORMAT_OK: bool = false;
 static mut DISK: Option<*const DiskControl> = None;
@@ -272,14 +286,40 @@ unsafe extern "C" fn video_refresh(
     }
     FRAME_W = w;
     FRAME_H = h;
+    let mut vh = VIDEO_HASH;
+    for p in frame.iter() {
+        vh = fnv(vh, &p.to_le_bytes());
+    }
+    VIDEO_HASH = fnv(vh, &[w as u8, (w >> 8) as u8, h as u8, (h >> 8) as u8]);
 }
 
-unsafe extern "C" fn audio_sample(_l: i16, _r: i16) {
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+
+/// FNV-1a-64, continued from `h`. Integer-only, so the hash has no
+/// target-dependent behaviour of its own.
+fn fnv(mut h: u64, data: &[u8]) -> u64 {
+    for b in data {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01B3);
+    }
+    h
+}
+
+unsafe extern "C" fn audio_sample(l: i16, r: i16) {
     AUDIO_FRAMES += 1;
+    AUDIO_HASH = fnv(fnv(AUDIO_HASH, &l.to_le_bytes()), &r.to_le_bytes());
 }
 
-unsafe extern "C" fn audio_sample_batch(_data: *const i16, frames: usize) -> usize {
+unsafe extern "C" fn audio_sample_batch(data: *const i16, frames: usize) -> usize {
     AUDIO_FRAMES += frames as u64;
+    if !data.is_null() {
+        let samples = std::slice::from_raw_parts(data, frames * 2);
+        let mut ah = AUDIO_HASH;
+        for s in samples {
+            ah = fnv(ah, &s.to_le_bytes());
+        }
+        AUDIO_HASH = ah;
+    }
     frames
 }
 
@@ -332,6 +372,8 @@ fn run() -> Result<(), String> {
     let mut mash_offset: u64 = 0;
     let mut presses: Vec<(u64, u32)> = Vec::new();
     let mut save_at: Option<(u64, String)> = None;
+    let mut load_at: Option<(u64, String)> = None;
+    let mut hash_every: u64 = 0;
     let mut swaps: Vec<(u64, c_uint)> = Vec::new();
     let mut card: Option<String> = None;
 
@@ -401,6 +443,23 @@ fn run() -> Result<(), String> {
                     path.clone(),
                 ));
                 i += 2;
+            }
+            "--load-at" => {
+                let n = args.get(i + 1).ok_or("--load-at needs FRAME PATH")?;
+                let path = args.get(i + 2).ok_or("--load-at needs FRAME PATH")?;
+                load_at = Some((
+                    n.parse().map_err(|e| format!("--load-at: {e}"))?,
+                    path.clone(),
+                ));
+                i += 2;
+            }
+            "--hash-every" => {
+                hash_every = args
+                    .get(i + 1)
+                    .ok_or("--hash-every needs a number")?
+                    .parse()
+                    .map_err(|e| format!("--hash-every: {e}"))?;
+                i += 1;
             }
             "--card" => {
                 // The core's save RAM, the memory card, loaded from PATH after
@@ -493,6 +552,11 @@ fn run() -> Result<(), String> {
         handle,
         "retro_serialize",
         unsafe extern "C" fn(*mut c_void, usize) -> bool
+    );
+    let retro_unserialize = entry!(
+        handle,
+        "retro_unserialize",
+        unsafe extern "C" fn(*const c_void, usize) -> bool
     );
     let serialize_size = entry!(
         handle,
@@ -687,6 +751,17 @@ fn run() -> Result<(), String> {
                     );
                 }
             }
+            // --load-at: what a netplay peer does on a resync, replace the
+            // whole machine with another's state before frame N runs.
+            if let Some((n, path)) = &load_at {
+                if f == *n {
+                    let buf = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+                    if !retro_unserialize(buf.as_ptr() as *const c_void, buf.len()) {
+                        return Err(format!("retro_unserialize refused {path}"));
+                    }
+                    println!("loaded {path} before frame {n}");
+                }
+            }
             let t = std::time::Instant::now();
             retro_run();
             let dt = t.elapsed();
@@ -697,6 +772,26 @@ fn run() -> Result<(), String> {
             }
             if dt > std::time::Duration::from_secs(1) {
                 println!("SLOW FRAME {f}: {:.1} s", dt.as_secs_f64());
+            }
+            // --hash-every: the netplay check. The state as a peer would
+            // compare it, plus everything shown and played so far. Two hosts
+            // given the same content and presses must print the same lines.
+            if hash_every > 0 && ((f + 1) % hash_every == 0 || f + 1 == frames) {
+                let mut buf = vec![0u8; retro_serialize_size()];
+                if !retro_serialize(buf.as_mut_ptr() as *mut c_void, buf.len()) {
+                    return Err("retro_serialize refused".into());
+                }
+                println!(
+                    "hash {:>6} state {:016x} video {:016x} audio {:016x}",
+                    f + 1,
+                    fnv(FNV_OFFSET, &buf),
+                    *std::ptr::addr_of!(VIDEO_HASH),
+                    *std::ptr::addr_of!(AUDIO_HASH)
+                );
+                // Per interval, so a run that loaded a state mid-way agrees
+                // with the one it came from on every line after the load.
+                VIDEO_HASH = FNV_OFFSET;
+                AUDIO_HASH = FNV_OFFSET;
             }
         }
         println!(

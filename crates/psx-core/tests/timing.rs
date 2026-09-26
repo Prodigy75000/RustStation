@@ -485,3 +485,39 @@ fn mfc2_waits_for_the_gte() {
     let pass = warm_pass(&[lui(3, 0x4000), mtc0(3, 12), RTPS, mfc2(2, 14)]);
     assert_eq!(pass, 6 + 14);
 }
+
+/// A netplay peer that loads its host's state must end every later frame on
+/// the host's cycle.
+///
+/// Frames of the other standard end after the instruction that crosses their
+/// end, and the overshoot is carried into the next frame. That carry decides
+/// where the frontend's next input lands, so it is part of the machine: when it
+/// was kept out of the state, a peer resynced to its host kept its own, and
+/// the two ended their frames cycles apart from then on.
+#[test]
+fn a_resynced_peer_ends_its_frames_where_the_host_does() {
+    // Uncached ROM, 29 cycles an instruction, so frames overshoot.
+    let program = [beq(0, 0, -1), nop()];
+    let mut host = machine(&program);
+    for _ in 0..7 {
+        host.run_frame_at(video::Standard::Pal);
+    }
+    let snapshot = host.save_state();
+
+    // A different history, so a different carry of its own.
+    let mut peer = machine(&program);
+    for _ in 0..3 {
+        peer.run_frame_at(video::Standard::Pal);
+    }
+    assert!(peer.load_state(&snapshot));
+
+    for frame in 0..20 {
+        host.run_frame_at(video::Standard::Pal);
+        peer.run_frame_at(video::Standard::Pal);
+        assert_eq!(
+            host.bus.cycle, peer.bus.cycle,
+            "frame {frame} after the resync"
+        );
+    }
+    assert_eq!(host.save_state(), peer.save_state());
+}

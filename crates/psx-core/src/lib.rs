@@ -97,13 +97,15 @@ pub struct Psx {
     /// Checked passes in a row at `poll_head` that were not idle.
     poll_misses: u32,
     /// What is left over of a CPU cycle from `run_frame_at`'s fixed-length
-    /// frames, in units of 1/11. Host side: where frames begin and end never
-    /// changes what the machine does, so it is not serialized.
-    frame_frac: u64,
+    /// frames, in units of 1/11. Serialized: where a frame ends is where the
+    /// frontend's next input lands, so two machines that disagree on it
+    /// disagree on everything after the next button press.
+    pub(crate) frame_frac: u64,
     /// Cycles `run_frame_at`'s frames have run past where they should have
     /// ended: a run stops after the instruction that reaches its end, and one
-    /// instruction can cost tens of cycles. Carried, like `frame_frac`.
-    frame_over: u64,
+    /// instruction can cost tens of cycles. Carried and serialized, like
+    /// `frame_frac`.
+    pub(crate) frame_over: u64,
     /// Loop iterations skipped rather than stepped. Diagnostic.
     pub idle_skipped: u64,
     /// Whether to skip the vsync wait at all. On by default; off is for
