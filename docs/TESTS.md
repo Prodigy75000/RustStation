@@ -786,6 +786,11 @@ and two discs with the first selected. Then, from the owner:
 **All seven of the owner's discs play on the HLE kernel, 2026-09-26**:
 Twisted Metal 2, Grand Theft Auto 2, Crash Bandicoot, Metal Gear Solid,
 Crash Bash, Metal Slug X and Final Fantasy VIII, with no BIOS file.
+The same day, five more pushed to the phone: Spyro the Dragon, Tekken 3,
+Crash Team Racing, Tony Hawk's Pro Skater 2 and Resident Evil 3. The owner:
+all play well at full speed. Resident Evil 3 unlocked a RetroAchievement
+("Easy", a dodge before the warehouse) from a real dodge in play, so the
+memory RetroAchievements reads is the game's own. Twelve of twelve on HLE.
 - **Metal Gear Solid's briefing screen showed textures down its right side**
   (second phone run): 320 pixels drawn in the 368 mode with a display range
   to match, and the core showing all 368. The width now comes from GP1(06h)
