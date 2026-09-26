@@ -18,6 +18,7 @@
 //! retrohost <core.so|core.dll> <system-dir> [--content <path>]
 //!           [--frames N] [--hold start] [--out frame.png]
 //!           [--hash-every N] [--save-at N PATH] [--load-at N PATH]
+//!           [--reload N]
 //! ```
 //!
 //! `--hash-every` is the netplay proof: it prints a hash of the serialized
@@ -371,6 +372,7 @@ fn run() -> Result<(), String> {
     let mut save_at: Option<(u64, String)> = None;
     let mut load_at: Option<(u64, String)> = None;
     let mut hash_every: u64 = 0;
+    let mut reloads: u32 = 0;
     let mut swaps: Vec<(u64, c_uint)> = Vec::new();
     let mut card: Option<String> = None;
 
@@ -456,6 +458,14 @@ fn run() -> Result<(), String> {
                     .ok_or("--hash-every needs a number")?
                     .parse()
                     .map_err(|e| format!("--hash-every: {e}"))?;
+                i += 1;
+            }
+            "--reload" => {
+                reloads = args
+                    .get(i + 1)
+                    .ok_or("--reload needs a number")?
+                    .parse()
+                    .map_err(|e| format!("--reload: {e}"))?;
                 i += 1;
             }
             "--card" => {
@@ -849,10 +859,67 @@ fn run() -> Result<(), String> {
         }
 
         unload();
+
+        // --reload: what a player switching games does, over and over in one
+        // process. A core that faults on its second unload can look like a
+        // clean exit, so this is measured, not assumed. Odd cycles tear the
+        // core down as a frontend switching cores does, even ones only swap
+        // the game. Each runs the same frames with nothing held, so every
+        // cycle must end in the same state: anything left over from the one
+        // before shows.
+        let mut first: Option<u64> = None;
+        for cycle in 1..=reloads {
+            if cycle % 2 == 1 {
+                deinit();
+                set_environment(environment);
+                set_video(video_refresh);
+                set_audio(audio_sample);
+                set_audio_batch(audio_sample_batch);
+                set_input_poll(input_poll);
+                set_input_state(input_state);
+                init();
+            }
+            let ok = match &game {
+                Some(g) => load_game(g),
+                None => load_game(std::ptr::null()),
+            };
+            if !ok {
+                return Err(format!("reload {cycle}: retro_load_game refused"));
+            }
+            HELD = 0;
+            for _ in 0..RELOAD_FRAMES {
+                retro_run();
+            }
+            let mut buf = vec![0u8; retro_serialize_size()];
+            if !retro_serialize(buf.as_mut_ptr() as *mut c_void, buf.len()) {
+                return Err(format!("reload {cycle}: retro_serialize refused"));
+            }
+            let h = fnv(FNV_OFFSET, &buf);
+            unload();
+            match first {
+                None => first = Some(h),
+                Some(f) if f != h => {
+                    return Err(format!(
+                        "reload {cycle}: state {h:016x} after {RELOAD_FRAMES} frames, the first reload ended in {f:016x}"
+                    ))
+                }
+                Some(_) => {}
+            }
+        }
+        if reloads > 0 {
+            println!(
+                "{reloads} reloads ({} with deinit and init), {RELOAD_FRAMES} frames each, all ending in state {:016x}",
+                reloads.div_ceil(2),
+                first.unwrap_or(0)
+            );
+        }
         deinit();
     }
     Ok(())
 }
+
+/// Frames each `--reload` cycle runs.
+const RELOAD_FRAMES: u32 = 300;
 
 /// The frame as a PNG, so a run can be looked at rather than only counted.
 fn write_png(path: &str, frame: &[u32], w: usize, h: usize) -> Result<(), String> {
