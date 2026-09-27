@@ -957,6 +957,11 @@ DualShock and is driven by both sticks, so it is the first game confirmed to
 play through the analog path end to end. Sixteen commercial games confirmed on
 HLE; none tried has failed to boot.
 
+Alien Resurrection too (2026-09-27): a DualShock game where the left stick,
+the right stick and the D-pad each do something different, all three
+responding, at a flat 60 fps on the phone. Seventeen on HLE, still none that
+fails.
+
 **Tekken 3 fights dropped to the low 40s on the phone** where Beetle holds 60
 (reported with a state mid-fight). The fight draws at 368x480; the phone
 needed about 14 ms a frame at worst times, spiking past 20. Profiled on
