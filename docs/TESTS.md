@@ -1020,6 +1020,12 @@ macroblocks). Nothing else moved beyond timing noise.
 Confirmed on the phone with v0.4.1: Dead Ball Zone's menus answer the pad and
 it plays.
 
+Also confirmed on the phone on HLE: Doom and Duke Nukem: Time to Kill (both
+PAL, 50 fps as they should), Castlevania: Symphony of the Night, Harry Potter
+and the Sorcerer's Stone and Gran Turismo (all US). Gran Turismo's dump is
+not one RetroAchievements lists, which is the dump's revision, not the core.
+Twenty-seven commercial games confirmed; the three that failed are fixed.
+
 **Tekken 3 fights dropped to the low 40s on the phone** where Beetle holds 60
 (reported with a state mid-fight). The fight draws at 368x480; the phone
 needed about 14 ms a frame at worst times, spiking past 20. Profiled on
