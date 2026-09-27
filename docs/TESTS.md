@@ -1017,6 +1017,8 @@ The survey caught a second game with the same fault: Need for Speed III
 ignored the held Start and replayed its attract video (171 528 macroblocks, no
 3D); now Start takes it into the game (562 237 textured primitives, 480
 macroblocks). Nothing else moved beyond timing noise.
+Confirmed on the phone with v0.4.1: Dead Ball Zone's menus answer the pad and
+it plays.
 
 **Tekken 3 fights dropped to the low 40s on the phone** where Beetle holds 60
 (reported with a state mid-fight). The fight draws at 368x480; the phone
