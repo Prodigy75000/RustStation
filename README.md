@@ -32,9 +32,9 @@ what makes netplay between a PC and a phone sound.
 | libretro | ✅ content as disc image, playlist or PSX-EXE, both pads with input descriptors, disk control, save states, save RAM, system RAM for RetroAchievements |
 
 Compatibility: every disc in a 34-disc test library boots and plays its own
-content on both the real BIOS and the HLE kernel, and seventeen commercial games
+content on both the real BIOS and the HLE kernel, and nineteen commercial games
 have been played on a phone at full speed with no BIOS file, among them Final
-Fantasy VIII, Metal Gear Solid, Silent Hill, Ape Escape, Alien Resurrection, Tekken 3, Crash Team Racing,
+Fantasy VIII, Metal Gear Solid, Silent Hill, Ape Escape, Alien Resurrection, Armored Core, Tekken 3, Crash Team Racing,
 Resident Evil 3, Rayman, Spyro the Dragon, Tony Hawk's Pro Skater 2, Yu-Gi-Oh!
 Forbidden Memories and Grand Theft Auto 2. No disc tried so far has failed to
 boot on the built-in kernel. The running

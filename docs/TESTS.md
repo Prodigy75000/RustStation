@@ -962,6 +962,11 @@ the right stick and the D-pad each do something different, all three
 responding, at a flat 60 fps on the phone. Seventeen on HLE, still none that
 fails.
 
+Alone in the Dark: One-Eyed Jack's Revenge and Armored Core play too. The
+Armored Core dump is European and runs at 50 fps, which is right: the core
+takes the region from the licence text and paces a PAL disc at the PAL
+console's 49.76 Hz. Nineteen on HLE, none that fails.
+
 **Tekken 3 fights dropped to the low 40s on the phone** where Beetle holds 60
 (reported with a state mid-fight). The fight draws at 368x480; the phone
 needed about 14 ms a frame at worst times, spiking past 20. Profiled on
