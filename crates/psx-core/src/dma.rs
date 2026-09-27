@@ -34,6 +34,19 @@ use crate::spu::Spu;
 
 pub const CHANNELS: usize = 7;
 
+/// How long an MDEC-out transfer takes, in cycles per word moved.
+///
+/// Every other transfer here finishes the moment it starts, and so did this
+/// one, which let a video player lose a race it never loses on a console: it
+/// starts the transfer and then records that one is in flight, and the
+/// completion callback, run inside the start, had already been and gone.
+/// Dino Crisis 2 and Batman of the Future decoded two frames and then waited
+/// forever for a third, on either kernel. On a console the decoder takes far
+/// longer than the few instructions between the two, so any delay at all puts
+/// the callback where it belongs: 1, 2 and 4 cycles a word played the same.
+/// One is the DMA's own rate, a word a cycle, which leaves out the decoding.
+const MDEC_OUT_CYCLES_PER_WORD: u64 = 1;
+
 pub const CH_MDEC_IN: usize = 0;
 pub const CH_MDEC_OUT: usize = 1;
 pub const CH_GPU: usize = 2;
@@ -133,6 +146,10 @@ pub struct Dma {
     /// themselves. Host-side observation only, never serialized.
     pub list_nodes: u64,
     pub list_cycles: u64,
+    /// Cycles until the MDEC-out transfer in flight ends. Its words are
+    /// already in RAM; what waits is the channel going idle and its
+    /// completion interrupt. See [`MDEC_OUT_CYCLES_PER_WORD`].
+    pub(crate) mdec_out_done_in: Option<u64>,
 }
 
 impl Default for Dma {
@@ -153,6 +170,7 @@ impl Dma {
             unimplemented_channels: 0,
             list_nodes: 0,
             list_cycles: 0,
+            mdec_out_done_in: None,
         }
     }
 
@@ -424,6 +442,7 @@ impl Dma {
         }
         let mut addr = ch.madr & 0x1F_FFFC;
         let mut left = ch.word_count();
+        let started = left;
         Self::trace_channel(CH_MDEC_OUT, &ch, addr);
         while left > 0 {
             if !mdec.has_output() {
@@ -442,8 +461,24 @@ impl Dma {
         // block count, which `word_count` reads as one block of that size.
         dma.channels[CH_MDEC_OUT].bcr = left;
         if left == 0 {
-            dma.channels[CH_MDEC_OUT].finish();
-            dma.complete(CH_MDEC_OUT, irq);
+            // Finished later, not now: see MDEC_OUT_CYCLES_PER_WORD. The irq
+            // is raised by `run_timed`.
+            let _ = irq;
+            dma.mdec_out_done_in = Some((u64::from(started) * MDEC_OUT_CYCLES_PER_WORD).max(1));
+        }
+    }
+
+    /// Advance the in-flight MDEC-out transfer, and finish it when its time
+    /// is up.
+    pub fn run_timed(&mut self, elapsed: u64, irq: &mut Irq) {
+        if let Some(t) = self.mdec_out_done_in {
+            if elapsed >= t {
+                self.mdec_out_done_in = None;
+                self.channels[CH_MDEC_OUT].finish();
+                self.complete(CH_MDEC_OUT, irq);
+            } else {
+                self.mdec_out_done_in = Some(t - elapsed);
+            }
         }
     }
 

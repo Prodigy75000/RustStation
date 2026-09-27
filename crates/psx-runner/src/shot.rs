@@ -110,6 +110,7 @@ fn main() -> ExitCode {
     let mut noidle = false;
     let mut show_tty = false;
     let mut card_path: Option<String> = None;
+    let mut card2_path: Option<String> = None;
     let mut save_end: Option<String> = None;
 
     let mut i = 1;
@@ -164,6 +165,11 @@ fn main() -> ExitCode {
                 // written back to it at the end, as a frontend does.
                 i += 1;
                 card_path = args.get(i).cloned();
+            }
+            "--card2" => {
+                // The same for slot 2. Read only: nothing is written back.
+                i += 1;
+                card2_path = args.get(i).cloned();
             }
             "--save-end" => {
                 i += 1;
@@ -276,6 +282,12 @@ fn main() -> ExitCode {
         match std::fs::read(path) {
             Ok(image) => psx.bus.sio.cards[0].insert(&image),
             Err(_) => psx.bus.sio.cards[0].connected = true,
+        }
+    }
+    if let Some(path) = &card2_path {
+        match std::fs::read(path) {
+            Ok(image) => psx.bus.sio.cards[1].insert(&image),
+            Err(_) => psx.bus.sio.cards[1].connected = true,
         }
     }
 

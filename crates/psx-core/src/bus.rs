@@ -268,6 +268,7 @@ impl Bus {
                 .run_with_cd(elapsed, &mut || self.cdrom.pop_audio());
             self.spu_irq();
             self.cdrom.run(elapsed, &mut self.irq);
+            self.dma.run_timed(elapsed, &mut self.irq);
             self.synced_to = self.cycle;
         }
 
@@ -282,6 +283,9 @@ impl Bus {
             next = next.min(t);
         }
         if let Some(t) = self.spu.cycles_to_event() {
+            next = next.min(t);
+        }
+        if let Some(t) = self.dma.mdec_out_done_in {
             next = next.min(t);
         }
         self.next_event = self.cycle + next.max(1);
@@ -540,6 +544,7 @@ impl Bus {
                 );
                 // A transfer through the IRQ address raises the SPU interrupt.
                 self.spu_irq();
+                self.sync();
             }
             return;
         }

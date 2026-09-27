@@ -112,3 +112,17 @@ an open question. Two places where the difference shows:
   charging transfers for their cycles.
 * **Channel 5.** The expansion port has nothing behind it, so transfers on it are
   counted rather than performed.
+
+## MDEC out takes time (2026-09-27)
+
+Every transfer finishes the moment it starts, which no game has been seen to
+mind, except one out of the MDEC. A video player starts that transfer and then
+records that one is in flight; with the completion interrupt raised inside the
+start, its callback had already run and gone, and the player waited for a
+completion that had happened. Dino Crisis 2 (US and European) and Batman of
+the Future decoded two frames and stopped, on the real BIOS as well as the
+HLE kernel. The words still move at once, but the channel stays busy and its
+interrupt comes a cycle a word later. Any delay at all orders it correctly
+(1, 2 and 4 cycles a word played the same); one is the DMA's own rate, which
+leaves out the decoding. Serialized from save format 18.
+`tests/mdec_dma.rs` holds it down.

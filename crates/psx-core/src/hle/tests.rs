@@ -839,3 +839,66 @@ fn a_file_on_bu10_is_saved_to_the_card_in_slot_two() {
         "slot 1's card is untouched"
     );
 }
+
+/// CdRemove lets go of the drive: the kernel's CD-ROM events are closed, so
+/// a wait on the first of them, handle 0, returns 0 at once, as on the
+/// console. Batman of the Future (Europe) does exactly this after CdRemove,
+/// and waited forever when CdRemove did nothing.
+#[test]
+fn cd_remove_closes_the_kernels_cd_events() {
+    let mut p = Prog::new();
+    p.a(0x72); // CdRemove
+    p.args(&[0]);
+    p.b(0x0A); // WaitEvent(0)
+    p.keep(0);
+    let code = p.halt();
+    let mut psx = boot(&code, 20_000_000);
+    assert_eq!(result(&mut psx, 0), 0, "the wait fell through");
+    let ev = psx.bus.load32(0x120) & 0x1F_FFFF;
+    for i in 0..5u32 {
+        let status = psx.bus.load32(ev + i * EVCB_SIZE + 4);
+        assert_eq!(status, EV_FREE, "kernel CD event {i} closed");
+    }
+}
+
+/// _bu_init writes each card's write-test sector, which clears the "new" flag
+/// a freshly inserted card carries, as the real BIOS does; a game asking
+/// _card_info afterwards is told the card is known. Dead Ball Zone, told
+/// both its cards were new, waited forever.
+#[test]
+fn bu_init_clears_both_cards_new_flags() {
+    let mut p = Prog::new();
+    p.a(0x70); // _bu_init
+    let code = p.halt();
+    let text: Vec<u8> = code.iter().flat_map(|w| w.to_le_bytes()).collect();
+    let mut psx = Psx::new(rom()).unwrap();
+    psx.bus.sio.cards[0].insert(&crate::memcard::formatted());
+    psx.bus.sio.cards[1].insert(&crate::memcard::formatted());
+    assert_ne!(psx.bus.sio.cards[1].flag & crate::memcard::FLAG_NEW, 0);
+    psx.sideload_exe(Exe {
+        initial_pc: ORG,
+        initial_gp: 0,
+        dest: ORG,
+        text,
+        memfill_start: 0,
+        memfill_size: 0,
+        sp_base: 0x801F_FF00,
+        sp_offset: 0,
+    });
+    psx.run(20_000_000);
+    assert_eq!(result(&mut psx, 0x3F), 0x600D, "{}", psx.take_tty());
+    for slot in 0..2 {
+        let card = &psx.bus.sio.cards[slot];
+        assert_eq!(
+            card.flag & crate::memcard::FLAG_NEW,
+            0,
+            "slot {} still new",
+            slot + 1
+        );
+        assert!(
+            card.data == crate::memcard::formatted(),
+            "slot {} unharmed",
+            slot + 1
+        );
+    }
+}

@@ -967,6 +967,43 @@ Armored Core dump is European and runs at 50 fps, which is right: the core
 takes the region from the licence text and paces a PAL disc at the PAL
 console's 49.76 Hz. Nineteen on HLE, none that fails.
 
+**The first three that failed, 2026-09-27**: Dino Crisis 2 (German), Dead Ball
+Zone and Batman of the Future (both European). Three bugs, none what it
+first looked like (all three are PAL, and several PAL games use LibCrypt, but
+none of them read the subchannel):
+
+* **A(72h) CdRemove did nothing.** Batman calls it, then waits on handle 0,
+  which is the kernel's first CD-ROM event. The real BIOS, watched doing it,
+  closes the kernel's five CD-ROM events and takes both CD-ROM handlers off
+  the interrupt chain, so the wait falls straight through; on the HLE kernel
+  it waited forever with the display off. Found by comparing the two kernels'
+  calls (`RSTA_HLE_TRACE`): identical up to 512 calls of WaitEvent(0) on the
+  console, endless on HLE, then the event table read out of both.
+  `cd_remove_closes_the_kernels_cd_events` fails on the old no-op.
+* **An MDEC-out transfer completed inside its own start.** Past that, Batman
+  and Dino Crisis 2 (the US release too) decoded two frames of video and
+  stopped, on the real BIOS as well: the player lost a race it never loses on
+  a console. See [`notes/DMA.md`](notes/DMA.md). Both now play: Batman into
+  its gameplay, Dino Crisis 2 through its intro.
+
+* **A(70h) _bu_init left a new card new.** Dead Ball Zone hung after its
+  piracy screen only with a memory card in, which a phone always has and the
+  PC harness did not. The real BIOS, watched with a card in each slot, reads
+  each card's sector 0 and writes it back as sector 3Fh, which clears the
+  card's "new" flag, so a game asking _card_info next is told the card is
+  known. The HLE kernel did not, the game took its new-card path and waited.
+  The second card in slot 2, which the libretro core has had since v0.2.0,
+  was enough on its own. `bu_init_clears_both_cards_new_flags`; shot gained
+  `--card2` to put a card in slot 2.
+
+The survey over every disc, before and after each fix, shows nothing else
+moving beyond timing noise, and ten games that use the card play the same with
+cards in both slots. The survey also caught one more: the original Dino Crisis
+had the same video race, and its video now plays (400 macroblocks decoded
+before, 95 400 after). All three failing games now play on the PC with two
+cards: Batman into its gameplay, Dino Crisis 2 through its intro, Dead Ball
+Zone to its language menu.
+
 **Tekken 3 fights dropped to the low 40s on the phone** where Beetle holds 60
 (reported with a state mid-fight). The fight draws at 368x480; the phone
 needed about 14 ms a frame at worst times, spiking past 20. Profiled on

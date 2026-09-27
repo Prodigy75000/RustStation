@@ -37,12 +37,12 @@ file records the rules it follows and what its numbers are.
 |---|---|
 | `CORE_ID` | `ruststation-psx` |
 | Magic | `RSTAPSX1` (8 bytes) |
-| `FORMAT_VERSION` | 17 |
-| `STATE_SIZE` | 3 746 092 bytes |
+| `FORMAT_VERSION` | 18 |
+| `STATE_SIZE` | 3 746 100 bytes |
 
 The netplay handshake token is the triple `(CORE_ID, FORMAT_VERSION,
 state_size())`. The libretro core also exports it as a string,
-`ruststation-psx:17:3746092`, from `ruststation_state_token()`, so a frontend
+`ruststation-psx:18:3746100`, from `ruststation_state_token()`, so a frontend
 can refuse a state transfer between mismatched peers up front.
 
 The trailing digit of the magic is a generation marker: it changes only if the
@@ -155,6 +155,7 @@ that made them:
 | 15 | Instruction timing: the I-cache's tags, and when the multiplier and GTE are done |
 | 16 | The frame carries, appended last |
 | 17 | Each pad's L3+R3 latch, so both sticks clicked together press the Analog button once, identically on a peer that loaded the state mid-press |
+| 18 | The cycles until an MDEC-out DMA transfer in flight completes |
 
 ## What is excluded, and why
 
@@ -196,8 +197,8 @@ In `crates/psx-core/src/save.rs`, against a machine driven into a state that
 touches every serialized field, with a generated BIOS-shaped image so no
 copyrighted dump is needed:
 
-- **`golden_bytes`**: exact header bytes (magic, then version 17 as `11 00`),
-  total length pinned to a **literal** (3 746 092, deliberately *not* compared
+- **`golden_bytes`**: exact header bytes (magic, then version 18 as `12 00`),
+  total length pinned to a **literal** (3 746 100, deliberately *not* compared
   against `state_size()`, which would compare the layout to itself), and an
   FNV-1a-64 checksum over the whole buffer.
 - **`round_trip_is_byte_identical`**: `serialize -> unserialize -> serialize`

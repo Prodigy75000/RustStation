@@ -199,6 +199,27 @@ laid out so each lands harmlessly or does what the game meant:
   sent. No SIO traffic, so `sio: 0 bytes exchanged` under HLE is expected when
   a game uses the kernel's pad functions.
 
+## CdRemove
+
+A(72h) was a no-op until a game depended on it. The real BIOS, watched doing
+it, closes the kernel's five CD-ROM events (the handles F1000000h to
+F1000004h) and calls A(A3h) DequeueCdIntr, which takes the CdromDma and
+CdromIo handlers off priority 0 with two SysDeqIntRPs. Both now do the same.
+Batman of the Future (Europe) then waits on handle 0, the first of those
+events: on the console it is closed and the wait returns 0 at once, and with
+it left open the game waited forever. The kernel also leaves the first of
+those events, spec 10h, ready at a game's entry (its own last read delivered
+it), which the HLE boot now does too.
+
+## _bu_init touches the cards
+
+A(70h) resets the kernel's card state, and the real BIOS, watched with a card
+in each slot, also talks to each card: _new_card, a read of sector 0, a write
+of it back as sector 3Fh (the write-test sector, normally a copy of sector 0),
+then the directory. The write clears the card's "new" flag, so a game asking
+_card_info afterwards hears the card is known. The HLE kernel does the write,
+which is all a game can see of it; the directory it reads when it needs it.
+
 ## Not done
 
 - qsort, lsearch and bsearch (callbacks to a game's compare function): logged

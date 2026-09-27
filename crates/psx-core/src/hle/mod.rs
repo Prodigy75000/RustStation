@@ -572,7 +572,12 @@ fn a_function(p: &mut Psx, n: u32) {
         0x4E => gpu_sync(p),
         0x4F | 0x50 | 0x52 | 0x53 | 0x9A | 0x9B => system_error(p, &format!("A({n:02X}h)")),
         0x51 => files::load_exec(p),
-        0x54 | 0x71 | 0x56 | 0x72 | 0x90..=0x93 | 0x95..=0x99 | 0x9E | 0xA2 | 0xA3 => ret(p, 0),
+        0x72 => cd_remove(p),
+        0xA3 => {
+            dequeue_cd_intr(p);
+            ret(p, 0);
+        }
+        0x54 | 0x71 | 0x56 | 0x90..=0x93 | 0x95..=0x99 | 0x9E | 0xA2 => ret(p, 0),
         0x55 | 0x70 => card::bu_init(p),
         0x57..=0x5A | 0x73..=0x77 | 0x79..=0x7B | 0x7D | 0x7F | 0x80 | 0x82..=0x8F => ret(p, 0),
         0x5B..=0x6F => ret(p, 0),
@@ -1151,8 +1156,15 @@ fn configure(p: &mut Psx, tcbs: u32, evcbs: u32) {
         if i as u32 >= evcbs {
             break;
         }
+        // The first, spec 10h, the kernel leaves ready: its own last read,
+        // loading the game, delivered it and nothing took it. Measured on
+        // the real BIOS at a game's entry, and depended on: Batman of the
+        // Future (Europe) waits on handle 0, which is this event, and on the
+        // console the wait falls straight through. Left busy, it waited
+        // forever with the display off.
+        let status = if spec == 0x10 { EV_READY } else { EV_BUSY };
         wr32(p, e, CLASS_CDROM);
-        wr32(p, e + 4, EV_BUSY);
+        wr32(p, e + 4, status);
         wr32(p, e + 8, spec);
         wr32(p, e + 0xC, MODE_READY);
         wr32(p, e + 0x10, 0);
@@ -1544,6 +1556,34 @@ fn dequeue(p: &mut Psx, prio: u32, s: u32) {
         link = e;
         guard += 1;
     }
+}
+
+/// A(72h) CdRemove: the kernel lets go of the drive, for a game bringing its
+/// own CD-ROM library. As the real BIOS was seen doing it: close the kernel's
+/// five CD-ROM events, then A(A3h), which takes both CD-ROM handlers off the
+/// interrupt chain.
+///
+/// It used to do nothing, and a game that then waited on handle 0, which is
+/// the first of those events and which on the console is by now closed, so
+/// the wait falls through, waited forever instead: Batman of the Future
+/// (Europe) with the display off.
+fn cd_remove(p: &mut Psx) {
+    let ev = rd32(p, kseg1(0x120));
+    let evcbs = rd32(p, kseg1(0x124)) / EVCB_SIZE;
+    for i in 0..5u32.min(evcbs) {
+        let e = ev + i * EVCB_SIZE;
+        if rd32(p, e) == CLASS_CDROM {
+            wr32(p, e + 4, EV_FREE);
+        }
+    }
+    dequeue_cd_intr(p);
+    ret(p, 0);
+}
+
+/// A(A3h) DequeueCdIntr: both CD-ROM handlers off priority 0.
+fn dequeue_cd_intr(p: &mut Psx) {
+    dequeue(p, 0, element(E_CDROM_DMA));
+    dequeue(p, 0, element(E_CDROM_IO));
 }
 
 // ---- events -----------------------------------------------------------------

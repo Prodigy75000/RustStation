@@ -16,7 +16,7 @@ what makes netplay between a PC and a phone sound.
 | Component | State |
 |-----------|-------|
 | CPU (MIPS R3000A) | ✅ full user instruction set, COP0, both delay slots, every exception the console raises, `LWL`/`LWR`/`SWL`/`SWR`, the hardware's divide-by-zero results, cache isolation. ps1-tests `cpu/cop` 17/17 |
-| Instruction timing | ✅ the I-cache (tags, line fills, `FlushCache`), load costs by region from the hardware access-time log, multiply/divide and GTE interlocks (`docs/notes/TIMING.md`). Not yet: the write queue and DMA bus time |
+| Instruction timing | ✅ the I-cache (tags, line fills, `FlushCache`), load costs by region from the hardware access-time log, multiply/divide and GTE interlocks (`docs/notes/TIMING.md`). Not yet: the write queue, and DMA bus time, except that a transfer out of the MDEC finishes a word a cycle after it starts, not at once |
 | GTE | ✅ all 15 commands, the register file and the divider. `gte/test-all` 1150/1150, and `gte-fuzz` byte-identical to the hardware log over all 150 625 lines |
 | GPU | ✅ flat, Gouraud and textured polygons, rectangles, lines, semi-transparency, dithering, the mask bit, VRAM transfers, 4/8/15-bit textures and the texture window, 15- and 24-bit display, display size from GP1. Three of the suite's image tests pixel-exact |
 | MDEC | ✅ run-length decoding, the IDCT, colour and monochrome macroblocks, all four output depths. Full-motion video plays |

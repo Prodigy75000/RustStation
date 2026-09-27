@@ -49,8 +49,25 @@ pub(super) fn reset(p: &mut Psx) {
     }
 }
 
+/// A(70h) _bu_init. Besides its own state, the kernel touches the card in
+/// each slot, as the real BIOS was seen doing: it reads sector 0 and writes it
+/// back as sector 3Fh, the write-test sector, then reads the directory. The
+/// write is what matters to a game, because a write clears the card's "new"
+/// flag: a game that asks _card_info afterwards is told the card is known,
+/// not newly inserted. Left set, Dead Ball Zone took its new-card path and
+/// waited forever, with a card in either slot. The directory this kernel
+/// reads from the card itself, when it needs it.
 pub(super) fn bu_init(p: &mut Psx) {
     reset(p);
+    for card in p.bus.sio.cards.iter_mut().filter(|c| c.connected) {
+        let test = 0x3F * SECTOR;
+        if card.data[test..test + SECTOR] != card.data[..SECTOR] {
+            let first = card.data[..SECTOR].to_vec();
+            card.data[test..test + SECTOR].copy_from_slice(&first);
+            card.written = true;
+        }
+        card.flag &= !FLAG_NEW;
+    }
     ret(p, 0);
 }
 

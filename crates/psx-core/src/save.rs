@@ -80,7 +80,9 @@ pub const MAGIC: &[u8; 8] = b"RSTAPSX1";
 /// * 17: each pad's L3+R3 latch, one byte after its other state, so that
 ///   holding both sticks presses the Analog button once, identically on a
 ///   netplay peer that loaded the state mid-press.
-pub const FORMAT_VERSION: u16 = 17;
+/// * 18: the cycles until an MDEC-out DMA transfer in flight completes, which
+///   is no longer the instant it starts.
+pub const FORMAT_VERSION: u16 = 18;
 
 const HEADER_BYTES: usize = 8 + 2;
 const CPU_BYTES: usize = 32 * 4     // regs
@@ -143,7 +145,7 @@ const GPU_BYTES: usize = 4 + gpu::VRAM_WORDS * 2   // length-prefixed VRAM
     + 9 * 4                                        // draw mode, window, display
     + 4; // mask set / mask check / display disabled / irq
 
-const DMA_BYTES: usize = dma::CHANNELS * 3 * 4 + 4 + 4;
+const DMA_BYTES: usize = dma::CHANNELS * 3 * 4 + 4 + 4 + 8; // cycles to the MDEC-out transfer's end, 0 for none (format 18)
 
 /// SIO0, added in format version 5. The port only, not the pads.
 const SIO_BYTES: usize = 2 * 3      // mode, ctrl, baud
@@ -503,6 +505,7 @@ fn write_dma(w: &mut Writer, d: &dma::Dma) {
     }
     w.u32(d.control);
     w.u32(d.interrupt_raw());
+    w.u64(d.mdec_out_done_in.unwrap_or(0));
 }
 
 fn write_spu(w: &mut Writer, s: &spu::Spu) {
@@ -857,6 +860,7 @@ fn read_dma(r: &mut Reader, d: &mut dma::Dma) -> Option<()> {
     d.control = r.u32()?;
     let interrupt = r.u32()?;
     d.restore_interrupt(interrupt);
+    d.mdec_out_done_in = Some(r.u64()?).filter(|&t| t != 0);
     Some(())
 }
 
@@ -1458,6 +1462,9 @@ mod tests {
             card.previous = 0xC0 | k;
         }
 
+        // An MDEC-out transfer still in flight.
+        psx.bus.dma.mdec_out_done_in = Some(0x1234);
+
         // The frame carries, different so a swap shows.
         psx.frame_frac = 7;
         psx.frame_over = 23;
@@ -1479,15 +1486,15 @@ mod tests {
 
         // Header, byte for byte.
         assert_eq!(&snap[0..8], MAGIC);
-        assert_eq!(&snap[8..10], &[0x11, 0x00]);
+        assert_eq!(&snap[8..10], &[0x12, 0x00]);
 
         // Total length, pinned to a literal, deliberately NOT compared against
         // `Psx::state_size()`, which would only compare the layout to itself.
-        assert_eq!(snap.len(), 3_746_092);
+        assert_eq!(snap.len(), 3_746_100);
 
         // Whole-buffer checksum: any added, removed, reordered or re-widened
         // field moves it.
-        assert_eq!(fnv1a64(&snap), 0xA78E_1D89_9E48_E425);
+        assert_eq!(fnv1a64(&snap), 0x067F_CBD8_2222_B2C4);
     }
 
     #[test]
