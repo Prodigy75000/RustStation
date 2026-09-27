@@ -1004,6 +1004,20 @@ before, 95 400 after). All three failing games now play on the PC with two
 cards: Batman into its gameplay, Dino Crisis 2 through its intro, Dead Ball
 Zone to its language menu.
 
+On the phone (v0.4.0) Batman and Dino Crisis 2 were confirmed, and Dead Ball
+Zone stopped at its main menu: from a state saved there, no button did
+anything. The game's own pad driver read the ID byte and gave up, every poll,
+on the real BIOS too: a pad's /ACK came before the byte could have crossed the
+wire, and fell into the delay the driver runs before it starts waiting. The
+byte's transfer time is now counted (see [`notes/SIO.md`](notes/SIO.md)); from
+the phone's state, Down moves the menu. The suite's `input/pad` still reads the
+held button on both kernels, ten card games play the same, and Spyro's save
+comes out byte for byte as before.
+The survey caught a second game with the same fault: Need for Speed III
+ignored the held Start and replayed its attract video (171 528 macroblocks, no
+3D); now Start takes it into the game (562 237 textured primitives, 480
+macroblocks). Nothing else moved beyond timing noise.
+
 **Tekken 3 fights dropped to the low 40s on the phone** where Beetle holds 60
 (reported with a state mid-fight). The fight draws at 368x480; the phone
 needed about 14 ms a frame at worst times, spiking past 20. Profiled on

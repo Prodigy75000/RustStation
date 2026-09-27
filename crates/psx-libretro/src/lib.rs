@@ -146,7 +146,7 @@ static mut FRAMEBUFFER: Vec<u32> = Vec::new();
 static mut SILENCE: Vec<i16> = Vec::new();
 
 const LIBRARY_NAME: &[u8] = b"RustStation (PlayStation)\0";
-const LIBRARY_VERSION: &[u8] = b"0.4.0\0";
+const LIBRARY_VERSION: &[u8] = b"0.4.1\0";
 /// What the frontend will offer as content. Disc images first: they are the
 /// point, and a core that does not list them cannot be handed one however well
 /// it would cope. `exe` and `psexe` stay for the conformance suites, which ship

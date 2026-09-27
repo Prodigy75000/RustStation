@@ -16,7 +16,8 @@
 use crate::irq::{self, Irq};
 use crate::memcard::MemoryCard;
 
-/// Cycles from the end of a byte to the device pulling `/ACK` low.
+/// Cycles from the end of a byte to the device pulling `/ACK` low. The byte
+/// itself takes [`Sio::byte_cycles`] before that.
 ///
 /// Approximate, and it matters that it is not zero. The BIOS reads the pad with
 /// the controller interrupt **masked off in `I_MASK`**, and polls `I_STAT` bit 7
@@ -367,6 +368,19 @@ impl Sio {
         }
     }
 
+    /// How long one byte takes to shift out, in CPU cycles: eight bits, each
+    /// `(reload x factor) AND NOT 1` cycles, from psx-spx's formula for the
+    /// bit rate, 33 868 800 / that. The factor is JOY_MODE's low two bits
+    /// (1, 16 or 64; 0 is taken as 1). The usual reload of 88h is 1 088 cycles.
+    fn byte_cycles(&self) -> u64 {
+        let factor = match self.mode & 3 {
+            2 => 16,
+            3 => 64,
+            _ => 1,
+        };
+        8 * ((u64::from(self.baud) * factor) & !1)
+    }
+
     fn selected(&self) -> bool {
         self.ctrl & 0x0002 != 0
     }
@@ -538,6 +552,13 @@ impl Sio {
             }
             Target::None => (0xFF, None),
         };
+        // The byte takes eight bits to cross the wire before the device can
+        // answer it. With the answer counted from the write, a pad's /ACK
+        // came while Dead Ball Zone's driver was still in the short delay it
+        // runs after each byte; it then cleared the interrupt flag, waited
+        // for one that had already come, timed out and dropped every read
+        // after the ID. See docs/notes/SIO.md.
+        let ack_after = ack_after.map(|t| t + self.byte_cycles());
         let ack = ack_after.is_some();
 
         if trace_enabled() {
@@ -823,6 +844,27 @@ mod tests {
 
         pad.locked = true;
         assert!(!frame(&mut pad, both), "locked by software");
+    }
+
+    /// A byte takes time to cross the wire at the port's baud rate, and the
+    /// device's /ACK comes after that, not after the write. Counted from the
+    /// write, it came while Dead Ball Zone's driver was still in the delay it
+    /// runs after each byte, and every pad read after the ID timed out.
+    #[test]
+    fn the_acknowledge_comes_after_the_byte_has_crossed() {
+        let mut sio = Sio::new();
+        sio.write(0x08, 2, 0x000D); // JOY_MODE: factor 1
+        sio.write(0x0E, 2, 0x0088); // JOY_BAUD
+        sio.write(0x0A, 2, 0x1003);
+        sio.write(0, 1, 0x01);
+        assert_eq!(sio.cycles_to_event(), Some(8 * 0x88 + PAD_ACK_DELAY));
+        // Factor 16 is sixteen times as slow.
+        let mut slow = Sio::new();
+        slow.write(0x08, 2, 0x000E);
+        slow.write(0x0E, 2, 0x0088);
+        slow.write(0x0A, 2, 0x1003);
+        slow.write(0, 1, 0x01);
+        assert_eq!(slow.cycles_to_event(), Some(8 * 16 * 0x88 + PAD_ACK_DELAY));
     }
 
     #[test]

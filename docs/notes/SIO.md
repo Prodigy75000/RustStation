@@ -220,3 +220,19 @@ it: there is no "not connected" status bit to set.
    the same address byte and differ from step 1 onward. What a plain digital
    pad answers to `43h`/`45h` is not documented, which is why the pad is a
    DualShock rather than a digital pad with guessed answers.
+
+## A byte takes time (2026-09-27)
+
+A device's /ACK used to come `PAD_ACK_DELAY` after software wrote the byte,
+as if the byte crossed the wire instantly. It does not: eight bits at the
+port's rate, which psx-spx gives as 33 868 800 / ((reload x factor) AND NOT 1)
+bits a second, reload from JOY_BAUD and factor from JOY_MODE's low bits (1, 16
+or 64). At the usual 88h that is 1 088 cycles a byte, and the device's delay
+is counted from there now.
+
+Dead Ball Zone's own pad driver writes a byte, runs a short delay, clears the
+controller interrupt flag, reads the reply and then waits for the flag, which
+the /ACK sets. With the /ACK 338 cycles after the write it came during the
+delay and was cleared unseen; the driver timed out after the ID byte on every
+read and the game saw no buttons at all, on either kernel.
+`the_acknowledge_comes_after_the_byte_has_crossed` holds it down.
