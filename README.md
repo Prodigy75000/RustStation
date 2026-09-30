@@ -29,7 +29,7 @@ what makes netplay between a PC and a phone sound.
 | HLE kernel | ✅ boots every game, with no BIOS file: the kernel's A, B and C functions, exceptions, events, threads, pads, memory card files and the CD file system, written from psx-spx (`docs/notes/HLE.md`) |
 | Save states | ✅ fixed size, little-endian, versioned; byte-identical on x86-64 and arm64 (`docs/SAVESTATE.md`) |
 | Netplay | ✅ proven deterministic across machines: the same presses give the same state, video and audio on a Windows PC and two arm64 Android devices, and a peer that loads its host's state mid-game stays in step (`docs/TESTS.md`, "Netplay") |
-| libretro | ✅ content as disc image, playlist or PSX-EXE, both pads with input descriptors, disk control, save states, save RAM, system RAM for RetroAchievements |
+| libretro | ✅ content as disc image, playlist or PSX-EXE, both pads with input descriptors, disk control, save states, save RAM, a memory map (main RAM and scratchpad) for RetroAchievements |
 
 Compatibility: every disc in a 34-disc test library boots and plays its own
 content on both the real BIOS and the HLE kernel, and twenty-seven commercial games

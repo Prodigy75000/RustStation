@@ -36,12 +36,14 @@ fn a_reset_keeps_what_is_plugged_in() {
     psx.bus.sio.cards[1].connected = true;
     psx.bus.sio.cards[1].data[0x2000] = 0x5A;
     let ram = psx.bus.ram.as_ptr();
+    let scratchpad = psx.bus.scratchpad.as_ptr();
     let card = psx.bus.sio.cards[0].data.as_ptr();
     psx.run(WARM);
     psx.reset();
 
-    // A frontend holds pointers to both, for achievements and save RAM.
+    // A frontend holds pointers to all three, for achievements and save RAM.
     assert_eq!(psx.bus.ram.as_ptr(), ram, "system RAM moved");
+    assert_eq!(psx.bus.scratchpad.as_ptr(), scratchpad, "scratchpad moved");
     assert_eq!(psx.bus.sio.cards[0].data.as_ptr(), card, "save RAM moved");
     assert!(psx.bus.sio.pads[0].connected && psx.bus.sio.pads[1].connected);
     assert_eq!(psx.bus.sio.pads[1].buttons, 0x0808, "still held");

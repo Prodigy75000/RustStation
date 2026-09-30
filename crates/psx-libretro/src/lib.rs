@@ -54,6 +54,14 @@ const RETRO_ENVIRONMENT_SET_PIXEL_FORMAT: c_uint = 10;
 const RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS: c_uint = 11;
 const RETRO_ENVIRONMENT_SET_DISK_CONTROL_INTERFACE: c_uint = 13;
 const RETRO_ENVIRONMENT_SET_DISK_CONTROL_EXT_INTERFACE: c_uint = 58;
+/// 36 with the experimental bit (0x10000) set. **Not 36**: a frontend files a
+/// bare 36 under unknown commands and says nothing, and RetroAchievements
+/// then builds its own layout without the map (PocketRustAdvance sent the bare
+/// number and false-unlocked an achievement on a real account).
+const RETRO_ENVIRONMENT_SET_MEMORY_MAPS: c_uint = 36 | 0x10000;
+
+/// `RETRO_MEMDESC_SYSTEM_RAM`.
+const RETRO_MEMDESC_SYSTEM_RAM: u64 = 1 << 2;
 
 /// `RETRO_PIXEL_FORMAT_XRGB8888`. It is **1**, not 2 (2 is RGB565), and getting
 /// this wrong shows up as a colour-swapped picture rather than an error.
@@ -146,7 +154,7 @@ static mut FRAMEBUFFER: Vec<u32> = Vec::new();
 static mut SILENCE: Vec<i16> = Vec::new();
 
 const LIBRARY_NAME: &[u8] = b"RustStation (PlayStation)\0";
-const LIBRARY_VERSION: &[u8] = b"0.4.1\0";
+const LIBRARY_VERSION: &[u8] = b"0.4.2\0";
 /// What the frontend will offer as content. Disc images first: they are the
 /// point, and a core that does not list them cannot be handed one however well
 /// it would cope. `exe` and `psexe` stay for the conformance suites, which ship
@@ -613,6 +621,9 @@ pub unsafe extern "C" fn retro_load_game(info: *const GameInfo) -> bool {
 
     publish_input_descriptors();
     PSX = Some(psx);
+    if let (Some(env), Some(psx)) = (ENV_CB, psx_mut()) {
+        publish_memory_map(env, psx);
+    }
     if let Some(set) = disc_set {
         *ptr::addr_of_mut!(discs::DISCS) = Some(set);
         publish_disk_control();
@@ -829,6 +840,79 @@ pub unsafe extern "C" fn retro_get_memory_data(id: c_uint) -> *mut c_void {
     }
 }
 
+#[repr(C)]
+struct MemoryDescriptor {
+    flags: u64,
+    ptr: *mut c_void,
+    offset: usize,
+    start: usize,
+    select: usize,
+    disconnect: usize,
+    len: usize,
+    addrspace: *const c_char,
+}
+
+#[repr(C)]
+struct MemoryMap {
+    descriptors: *const MemoryDescriptor,
+    num_descriptors: c_uint,
+}
+
+const NO_REGION: MemoryDescriptor = MemoryDescriptor {
+    flags: 0,
+    ptr: ptr::null_mut(),
+    offset: 0,
+    start: 0,
+    select: 0,
+    disconnect: 0,
+    len: 0,
+    addrspace: ptr::null(),
+};
+
+/// Kept for the frontend to read after the call, which it may.
+static mut MEMORY_DESCRIPTORS: [MemoryDescriptor; 2] = [NO_REGION, NO_REGION];
+static mut MEMORY_MAP: MemoryMap = MemoryMap {
+    descriptors: ptr::null(),
+    num_descriptors: 0,
+};
+
+/// Where the console's memory is, at the addresses the CPU sees it:
+/// main RAM at 0, the scratchpad at 1F800000h. RetroAchievements finds the
+/// scratchpad through this and only this. Without a map it lays its PS1
+/// regions end to end over SYSTEM_RAM, which is main RAM alone, so the
+/// scratchpad region fell past the end of it.
+///
+/// Both buffers stay put for as long as the game is loaded: a state load
+/// copies into them and a reset keeps them (see `Psx::reset`).
+unsafe fn publish_memory_map(env: EnvironmentFn, psx: &mut Psx) {
+    let descriptors = &mut *ptr::addr_of_mut!(MEMORY_DESCRIPTORS);
+    descriptors[0] = MemoryDescriptor {
+        flags: RETRO_MEMDESC_SYSTEM_RAM,
+        ptr: psx.bus.ram.as_mut_ptr() as *mut c_void,
+        start: 0x0000_0000,
+        len: psx.bus.ram.len(),
+        ..NO_REGION
+    };
+    descriptors[1] = MemoryDescriptor {
+        flags: RETRO_MEMDESC_SYSTEM_RAM,
+        ptr: psx.bus.scratchpad.as_mut_ptr() as *mut c_void,
+        start: 0x1F80_0000,
+        len: psx.bus.scratchpad.len(),
+        ..NO_REGION
+    };
+    let map = &mut *ptr::addr_of_mut!(MEMORY_MAP);
+    map.descriptors = descriptors.as_ptr();
+    map.num_descriptors = descriptors.len() as c_uint;
+    if env(
+        RETRO_ENVIRONMENT_SET_MEMORY_MAPS,
+        map as *mut MemoryMap as *mut c_void,
+    ) {
+        info!("memory map published: main RAM and scratchpad");
+    } else {
+        warn!("the frontend refused the memory map");
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn retro_get_memory_size(id: c_uint) -> usize {
     match id {
@@ -952,6 +1036,36 @@ mod tests {
         assert_eq!(analog_mask(&psx), 0b11, "both");
         psx.bus.sio.pads[1].press_analog_button();
         assert_eq!(analog_mask(&psx), 0b01, "port 2 back to digital");
+    }
+
+    /// The memory map reaches a frontend as SET_MEMORY_MAPS and says where
+    /// both RAMs are. The fake frontend answers only to the numbers libretro.h
+    /// gives, written out here, not to this core's constants: a test that
+    /// agreed with the core's own symbol passed a wrong one in another core.
+    #[test]
+    fn the_memory_map_is_published_where_a_frontend_looks() {
+        static mut SEEN: Vec<(u64, usize, usize, usize)> = Vec::new();
+        unsafe extern "C" fn frontend(cmd: c_uint, data: *mut c_void) -> bool {
+            if cmd != 0x10024 {
+                return false;
+            }
+            let map = &*(data as *const MemoryMap);
+            let d = std::slice::from_raw_parts(map.descriptors, map.num_descriptors as usize);
+            *ptr::addr_of_mut!(SEEN) = d
+                .iter()
+                .map(|d| (d.flags, d.ptr as usize, d.start, d.len))
+                .collect();
+            true
+        }
+        let mut psx = Psx::new(psx_core::hle::rom()).unwrap();
+        unsafe { publish_memory_map(frontend, &mut psx) };
+        let ram = psx.bus.ram.as_ptr() as usize;
+        let scratchpad = psx.bus.scratchpad.as_ptr() as usize;
+        assert_eq!(
+            unsafe { &*ptr::addr_of!(SEEN) }.as_slice(),
+            &[(4, ram, 0, 0x20_0000), (4, scratchpad, 0x1F80_0000, 0x400)],
+            "flags SYSTEM_RAM (4), pointer, address, length"
+        );
     }
 
     /// The name this core would print for a pad bit. Independent of both tables

@@ -5,7 +5,7 @@ resolver = "2"
 members = ["crates/psx-core", "crates/psx-chd", "crates/psx-libretro", "crates/psx-runner"]
 
 [workspace.package]
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/Prodigy75000/RustStation"

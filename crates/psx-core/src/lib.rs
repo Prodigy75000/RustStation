@@ -162,11 +162,14 @@ impl Psx {
     pub fn reset(&mut self) {
         let mut fresh = Psx::new(self.bus.bios().to_vec())
             .expect("the BIOS was accepted when this machine was built");
-        // RAM keeps its buffer, with the new machine's contents: a frontend
-        // holds a pointer to it (RetroAchievements reads it every frame), and
-        // a new allocation would leave that pointer at freed memory.
+        // RAM and the scratchpad keep their buffers, with the new machine's
+        // contents: a frontend holds pointers to both (RetroAchievements reads
+        // them every frame), and a new allocation would leave those pointers
+        // at freed memory.
         self.bus.ram.copy_from_slice(&fresh.bus.ram);
         std::mem::swap(&mut fresh.bus.ram, &mut self.bus.ram);
+        self.bus.scratchpad.copy_from_slice(&fresh.bus.scratchpad);
+        std::mem::swap(&mut fresh.bus.scratchpad, &mut self.bus.scratchpad);
         fresh.bus.cdrom.disc = self.bus.cdrom.disc.take();
         for (new, old) in fresh.bus.sio.cards.iter_mut().zip(&mut self.bus.sio.cards) {
             new.data = std::mem::take(&mut old.data);

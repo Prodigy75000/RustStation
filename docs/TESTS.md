@@ -743,7 +743,9 @@ with real, changing input.
 - **60 fps flat on every disc tried**, five of them including Twisted Metal.
   The interpreter's speed was the open risk; on this phone it is not one.
 - **RetroAchievements rich presence worked** (GTA 2 showed the lives count), which
-  is the memory map exercised end to end by something other than this repo.
+  is system RAM exercised end to end by something other than this repo. (There
+  was no memory map yet: the achievement runtime laid its own regions over
+  system RAM. The map came in 0.4.2; main RAM read the same either way.)
 - The real PlayStation boot sequence, and no long black gap after it.
 
 Found, and fixed the same day, each reproduced on the desktop first:
